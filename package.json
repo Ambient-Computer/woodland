@@ -33,14 +33,14 @@
     "testEnvironment": "node"
   },
   "author": "Jesse Gibson",
-  "module": "dist/template.esm.js",
+  "module": "dist/db.esm.js",
   "size-limit": [
     {
-      "path": "dist/template.cjs.production.min.js",
+      "path": "dist/db.cjs.production.min.js",
       "limit": "10 KB"
     },
     {
-      "path": "dist/template.esm.js",
+      "path": "dist/db.esm.js",
       "limit": "10 KB"
     }
   ],
