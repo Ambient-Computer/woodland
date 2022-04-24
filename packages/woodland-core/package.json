@@ -6,5 +6,12 @@
   "repository": "https://github.com/PsychoLlama/woodland",
   "author": "Jesse Gibson <JesseTheGibson@gmail.com>",
   "license": "MIT",
-  "private": true
+  "private": true,
+  "jest": {
+    "displayName": "core",
+    "preset": "ts-jest",
+    "roots": [
+      "<rootDir>"
+    ]
+  }
 }

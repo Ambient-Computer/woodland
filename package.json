@@ -60,13 +60,10 @@
     }
   },
   "jest": {
+    "testEnvironment": "node",
     "preset": "ts-jest",
     "projects": [
-      {
-        "testMatch": [
-          "<rootDir>/packages/**/__tests__/*.ts"
-        ]
-      }
+      "<rootDir>/packages/*"
     ]
   },
   "devDependencies": {
