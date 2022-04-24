@@ -1,0 +1,10 @@
+{
+  "name": "@woodland/core",
+  "version": "0.1.0",
+  "description": "An immutable database",
+  "main": "src/index.ts",
+  "repository": "https://github.com/PsychoLlama/woodland",
+  "author": "Jesse Gibson <JesseTheGibson@gmail.com>",
+  "license": "MIT",
+  "private": true
+}
