@@ -13,5 +13,8 @@
     "roots": [
       "<rootDir>"
     ]
+  },
+  "dependencies": {
+    "multiformats": "^9.6.4"
   }
 }
