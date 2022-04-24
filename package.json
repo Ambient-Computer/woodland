@@ -6,7 +6,79 @@
   "author": "Jesse Gibson <JesseTheGibson@gmail.com>",
   "license": "MIT",
   "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "./bin/run-tests",
+    "test:unit": "jest --passWithNoTests",
+    "test:lint": "eslint packages",
+    "test:fmt": "prettier --check packages"
+  },
   "workspaces": [
     "packages/*"
-  ]
+  ],
+  "husky": {
+    "hooks": {
+      "pre-commit": "lint-staged"
+    }
+  },
+  "lint-staged": {
+    "*.{t,j}s": [
+      "eslint",
+      "prettier --check"
+    ]
+  },
+  "prettier": {
+    "singleQuote": true,
+    "trailingComma": "all"
+  },
+  "eslintConfig": {
+    "parser": "@typescript-eslint/parser",
+    "overrides": [
+      {
+        "files": [
+          "./**/__tests__/*.ts"
+        ],
+        "env": {
+          "jest": true
+        },
+        "rules": {
+          "@typescript-eslint/no-explicit-any": "off"
+        }
+      }
+    ],
+    "env": {
+      "browser": true,
+      "es2021": true
+    },
+    "extends": [
+      "eslint:recommended",
+      "plugin:@typescript-eslint/recommended"
+    ],
+    "rules": {
+      "@typescript-eslint/no-unused-vars": "error",
+      "no-prototype-builtins": "off"
+    }
+  },
+  "jest": {
+    "preset": "ts-jest",
+    "projects": [
+      {
+        "testMatch": [
+          "<rootDir>/packages/**/__tests__/*.ts"
+        ]
+      }
+    ]
+  },
+  "devDependencies": {
+    "@types/jest": "^27.4.1",
+    "@typescript-eslint/eslint-plugin": "^5.20.0",
+    "@typescript-eslint/parser": "^5.20.0",
+    "eslint": "^8.14.0",
+    "husky": "^7.0.4",
+    "jest": "^27.5.1",
+    "lint-staged": "^12.4.0",
+    "prettier": "^2.6.2",
+    "ts-jest": "^27.1.4",
+    "typescript": "^4.6.3"
+  }
 }
