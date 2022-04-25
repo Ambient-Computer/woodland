@@ -1,5 +1,5 @@
 import MemoryBackend from '../memory';
-import createHash from '../../hash';
+import { createHash } from '../../utils';
 import { HistoricalRecordType } from '../../types';
 
 describe('MemoryBackend', () => {

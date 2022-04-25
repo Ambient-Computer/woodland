@@ -1,6 +1,7 @@
+import type { CID } from 'multiformats/cid';
 import type { StorageBackend } from './backend/interface';
 import { type HistoricalRecord, HistoricalRecordType } from './types';
-import createHash, { type CID } from './hash';
+import { createHash } from './utils';
 
 export default class Dataset {
   private backend: StorageBackend;
