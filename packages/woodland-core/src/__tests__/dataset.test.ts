@@ -4,10 +4,10 @@ import { HistoricalRecordType } from '../types';
 
 describe('Dataset', () => {
   async function setup() {
-    const backend = new MemoryBackend();
-    const dataset = await Dataset.create({ backend });
+    const storage = new MemoryBackend();
+    const dataset = await Dataset.create({ storage });
     return {
-      backend,
+      backend: await storage.open(dataset.id),
       dataset,
     };
   }

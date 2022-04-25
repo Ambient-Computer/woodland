@@ -1,10 +1,38 @@
 import type { CID } from 'multiformats/cid';
-import type { StorageBackend, TransactionBuilder } from './interface';
+import { stringify } from 'uuid';
+import type {
+  StoragePlugin,
+  StorageBackend,
+  TransactionBuilder,
+} from './interface';
 import type { HistoricalRecord, TimelineRecord } from '../types';
 import { assert } from '../utils';
 
-export default class MemoryBackend implements StorageBackend {
-  private store = createStore();
+export default class MemoryStoragePlugin implements StoragePlugin {
+  private databases: Map<string, Store> = new Map();
+
+  async open(datasetId: Uint8Array) {
+    const uuid = stringify(datasetId);
+    const store = this.getOrCreateStore(uuid);
+    return new MemoryBackend(store);
+  }
+
+  private getOrCreateStore(datasetId: string) {
+    const existingStore = this.databases.get(datasetId);
+    if (existingStore) return existingStore;
+
+    const store = createStore();
+    this.databases.set(datasetId, store);
+    return store;
+  }
+}
+
+class MemoryBackend implements StorageBackend {
+  private store: Store;
+
+  constructor(store: Store) {
+    this.store = store;
+  }
 
   public createTransaction() {
     return new MemoryTransactionBuilder(this.store);

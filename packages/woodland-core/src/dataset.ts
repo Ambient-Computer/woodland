@@ -1,7 +1,7 @@
 import type { CID } from 'multiformats/cid';
 import { v4 as uuid } from 'uuid';
 import { createHash, assert } from './utils';
-import type { StorageBackend } from './backend/interface';
+import type { StoragePlugin, StorageBackend } from './backend/interface';
 import {
   type GenesisBlock,
   type HistoricalRecord,
@@ -10,6 +10,7 @@ import {
 
 export default class Dataset {
   private backend: StorageBackend;
+  public id: Uint8Array;
 
   /**
    * Generates a new, distinct dataset. It can only be merged with other
@@ -21,19 +22,23 @@ export default class Dataset {
     };
 
     // The UUID would do well enough, but using a CID keeps consistent size.
-    const cid = await createHash(genesis.id);
+    const [cid, backend] = await Promise.all([
+      createHash(genesis.id),
+      config.storage.open(genesis.id),
+    ]);
 
-    await config.backend
+    await backend
       .createTransaction()
       .addTimelineRecord(cid, genesis)
       .appendToHistory(createLocalChangeEvent(cid))
       .commit();
 
-    return new Dataset(config);
+    return new Dataset(genesis.id, backend);
   }
 
-  private constructor(config: Config) {
-    this.backend = config.backend;
+  private constructor(id: Uint8Array, backend: StorageBackend) {
+    this.backend = backend;
+    this.id = id;
   }
 
   // TODO: Force serial execution to avoid issues with the changelog.
@@ -76,7 +81,7 @@ export default class Dataset {
 
 interface Config {
   /** A storage plugin. */
-  backend: StorageBackend;
+  storage: StoragePlugin;
 }
 
 interface InsertResult {

@@ -1,11 +1,15 @@
-import MemoryBackend from '../memory';
+import { v4 as uuid } from 'uuid';
+import MemoryStoragePlugin from '../memory';
 import { createHash } from '../../utils';
 import { HistoricalRecordType, TimelineRecord } from '../../types';
+
+const datasetId = uuid({}, new Uint8Array(16));
 
 describe('MemoryBackend', () => {
   describe('addOperation', () => {
     it('stores the new operation', async () => {
-      const backend = new MemoryBackend();
+      const plugin = new MemoryStoragePlugin();
+      const backend = await plugin.open(datasetId);
       const tsc = backend.createTransaction();
 
       const operation = new Uint8Array([5]);
@@ -24,7 +28,8 @@ describe('MemoryBackend', () => {
 
   describe('appendToHistory', () => {
     it('stores the record sequentially', async () => {
-      const backend = new MemoryBackend();
+      const plugin = new MemoryStoragePlugin();
+      const backend = await plugin.open(datasetId);
       const cid = await createHash(new Uint8Array());
       const record = {
         type: HistoricalRecordType.LocalChange,
@@ -41,7 +46,8 @@ describe('MemoryBackend', () => {
 
   describe('addTimelineRecord', () => {
     it('stores the new timeline record', async () => {
-      const backend = new MemoryBackend();
+      const plugin = new MemoryStoragePlugin();
+      const backend = await plugin.open(datasetId);
       const tsc = backend.createTransaction();
 
       const genesis: TimelineRecord = { id: new Uint8Array([1, 2, 3]) };

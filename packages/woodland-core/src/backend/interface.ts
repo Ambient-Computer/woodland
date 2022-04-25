@@ -14,6 +14,17 @@ import type { HistoricalRecord, TimelineRecord } from '../types';
  * feature set. For this reason, the interface is INTERNAL ONLY until the
  * implementation stabilizes.
  */
+export interface StoragePlugin {
+  /**
+   * Each dataset gets a separate namespace. It doesn't need to be implemented
+   * this way, but it definitely simplifies garbage collection when you can drop
+   * entire databases.
+   *
+   * Note: the ID is a v4 UUID byte array.
+   */
+  open(datasetId: Uint8Array): Promise<StorageBackend>;
+}
+
 export interface StorageBackend {
   /**
    * Group operations into a single transaction. Transactions aren't strictly

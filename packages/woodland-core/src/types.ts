@@ -33,7 +33,7 @@ export enum HistoricalRecordType {
  */
 export interface GenesisBlock {
   /** v4 UUID uniquely identifying the dataset. */
-  id: ArrayBuffer;
+  id: Uint8Array;
 }
 
 /**
