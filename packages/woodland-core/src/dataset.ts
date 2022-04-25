@@ -1,6 +1,6 @@
 import type { CID } from 'multiformats/cid';
 import { v4 as uuid } from 'uuid';
-import { createHash } from './utils';
+import { createHash, assert } from './utils';
 import type { StorageBackend } from './backend/interface';
 import {
   type GenesisBlock,
@@ -36,24 +36,41 @@ export default class Dataset {
     this.backend = config.backend;
   }
 
+  // TODO: Force serial execution to avoid issues with the changelog.
   async insertOperation(operation: ArrayBuffer): Promise<InsertResult> {
-    const cid = await createHash(operation);
+    const [{ timeline: parentId }, operationId] = await Promise.all([
+      this.backend.getMostRecentEvent(),
+      createHash(operation),
+    ]);
 
-    // TODO: Replace this with TL CIDs. This points to an operation.
-    const historicalRecord = createLocalChangeEvent(cid);
+    const [index, timelineId] = await Promise.all([
+      this.computeNextIndex(parentId),
+      createTimelineId(parentId, operationId),
+    ]);
 
-    // TODO: Consider concurrent `insertOperation(...)` merging with history.
-    // Possibly force serial execution.
+    const historicalRecord = createLocalChangeEvent(timelineId);
+    const record = { parentId, predecessorId: null, operationId, index };
+
     await this.backend
       .createTransaction()
-      .addOperation(cid, operation)
+      .addOperation(operationId, operation)
+      .addTimelineRecord(timelineId, record)
       .appendToHistory(historicalRecord)
       .commit();
 
-    return {
-      operationId: cid,
-      historicalRecord,
-    };
+    return { operationId, timelineId, historicalRecord };
+  }
+
+  private async computeNextIndex(recordId: CID): Promise<number> {
+    const record = await this.backend.readTimelineRecord(recordId);
+    assert(record, 'Record does not exist.');
+
+    if ('index' in record) {
+      return record.index + 1;
+    }
+
+    // The parent is a genesis block.
+    return 1;
   }
 }
 
@@ -64,14 +81,25 @@ interface Config {
 
 interface InsertResult {
   operationId: CID;
+  timelineId: CID;
   historicalRecord: HistoricalRecord;
 }
 
-function createLocalChangeEvent(recordId: CID): HistoricalRecord {
+function createLocalChangeEvent(timelineId: CID): HistoricalRecord {
   return {
     type: HistoricalRecordType.LocalChange,
     timestamp: new Date().toISOString(),
-    changeset: [recordId],
-    timeline: recordId,
+    changeset: [timelineId],
+    timeline: timelineId,
   };
+}
+
+// hash(lastRecordId + newOperationId)
+function createTimelineId(lastId: CID, operationId: CID): Promise<CID> {
+  const src = new Uint8Array(lastId.bytes.length + operationId.bytes.length);
+
+  src.set(lastId.bytes, 0);
+  src.set(operationId.bytes, lastId.bytes.byteLength);
+
+  return createHash(src);
 }

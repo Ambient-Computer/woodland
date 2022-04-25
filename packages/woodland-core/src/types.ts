@@ -40,7 +40,7 @@ export interface GenesisBlock {
  * A timeline record links one operation to another forming an event log.
  * Timelines can fork under concurrent edits and sibling branches are ordered
  * deterministically. Each timeline is identified by the hash of it's previous
- * element (older sibling or parent) plus its operation ID:
+ * element (causal predecessor or parent) plus its operation ID:
  *
  *   id = hash((predecessorId || parentId) + this.operationId)
  *

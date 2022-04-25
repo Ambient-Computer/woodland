@@ -33,6 +33,18 @@ describe('Dataset', () => {
       );
     });
 
+    it('generates a new timeline record', async () => {
+      const { backend, dataset } = await setup();
+
+      const { timelineId, operationId } = await dataset.insertOperation(
+        new Uint8Array(3),
+      );
+
+      await expect(
+        backend.readTimelineRecord(timelineId),
+      ).resolves.toMatchObject({ operationId, index: 1 });
+    });
+
     it('appends to the changelog', async () => {
       const { dataset } = await setup();
 
