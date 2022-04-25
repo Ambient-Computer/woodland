@@ -1,4 +1,5 @@
 import type { CID } from 'multiformats/cid';
+import { HistoricalRecord } from '../types';
 
 /**
  * Storage plugins provide a facade over several databases:
@@ -22,11 +23,17 @@ export interface StorageBackend {
 
   /** Return the operation according to its CID. */
   readOperation(id: CID): Promise<null | ArrayBuffer>;
+
+  /** Returns the last record added to the changelog. */
+  getMostRecentEvent(): Promise<HistoricalRecord>;
 }
 
 export interface TransactionBuilder {
   /** Idempotently add the operation to the operations table. */
-  addOperation(id: CID, operation: ArrayBuffer): void;
+  addOperation(id: CID, operation: ArrayBuffer): TransactionBuilder;
+
+  /** Record a change. */
+  appendToHistory(record: HistoricalRecord): TransactionBuilder;
 
   /** Apply all changes simultaneously. */
   commit(): Promise<void>;

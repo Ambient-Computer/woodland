@@ -1,4 +1,5 @@
 import type { StorageBackend } from './backend/interface';
+import { type HistoricalRecord, HistoricalRecordType } from './types';
 import createHash, { type CID } from './hash';
 
 export default class Dataset {
@@ -12,14 +13,29 @@ export default class Dataset {
     this.backend = config.backend;
   }
 
-  async insertOperation(value: ArrayBuffer): Promise<InsertResult> {
-    const cid = await createHash(value);
-    const tsc = this.backend.createTransaction();
-    tsc.addOperation(cid, value);
+  async insertOperation(operation: ArrayBuffer): Promise<InsertResult> {
+    const cid = await createHash(operation);
+    const historicalRecord: HistoricalRecord = {
+      type: HistoricalRecordType.LocalChange,
+      timestamp: new Date().toISOString(),
 
-    await tsc.commit();
+      // TODO: Replace these with TL CIDs. This points to an operation.
+      changeset: [cid],
+      timeline: cid,
+    };
 
-    return { id: cid };
+    // TODO: Consider concurrent `insertOperation(...)` merging with history.
+    // Possibly force serial execution.
+    await this.backend
+      .createTransaction()
+      .addOperation(cid, operation)
+      .appendToHistory(historicalRecord)
+      .commit();
+
+    return {
+      operationId: cid,
+      historicalRecord,
+    };
   }
 }
 
@@ -29,5 +45,6 @@ interface Config {
 }
 
 interface InsertResult {
-  id: CID;
+  operationId: CID;
+  historicalRecord: HistoricalRecord;
 }
