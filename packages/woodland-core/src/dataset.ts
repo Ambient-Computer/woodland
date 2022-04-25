@@ -1,12 +1,34 @@
 import type { CID } from 'multiformats/cid';
-import type { StorageBackend } from './backend/interface';
-import { type HistoricalRecord, HistoricalRecordType } from './types';
+import { v4 as uuid } from 'uuid';
 import { createHash } from './utils';
+import type { StorageBackend } from './backend/interface';
+import {
+  type GenesisBlock,
+  type HistoricalRecord,
+  HistoricalRecordType,
+} from './types';
 
 export default class Dataset {
   private backend: StorageBackend;
 
+  /**
+   * Generates a new, distinct dataset. It can only be merged with other
+   * datasets that share a common history.
+   */
   static async create(config: Config): Promise<Dataset> {
+    const genesis: GenesisBlock = {
+      id: uuid({}, new Uint8Array(16)),
+    };
+
+    // The UUID would do well enough, but using a CID keeps consistent size.
+    const cid = await createHash(genesis.id);
+
+    await config.backend
+      .createTransaction()
+      .addTimelineRecord(cid, genesis)
+      .appendToHistory(createLocalChangeEvent(cid))
+      .commit();
+
     return new Dataset(config);
   }
 
@@ -16,14 +38,9 @@ export default class Dataset {
 
   async insertOperation(operation: ArrayBuffer): Promise<InsertResult> {
     const cid = await createHash(operation);
-    const historicalRecord: HistoricalRecord = {
-      type: HistoricalRecordType.LocalChange,
-      timestamp: new Date().toISOString(),
 
-      // TODO: Replace these with TL CIDs. This points to an operation.
-      changeset: [cid],
-      timeline: cid,
-    };
+    // TODO: Replace this with TL CIDs. This points to an operation.
+    const historicalRecord = createLocalChangeEvent(cid);
 
     // TODO: Consider concurrent `insertOperation(...)` merging with history.
     // Possibly force serial execution.
@@ -48,4 +65,13 @@ interface Config {
 interface InsertResult {
   operationId: CID;
   historicalRecord: HistoricalRecord;
+}
+
+function createLocalChangeEvent(recordId: CID): HistoricalRecord {
+  return {
+    type: HistoricalRecordType.LocalChange,
+    timestamp: new Date().toISOString(),
+    changeset: [recordId],
+    timeline: recordId,
+  };
 }

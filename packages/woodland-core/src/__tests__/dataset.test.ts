@@ -14,7 +14,9 @@ describe('Dataset', () => {
 
   describe('create', () => {
     it('initializes a dataset', async () => {
-      await expect(setup()).resolves.not.toThrow();
+      const { backend } = await setup();
+
+      await expect(backend.getMostRecentEvent()).resolves.toBeDefined();
     });
   });
 

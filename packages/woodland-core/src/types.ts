@@ -23,3 +23,43 @@ export enum HistoricalRecordType {
   /** An operation was created locally. */
   LocalChange = 1,
 }
+
+/* ===== TIMELINES ===== */
+
+/**
+ * This has nothing to do with blockchains, it's just a very apt name. This is
+ * the root element of every timeline in the dataset. The record's hash is
+ * generated from it's UUID.
+ */
+export interface GenesisBlock {
+  /** v4 UUID uniquely identifying the dataset. */
+  id: ArrayBuffer;
+}
+
+/**
+ * A timeline record links one operation to another forming an event log.
+ * Timelines can fork under concurrent edits and sibling branches are ordered
+ * deterministically. Each timeline is identified by the hash of it's previous
+ * element (older sibling or parent) plus its operation ID:
+ *
+ *   id = hash((predecessorId || parentId) + this.operationId)
+ *
+ * This means the entire timeline is content-addressed, preventing cycles and
+ * preserving edit history, as integrating older operations necessitates
+ * immutably regenerating the records that follow.
+ */
+export interface TimelineBlock {
+  /** The latest timeline record known while generating this one. */
+  parentId: CID;
+
+  /** The concurrent edit which preceeded this one (added on regeneration). */
+  predecessorId: null | CID;
+
+  /** The newly added operation. */
+  operationId: CID;
+
+  /** An incrementing number. Useful for reporting and periodic snapshots. */
+  index: number;
+}
+
+export type TimelineRecord = GenesisBlock | TimelineBlock;

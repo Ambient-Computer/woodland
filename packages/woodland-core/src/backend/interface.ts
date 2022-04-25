@@ -1,5 +1,5 @@
 import type { CID } from 'multiformats/cid';
-import { HistoricalRecord } from '../types';
+import type { HistoricalRecord, TimelineRecord } from '../types';
 
 /**
  * Storage plugins provide a facade over several databases:
@@ -24,13 +24,19 @@ export interface StorageBackend {
   /** Return the operation according to its CID. */
   readOperation(id: CID): Promise<null | ArrayBuffer>;
 
+  /** Return the timeline record according to its CID. */
+  readTimelineRecord(id: CID): Promise<null | TimelineRecord>;
+
   /** Returns the last record added to the changelog. */
   getMostRecentEvent(): Promise<HistoricalRecord>;
 }
 
 export interface TransactionBuilder {
-  /** Idempotently add the operation to the operations table. */
+  /** Idempotently add the operation to the operations database. */
   addOperation(id: CID, operation: ArrayBuffer): TransactionBuilder;
+
+  /** Idempotently add the record to the timeline database. */
+  addTimelineRecord(id: CID, record: TimelineRecord): TransactionBuilder;
 
   /** Record a change. */
   appendToHistory(record: HistoricalRecord): TransactionBuilder;

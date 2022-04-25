@@ -1,6 +1,6 @@
 import type { CID } from 'multiformats/cid';
 import type { StorageBackend, TransactionBuilder } from './interface';
-import type { HistoricalRecord } from '../types';
+import type { HistoricalRecord, TimelineRecord } from '../types';
 import { assert } from '../utils';
 
 export default class MemoryBackend implements StorageBackend {
@@ -10,8 +10,12 @@ export default class MemoryBackend implements StorageBackend {
     return new MemoryTransactionBuilder(this.store);
   }
 
-  public async readOperation(id: CID): Promise<null | ArrayBuffer> {
+  public async readOperation(id: CID) {
     return this.store.operations.get(id.toString()) || null;
+  }
+
+  public async readTimelineRecord(id: CID) {
+    return this.store.timelines.get(id.toString()) || null;
   }
 
   public async getMostRecentEvent(): Promise<HistoricalRecord> {
@@ -35,6 +39,11 @@ class MemoryTransactionBuilder implements TransactionBuilder {
     return this;
   }
 
+  public addTimelineRecord(id: CID, record: TimelineRecord) {
+    this.pending.timelines.set(id.toString(), record);
+    return this;
+  }
+
   public appendToHistory(record: HistoricalRecord) {
     this.pending.history.push(record);
     return this;
@@ -42,8 +51,13 @@ class MemoryTransactionBuilder implements TransactionBuilder {
 
   public async commit() {
     // Apply all the operations.
-    for (const [key, value] of this.pending.operations) {
-      this.store.operations.set(key, value);
+    for (const [key, operation] of this.pending.operations) {
+      this.store.operations.set(key, operation);
+    }
+
+    // Apply all the timelines.
+    for (const [key, record] of this.pending.timelines) {
+      this.store.timelines.set(key, record);
     }
 
     this.store.history.push(...this.pending.history);
@@ -53,11 +67,13 @@ class MemoryTransactionBuilder implements TransactionBuilder {
 function createStore(): Store {
   return {
     operations: new Map(),
+    timelines: new Map(),
     history: [],
   };
 }
 
 interface Store {
   operations: Map<string, ArrayBuffer>;
+  timelines: Map<string, TimelineRecord>;
   history: Array<HistoricalRecord>;
 }
