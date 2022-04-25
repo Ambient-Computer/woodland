@@ -10,6 +10,8 @@ import {
 
 export default class Dataset {
   private backend: StorageBackend;
+
+  /** A unique, persistent UUID which globally identifies the dataset. */
   public id: Uint8Array;
 
   /**
@@ -34,6 +36,24 @@ export default class Dataset {
       .commit();
 
     return new Dataset(genesis.id, backend);
+  }
+
+  /**
+   * Load an existing dataset. Don't open more than one instance of a single
+   * dataset. Unexpected things may happen.
+   */
+  static async open(datasetId: Uint8Array, config: Config): Promise<Dataset> {
+    const [backend, genesisId] = await Promise.all([
+      config.storage.open(datasetId),
+      createHash(datasetId),
+    ]);
+
+    assert(
+      await backend.readTimelineRecord(genesisId),
+      'Dataset does not exist.',
+    );
+
+    return new Dataset(datasetId, backend);
   }
 
   private constructor(id: Uint8Array, backend: StorageBackend) {

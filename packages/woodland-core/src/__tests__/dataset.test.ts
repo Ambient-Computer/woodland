@@ -1,3 +1,4 @@
+import { v4 as uuid } from 'uuid';
 import Dataset from '../dataset';
 import MemoryBackend from '../backend/memory';
 import { HistoricalRecordType } from '../types';
@@ -9,6 +10,7 @@ describe('Dataset', () => {
     return {
       backend: await storage.open(dataset.id),
       dataset,
+      storage,
     };
   }
 
@@ -17,6 +19,23 @@ describe('Dataset', () => {
       const { backend } = await setup();
 
       await expect(backend.getMostRecentEvent()).resolves.toBeDefined();
+    });
+  });
+
+  describe('open', () => {
+    it('rejects if the dataset does not exist', async () => {
+      const storage = new MemoryBackend();
+      const id = uuid({}, new Uint8Array(16));
+      const promise = Dataset.open(id, { storage });
+
+      await expect(promise).rejects.toThrow(/Dataset does not exist/);
+    });
+
+    it('loads existing datasets', async () => {
+      const { storage, dataset } = await setup();
+
+      const promise = Dataset.open(dataset.id, { storage });
+      await expect(promise).resolves.not.toThrow();
     });
   });
 
