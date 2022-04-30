@@ -31,7 +31,7 @@ export default class Dataset {
 
     await backend
       .createTransaction()
-      .addTimelineRecord(cid, genesis)
+      .addTransaction(cid, genesis)
       .appendToHistory(createLocalChangeEvent(cid))
       .commit();
 
@@ -48,10 +48,7 @@ export default class Dataset {
       createHash(datasetId),
     ]);
 
-    assert(
-      await backend.readTimelineRecord(genesisId),
-      'Dataset does not exist.',
-    );
+    assert(await backend.readTransaction(genesisId), 'Dataset does not exist.');
 
     return new Dataset(datasetId, backend);
   }
@@ -63,31 +60,31 @@ export default class Dataset {
 
   // TODO: Force serial execution to avoid issues with the changelog.
   async insertOperation(operation: ArrayBuffer): Promise<InsertResult> {
-    const [{ timeline: parentId }, operationId] = await Promise.all([
+    const [{ head: parentId }, operationId] = await Promise.all([
       this.backend.getMostRecentEvent(),
       createHash(operation),
     ]);
 
-    const [index, timelineId] = await Promise.all([
+    const [index, transactionId] = await Promise.all([
       this.computeNextIndex(parentId),
-      createTimelineId(parentId, operationId),
+      createTransactionId(parentId, operationId),
     ]);
 
-    const historicalRecord = createLocalChangeEvent(timelineId);
+    const historicalRecord = createLocalChangeEvent(transactionId);
     const record = { parentId, predecessorId: null, operationId, index };
 
     await this.backend
       .createTransaction()
       .addOperation(operationId, operation)
-      .addTimelineRecord(timelineId, record)
+      .addTransaction(transactionId, record)
       .appendToHistory(historicalRecord)
       .commit();
 
-    return { operationId, timelineId, historicalRecord };
+    return { operationId, transactionId, historicalRecord };
   }
 
   private async computeNextIndex(recordId: CID): Promise<number> {
-    const record = await this.backend.readTimelineRecord(recordId);
+    const record = await this.backend.readTransaction(recordId);
     assert(record, 'Record does not exist.');
 
     if ('index' in record) {
@@ -106,21 +103,21 @@ interface Config {
 
 interface InsertResult {
   operationId: CID;
-  timelineId: CID;
+  transactionId: CID;
   historicalRecord: HistoricalRecord;
 }
 
-function createLocalChangeEvent(timelineId: CID): HistoricalRecord {
+function createLocalChangeEvent(transactionId: CID): HistoricalRecord {
   return {
     type: HistoricalRecordType.LocalChange,
     timestamp: new Date().toISOString(),
-    changeset: [timelineId],
-    timeline: timelineId,
+    changeset: [transactionId],
+    head: transactionId,
   };
 }
 
 // hash(lastRecordId + newOperationId)
-function createTimelineId(lastId: CID, operationId: CID): Promise<CID> {
+function createTransactionId(lastId: CID, operationId: CID): Promise<CID> {
   const src = new Uint8Array(lastId.bytes.length + operationId.bytes.length);
 
   src.set(lastId.bytes, 0);

@@ -5,7 +5,7 @@ import type {
   StorageBackend,
   TransactionBuilder,
 } from './interface';
-import type { HistoricalRecord, TimelineRecord } from '../types';
+import type { HistoricalRecord, Transaction } from '../types';
 import { assert } from '../utils';
 
 export default class MemoryStoragePlugin implements StoragePlugin {
@@ -42,8 +42,8 @@ class MemoryBackend implements StorageBackend {
     return this.store.operations.get(id.toString()) || null;
   }
 
-  public async readTimelineRecord(id: CID) {
-    return this.store.timelines.get(id.toString()) || null;
+  public async readTransaction(id: CID) {
+    return this.store.transactions.get(id.toString()) || null;
   }
 
   public async getMostRecentEvent(): Promise<HistoricalRecord> {
@@ -67,8 +67,8 @@ class MemoryTransactionBuilder implements TransactionBuilder {
     return this;
   }
 
-  public addTimelineRecord(id: CID, record: TimelineRecord) {
-    this.pending.timelines.set(id.toString(), record);
+  public addTransaction(id: CID, record: Transaction) {
+    this.pending.transactions.set(id.toString(), record);
     return this;
   }
 
@@ -83,9 +83,9 @@ class MemoryTransactionBuilder implements TransactionBuilder {
       this.store.operations.set(key, operation);
     }
 
-    // Apply all the timelines.
-    for (const [key, record] of this.pending.timelines) {
-      this.store.timelines.set(key, record);
+    // Apply all the transactions.
+    for (const [key, record] of this.pending.transactions) {
+      this.store.transactions.set(key, record);
     }
 
     this.store.history.push(...this.pending.history);
@@ -95,13 +95,13 @@ class MemoryTransactionBuilder implements TransactionBuilder {
 function createStore(): Store {
   return {
     operations: new Map(),
-    timelines: new Map(),
+    transactions: new Map(),
     history: [],
   };
 }
 
 interface Store {
   operations: Map<string, ArrayBuffer>;
-  timelines: Map<string, TimelineRecord>;
+  transactions: Map<string, Transaction>;
   history: Array<HistoricalRecord>;
 }

@@ -1,7 +1,7 @@
 import { v4 as uuid } from 'uuid';
 import MemoryStoragePlugin from '../memory';
 import { createHash } from '../../utils';
-import { HistoricalRecordType, TimelineRecord } from '../../types';
+import { HistoricalRecordType, type Transaction } from '../../types';
 
 const datasetId = uuid({}, new Uint8Array(16));
 
@@ -35,7 +35,7 @@ describe('MemoryBackend', () => {
         type: HistoricalRecordType.LocalChange,
         timestamp: new Date().toISOString(),
         changeset: [cid],
-        timeline: cid,
+        head: cid,
       };
 
       await backend.createTransaction().appendToHistory(record).commit();
@@ -44,21 +44,21 @@ describe('MemoryBackend', () => {
     });
   });
 
-  describe('addTimelineRecord', () => {
-    it('stores the new timeline record', async () => {
+  describe('addTransaction', () => {
+    it('stores the new transaction', async () => {
       const plugin = new MemoryStoragePlugin();
       const backend = await plugin.open(datasetId);
       const tsc = backend.createTransaction();
 
-      const genesis: TimelineRecord = { id: new Uint8Array([1, 2, 3]) };
+      const genesis: Transaction = { id: new Uint8Array([1, 2, 3]) };
       const cid = await createHash(genesis.id);
 
       // Pending, but not applied.
-      tsc.addTimelineRecord(cid, genesis);
-      await expect(backend.readTimelineRecord(cid)).resolves.toBeNull();
+      tsc.addTransaction(cid, genesis);
+      await expect(backend.readTransaction(cid)).resolves.toBeNull();
 
       await tsc.commit();
-      await expect(backend.readTimelineRecord(cid)).resolves.toEqual(genesis);
+      await expect(backend.readTransaction(cid)).resolves.toEqual(genesis);
     });
   });
 });

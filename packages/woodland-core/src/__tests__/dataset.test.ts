@@ -52,16 +52,19 @@ describe('Dataset', () => {
       );
     });
 
-    it('generates a new timeline record', async () => {
+    it('generates a new transaction', async () => {
       const { backend, dataset } = await setup();
 
-      const { timelineId, operationId } = await dataset.insertOperation(
+      const { transactionId, operationId } = await dataset.insertOperation(
         new Uint8Array(3),
       );
 
       await expect(
-        backend.readTimelineRecord(timelineId),
-      ).resolves.toMatchObject({ operationId, index: 1 });
+        backend.readTransaction(transactionId),
+      ).resolves.toMatchObject({
+        operationId,
+        index: 1,
+      });
     });
 
     it('appends to the changelog', async () => {

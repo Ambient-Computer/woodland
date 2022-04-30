@@ -9,11 +9,11 @@ export interface HistoricalRecord {
   /** ISO-8601 when the event occurred. Informational only. */
   timestamp: string;
 
-  /** A list of newly-integrated timeline record IDs. */
+  /** A list of newly-integrated transaction IDs. */
   changeset: Array<CID>;
 
-  /** The newest timeline as of this change. */
-  timeline: CID;
+  /** The newest transaction as of this change. */
+  head: CID;
 }
 
 export enum HistoricalRecordType {
@@ -24,11 +24,11 @@ export enum HistoricalRecordType {
   LocalChange = 1,
 }
 
-/* ===== TIMELINES ===== */
+/* ===== TRANSACTIONS ===== */
 
 /**
  * This has nothing to do with blockchains, it's just a very apt name. This is
- * the root element of every timeline in the dataset. The record's hash is
+ * the root element of every transaction in the dataset. The record's hash is
  * generated from it's UUID.
  */
 export interface GenesisBlock {
@@ -37,19 +37,19 @@ export interface GenesisBlock {
 }
 
 /**
- * A timeline record links one operation to another forming an event log.
- * Timelines can fork under concurrent edits and sibling branches are ordered
- * deterministically. Each timeline is identified by the hash of it's previous
- * element (causal predecessor or parent) plus its operation ID:
+ * A transaction links one operation to another forming an event log.
+ * Transactions can fork under concurrent edits and sibling branches are
+ * ordered deterministically. Each transaction is identified by the hash of
+ * it's previous element (causal predecessor or parent) plus its operation ID:
  *
  *   id = hash((predecessorId || parentId) + this.operationId)
  *
- * This means the entire timeline is content-addressed, preventing cycles and
- * preserving edit history, as integrating older operations necessitates
+ * This means the entire transaction is content-addressed, preventing cycles
+ * and preserving edit history, as integrating older operations necessitates
  * immutably regenerating the records that follow.
  */
-export interface TimelineBlock {
-  /** The latest timeline record known while generating this one. */
+export interface Record {
+  /** The latest transaction known while generating this one. */
   parentId: CID;
 
   /** The concurrent edit which preceeded this one (added on regeneration). */
@@ -62,4 +62,4 @@ export interface TimelineBlock {
   index: number;
 }
 
-export type TimelineRecord = GenesisBlock | TimelineBlock;
+export type Transaction = GenesisBlock | Record;
