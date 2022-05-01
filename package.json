@@ -9,9 +9,9 @@
   "type": "module",
   "scripts": {
     "test": "./bin/run-tests",
-    "test:unit": "jest --passWithNoTests",
-    "test:lint": "eslint packages",
-    "test:fmt": "prettier --check packages"
+    "test:unit": "jest --passWithNoTests --color",
+    "test:lint": "eslint packages --color",
+    "test:fmt": "prettier --check packages --color"
   },
   "workspaces": [
     "packages/*"
