@@ -31,15 +31,16 @@ import type { Transaction } from '../types';
  */
 export interface Message {
   /** A reply to the actor that provided the new transactions. */
-  reply: Instruction;
+  reply: AnyInstruction;
 
   /** A broadcast for everyone else. */
-  broadcast: Instruction;
+  broadcast: AnyInstruction;
 }
 
-export interface Instruction {
-  type: InstructionType;
-}
+export type Instruction<Type extends InstructionType> =
+  Instructions[Type] extends void
+    ? { type: Type }
+    : Instructions[Type] & { type: Type };
 
 export enum InstructionType {
   /** The sequence is done. No need to send a reply. */
@@ -58,10 +59,15 @@ export enum InstructionType {
   ReceiveAncestors = 3,
 }
 
-export namespace Instruction {
-  export interface Integrate extends Instruction {
-    type: InstructionType.Integrate;
+// This will not work: Instruction<InstructionType>
+// It produces an intersection type, not a union.
+type AnyInstruction = {
+  [Type in InstructionType]: Instruction<Type>;
+}[InstructionType];
 
+export interface Instructions {
+  [InstructionType.Quit]: void;
+  [InstructionType.Integrate]: {
     /**
      * Latest checksum known to the dataset. Note: If we're paginating, the
      * transaction set might still be thousands of operations behind `head`.
@@ -79,21 +85,17 @@ export namespace Instruction {
      * should be verified before saving anything.
      */
     operations: Map<CID, ArrayBuffer>;
-  }
+  };
 
-  export interface FindCommonAncestor extends Instruction {
-    type: InstructionType.FindCommonAncestor;
-
+  [InstructionType.FindCommonAncestor]: {
     /** The transaction to start searching backwards from. */
     cursor: CID;
 
     /** The starting scan exponent (useful for resuming scans). */
     stepSize: number;
-  }
+  };
 
-  export interface ReceiveAncestors extends Instruction {
-    type: InstructionType.ReceiveAncestors;
-
+  [InstructionType.ReceiveAncestors]: {
     /**
      * An ordered list of non-sequential transactions spaced by increasing
      * distance. Use this to find the closest common ancestor and start
@@ -106,5 +108,5 @@ export namespace Instruction {
      * if a refinement is necessary.
      */
     stepSize: number;
-  }
+  };
 }
