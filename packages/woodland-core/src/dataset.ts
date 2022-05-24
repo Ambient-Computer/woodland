@@ -3,6 +3,11 @@ import { v4 as uuid } from 'uuid';
 import { createHash, assert } from './utils';
 import type { StoragePlugin, StorageBackend } from './backend/interface';
 import {
+  type Instruction,
+  type Message,
+  InstructionType,
+} from './replication/interface';
+import {
   type GenesisBlock,
   type HistoricalRecord,
   HistoricalRecordType,
@@ -58,7 +63,6 @@ export default class Dataset {
     this.id = id;
   }
 
-  // TODO: Force serial execution to avoid issues with the changelog.
   async insertOperation(operation: ArrayBuffer): Promise<InsertResult> {
     const [{ head: parentId }, operationId] = await Promise.all([
       this.backend.getMostRecentEvent(),
@@ -83,6 +87,21 @@ export default class Dataset {
     return { operationId, transactionId, historicalRecord };
   }
 
+  /** Receive and process an instruction from a remote dataset. */
+  async execute<Type extends InstructionType>(
+    instruction: Instruction<Type>,
+  ): Promise<Message> {
+    if (instruction?.type && this.handlers.hasOwnProperty(instruction.type)) {
+      return this.handlers[instruction.type](instruction);
+    }
+
+    // Invalid message.
+    return {
+      reply: { type: InstructionType.Quit },
+      broadcast: { type: InstructionType.Quit },
+    };
+  }
+
   private async computeNextIndex(recordId: CID): Promise<number> {
     const record = await this.backend.readTransaction(recordId);
     assert(record, 'Record does not exist.');
@@ -94,6 +113,25 @@ export default class Dataset {
     // The parent is a genesis block.
     return 1;
   }
+
+  private handlers: InstructionHandlers = {
+    [InstructionType.Quit]: () => ({
+      reply: { type: InstructionType.Quit },
+      broadcast: { type: InstructionType.Quit },
+    }),
+    [InstructionType.Integrate]: () => ({
+      reply: { type: InstructionType.Quit },
+      broadcast: { type: InstructionType.Quit },
+    }),
+    [InstructionType.FindCommonAncestor]: () => ({
+      reply: { type: InstructionType.Quit },
+      broadcast: { type: InstructionType.Quit },
+    }),
+    [InstructionType.ReceiveAncestors]: () => ({
+      reply: { type: InstructionType.Quit },
+      broadcast: { type: InstructionType.Quit },
+    }),
+  };
 }
 
 interface Config {
@@ -106,6 +144,10 @@ interface InsertResult {
   transactionId: CID;
   historicalRecord: HistoricalRecord;
 }
+
+type InstructionHandlers = {
+  [Type in InstructionType]: (instruction: Instruction<Type>) => Message;
+};
 
 function createLocalChangeEvent(transactionId: CID): HistoricalRecord {
   return {

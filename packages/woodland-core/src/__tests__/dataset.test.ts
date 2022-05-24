@@ -2,6 +2,7 @@ import { v4 as uuid } from 'uuid';
 import Dataset from '../dataset';
 import MemoryBackend from '../backend/memory';
 import { HistoricalRecordType } from '../types';
+import { InstructionType, type Message } from '../replication/interface';
 
 describe('Dataset', () => {
   async function setup() {
@@ -77,6 +78,34 @@ describe('Dataset', () => {
       expect(historicalRecord).toMatchObject({
         type: HistoricalRecordType.LocalChange,
         // TODO: Verify TL record CIDs once this is implemented.
+      });
+    });
+  });
+
+  describe('replication', () => {
+    it('does nothing when given the `Quit` command', async () => {
+      const { dataset } = await setup();
+
+      const promise = dataset.execute({
+        type: InstructionType.Quit,
+      });
+
+      await expect(promise).resolves.toEqual<Message>({
+        reply: { type: InstructionType.Quit },
+        broadcast: { type: InstructionType.Quit },
+      });
+    });
+
+    it('does not fall to prototype trickery', async () => {
+      const { dataset } = await setup();
+
+      const promise = dataset.execute({
+        type: 'toString' as any,
+      });
+
+      await expect(promise).resolves.toEqual<Message>({
+        reply: { type: InstructionType.Quit },
+        broadcast: { type: InstructionType.Quit },
       });
     });
   });
