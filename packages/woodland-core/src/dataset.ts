@@ -20,7 +20,7 @@ export default class Dataset {
 
   /** Load an existing dataset. */
   static async open(datasetId: Uint8Array, config: Config): Promise<Dataset> {
-    const { controller } = await BackendController.openDataset({
+    const controller = await BackendController.openDataset({
       storage: config.storage,
       datasetId,
     });

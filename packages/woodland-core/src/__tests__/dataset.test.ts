@@ -20,7 +20,11 @@ describe('Dataset', () => {
     it('initializes a dataset', async () => {
       const { backend } = await setup();
 
-      await expect(backend.getMostRecentEvent()).resolves.toBeDefined();
+      await backend.createTransaction(async (stores) => {
+        await expect(
+          stores.history.getMostRecentEvent(),
+        ).resolves.toBeDefined();
+      });
     });
   });
 
@@ -49,9 +53,11 @@ describe('Dataset', () => {
         new Uint8Array([8]),
       );
 
-      await expect(backend.readOperation(operationId)).resolves.toEqual(
-        new Uint8Array([8]),
-      );
+      await backend.createTransaction(async (stores) => {
+        await expect(stores.operations.get(operationId)).resolves.toEqual(
+          new Uint8Array([8]),
+        );
+      });
     });
 
     it('generates a new transaction', async () => {
@@ -61,11 +67,13 @@ describe('Dataset', () => {
         new Uint8Array(3),
       );
 
-      await expect(
-        backend.readTransaction(transactionId),
-      ).resolves.toMatchObject({
-        operationId,
-        index: 1,
+      await backend.createTransaction(async (stores) => {
+        await expect(
+          stores.transactions.get(transactionId),
+        ).resolves.toMatchObject({
+          operationId,
+          index: 1,
+        });
       });
     });
 

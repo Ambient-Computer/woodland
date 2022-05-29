@@ -3,7 +3,6 @@ import { stringify } from 'uuid';
 import type {
   StoragePlugin,
   StorageBackend,
-  TransactionBuilder,
   TransactionRunner,
   ObjectStore,
   ObjectStores,
@@ -34,67 +33,33 @@ export default class MemoryStoragePlugin implements StoragePlugin {
 class MemoryBackend implements StorageBackend {
   constructor(private store: Store) {}
 
-  public createTransaction() {
-    return new MemoryTransactionBuilder(this.store);
-  }
+  public async createTransaction<T>(runner: TransactionRunner<T>) {
+    const pending = createStore();
+    const stores = new MemoryTransactionBuilder(pending, this.store);
 
-  public async createWritableTransaction<T>(runner: TransactionRunner<T>) {
-    const builder = new MemoryTransactionBuilder(this.store);
-    const result = await runner(builder);
-    builder.commit();
+    const result: T = await runner(stores);
+    this.commit(pending);
 
     return result;
   }
 
-  public async readOperation(id: CID) {
-    return this.store.operations.get(id.toString()) || null;
-  }
-
-  public async readTransaction(id: CID) {
-    return this.store.transactions.get(id.toString()) || null;
-  }
-
-  public async getMostRecentEvent(): Promise<HistoricalRecord> {
-    const record = this.store.history[this.store.history.length - 1];
-    assert(record, 'History is empty. This should never happen.');
-
-    return record;
-  }
-}
-
-class MemoryTransactionBuilder implements TransactionBuilder, ObjectStores {
-  private pending = createStore();
-
-  constructor(private store: Store) {}
-
-  public addOperation(id: CID, operation: ArrayBuffer) {
-    this.pending.operations.set(id.toString(), operation);
-    return this;
-  }
-
-  public addTransaction(id: CID, record: Transaction) {
-    this.pending.transactions.set(id.toString(), record);
-    return this;
-  }
-
-  public appendToHistory(record: HistoricalRecord) {
-    this.pending.history.push(record);
-    return this;
-  }
-
-  public async commit() {
+  public async commit(pending: Store) {
     // Apply all the operations.
-    for (const [key, operation] of this.pending.operations) {
+    for (const [key, operation] of pending.operations) {
       this.store.operations.set(key, operation);
     }
 
     // Apply all the transactions.
-    for (const [key, record] of this.pending.transactions) {
+    for (const [key, record] of pending.transactions) {
       this.store.transactions.set(key, record);
     }
 
-    this.store.history.push(...this.pending.history);
+    this.store.history.push(...pending.history);
   }
+}
+
+class MemoryTransactionBuilder implements ObjectStores {
+  constructor(private pending: Store, private store: Store) {}
 
   public operations = new MemoryObjectStore<ArrayBuffer>(
     this.pending.operations,

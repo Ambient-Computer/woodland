@@ -2,7 +2,11 @@ import type { CID } from 'multiformats/cid';
 import { v4 as uuid } from 'uuid';
 import assert from 'assert';
 import createHash from './utils/hash';
-import type { StorageBackend, StoragePlugin } from './backend/interface';
+import type {
+  StorageBackend,
+  StoragePlugin,
+  ObjectStores,
+} from './backend/interface';
 import type { GenesisBlock, HistoricalRecord } from './types';
 import { HistoricalRecordType } from './types';
 
@@ -20,24 +24,19 @@ export default class BackendController {
     };
 
     // The UUID would do well enough, but using a CID keeps consistent size.
-    const [cid, storageBackend] = await Promise.all([
+    const [cid, backend] = await Promise.all([
       createHash(genesis.id),
       storage.open(genesis.id),
     ]);
 
-    await storageBackend
-      .createTransaction()
-      .addTransaction(cid, genesis)
-      .appendToHistory(createLocalChangeEvent(cid))
-      .commit();
+    await backend.createTransaction(async (stores) => {
+      stores.transactions.put(cid, genesis);
+      stores.history.append(createLocalChangeEvent(cid));
+    });
 
     return {
-      controller: new BackendController(storageBackend),
+      controller: new BackendController(backend),
       genesis,
-
-      // TODO: Remove this when the backend controller fully supplants
-      // imperative controls.
-      backend: storageBackend,
     };
   }
 
@@ -55,45 +54,46 @@ export default class BackendController {
       createHash(config.datasetId),
     ]);
 
-    assert(await backend.readTransaction(genesisId), 'Dataset does not exist.');
+    return backend.createTransaction(async (stores) => {
+      assert(
+        await stores.transactions.get(genesisId),
+        'Dataset does not exist.',
+      );
 
-    return {
-      controller: new BackendController(backend),
-
-      // TODO: Remove when the controller supplants imperative storage
-      // operations.
-      backend,
-    };
+      return new BackendController(backend);
+    });
   }
 
   private constructor(private backend: StorageBackend) {}
 
   async insertOperation(operation: ArrayBuffer): Promise<InsertResult> {
-    const [{ head: parentId }, operationId] = await Promise.all([
-      this.backend.getMostRecentEvent(),
-      createHash(operation),
-    ]);
+    return this.backend.createTransaction(async (stores) => {
+      const [{ head: parentId }, operationId] = await Promise.all([
+        stores.history.getMostRecentEvent(),
+        createHash(operation),
+      ]);
 
-    const [index, transactionId] = await Promise.all([
-      this.computeNextIndex(parentId),
-      createTransactionId(parentId, operationId),
-    ]);
+      const [index, transactionId] = await Promise.all([
+        this.computeNextIndex(parentId, stores),
+        createTransactionId(parentId, operationId),
+      ]);
 
-    const historicalRecord = createLocalChangeEvent(transactionId);
-    const record = { parentId, predecessorId: null, operationId, index };
+      const historicalRecord = createLocalChangeEvent(transactionId);
+      const record = { parentId, predecessorId: null, operationId, index };
 
-    await this.backend
-      .createTransaction()
-      .addOperation(operationId, operation)
-      .addTransaction(transactionId, record)
-      .appendToHistory(historicalRecord)
-      .commit();
+      stores.operations.put(operationId, operation);
+      stores.transactions.put(transactionId, record);
+      stores.history.append(historicalRecord);
 
-    return { operationId, transactionId, historicalRecord };
+      return { operationId, transactionId, historicalRecord };
+    });
   }
 
-  private async computeNextIndex(recordId: CID): Promise<number> {
-    const record = await this.backend.readTransaction(recordId);
+  private async computeNextIndex(
+    recordId: CID,
+    stores: ObjectStores,
+  ): Promise<number> {
+    const record = await stores.transactions.get(recordId);
     assert(record, 'Record does not exist.');
 
     if ('index' in record) {

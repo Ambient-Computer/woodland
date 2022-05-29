@@ -46,9 +46,7 @@ describe('BackendController', () => {
         storage,
       });
 
-      await expect(promise).resolves.toMatchObject({
-        controller: expect.any(BackendController),
-      });
+      await expect(promise).resolves.toBeInstanceOf(BackendController);
     });
   });
 
@@ -60,9 +58,11 @@ describe('BackendController', () => {
         new Uint8Array([8]),
       );
 
-      await expect(backend.readOperation(operationId)).resolves.toEqual(
-        new Uint8Array([8]),
-      );
+      await backend.createTransaction(async (stores) => {
+        await expect(stores.operations.get(operationId)).resolves.toEqual(
+          new Uint8Array([8]),
+        );
+      });
     });
 
     it('generates a new transaction', async () => {
@@ -72,11 +72,13 @@ describe('BackendController', () => {
         new Uint8Array(3),
       );
 
-      await expect(
-        backend.readTransaction(transactionId),
-      ).resolves.toMatchObject({
-        operationId,
-        index: 1,
+      await backend.createTransaction(async (stores) => {
+        await expect(
+          stores.transactions.get(transactionId),
+        ).resolves.toMatchObject({
+          operationId,
+          index: 1,
+        });
       });
     });
 

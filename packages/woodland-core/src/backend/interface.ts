@@ -27,21 +27,11 @@ export interface StoragePlugin {
 
 export interface StorageBackend {
   /**
-   * Group operations into a single transaction. Transactions aren't strictly
-   * necessary, but are preferred when available.
+   * Transactions are automatically executed serially and allow multiple
+   * instances of the same dataset to be open simultaneously (e.g. multiple tabs
+   * on a webpage).
    */
-  createTransaction(): TransactionBuilder;
-
-  /** Return the operation according to its CID. */
-  readOperation(id: CID): Promise<null | ArrayBuffer>;
-
-  /** Return the transaction according to its CID. */
-  readTransaction(id: CID): Promise<null | Transaction>;
-
-  /** Returns the last record added to the changelog. */
-  getMostRecentEvent(): Promise<HistoricalRecord>;
-
-  createWritableTransaction<T>(runner: TransactionRunner<T>): Promise<T>;
+  createTransaction<T>(runner: TransactionRunner<T>): Promise<T>;
 }
 
 export interface TransactionRunner<ReturnType> {
@@ -70,18 +60,4 @@ export interface ObjectStore<Value> {
 export interface HistoryStore {
   append(record: HistoricalRecord): Promise<void>;
   getMostRecentEvent(): Promise<HistoricalRecord>;
-}
-
-export interface TransactionBuilder {
-  /** Idempotently add the operation to the operations database. */
-  addOperation(id: CID, operation: ArrayBuffer): TransactionBuilder;
-
-  /** Idempotently add the record to the transaction database. */
-  addTransaction(id: CID, record: Transaction): TransactionBuilder;
-
-  /** Record a change. */
-  appendToHistory(record: HistoricalRecord): TransactionBuilder;
-
-  /** Apply all changes simultaneously. */
-  commit(): Promise<void>;
 }
