@@ -2,7 +2,8 @@ import { v4 as uuid } from 'uuid';
 import Dataset from '../dataset';
 import MemoryBackend from '../backend/memory';
 import { HistoricalRecordType } from '../types';
-import { InstructionType, type Message } from '../replication/interface';
+import { InstructionType } from '../replication/interface';
+import type { Message } from '../replication/interface';
 
 describe('Dataset', () => {
   async function setup() {
