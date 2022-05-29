@@ -40,6 +40,36 @@ export interface StorageBackend {
 
   /** Returns the last record added to the changelog. */
   getMostRecentEvent(): Promise<HistoricalRecord>;
+
+  createWritableTransaction<T>(runner: TransactionRunner<T>): Promise<T>;
+}
+
+export interface TransactionRunner<ReturnType> {
+  (stores: ObjectStores): Promise<ReturnType>;
+}
+
+export interface ObjectStores {
+  /** Grow-only set of content addressed operations. */
+  operations: ObjectStore<ArrayBuffer>;
+
+  /** Grow-only set of transactions linking operations together. */
+  transactions: ObjectStore<Transaction>;
+
+  /** Local log of changes. */
+  history: HistoryStore;
+}
+
+export interface ObjectStore<Value> {
+  /** Read a value. */
+  get(id: CID): Promise<Value | null>;
+
+  /** Write or replace a value. */
+  put(id: CID, value: Value): Promise<void>;
+}
+
+export interface HistoryStore {
+  append(record: HistoricalRecord): Promise<void>;
+  getMostRecentEvent(): Promise<HistoricalRecord>;
 }
 
 export interface TransactionBuilder {

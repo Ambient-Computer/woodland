@@ -4,6 +4,10 @@ import type {
   StoragePlugin,
   StorageBackend,
   TransactionBuilder,
+  TransactionRunner,
+  ObjectStore,
+  ObjectStores,
+  HistoryStore,
 } from './interface';
 import type { HistoricalRecord, Transaction } from '../types';
 import { assert } from '../utils';
@@ -28,14 +32,18 @@ export default class MemoryStoragePlugin implements StoragePlugin {
 }
 
 class MemoryBackend implements StorageBackend {
-  private store: Store;
-
-  constructor(store: Store) {
-    this.store = store;
-  }
+  constructor(private store: Store) {}
 
   public createTransaction() {
     return new MemoryTransactionBuilder(this.store);
+  }
+
+  public async createWritableTransaction<T>(runner: TransactionRunner<T>) {
+    const builder = new MemoryTransactionBuilder(this.store);
+    const result = await runner(builder);
+    builder.commit();
+
+    return result;
   }
 
   public async readOperation(id: CID) {
@@ -54,13 +62,10 @@ class MemoryBackend implements StorageBackend {
   }
 }
 
-class MemoryTransactionBuilder implements TransactionBuilder {
+class MemoryTransactionBuilder implements TransactionBuilder, ObjectStores {
   private pending = createStore();
-  private store;
 
-  constructor(store: Store) {
-    this.store = store;
-  }
+  constructor(private store: Store) {}
 
   public addOperation(id: CID, operation: ArrayBuffer) {
     this.pending.operations.set(id.toString(), operation);
@@ -89,6 +94,59 @@ class MemoryTransactionBuilder implements TransactionBuilder {
     }
 
     this.store.history.push(...this.pending.history);
+  }
+
+  public operations = new MemoryObjectStore<ArrayBuffer>(
+    this.pending.operations,
+    this.store.operations,
+  );
+
+  public transactions = new MemoryObjectStore<Transaction>(
+    this.pending.transactions,
+    this.store.transactions,
+  );
+
+  public history = new MemoryHistoryStore(
+    this.pending.history,
+    this.store.history,
+  );
+}
+
+class MemoryObjectStore<T> implements ObjectStore<T> {
+  constructor(
+    private pending: Map<string, T>,
+    private committed: Map<string, T>,
+  ) {}
+
+  async get(id: CID) {
+    const serializedId = id.toString();
+
+    return (
+      this.pending.get(serializedId) || this.committed.get(serializedId) || null
+    );
+  }
+
+  async put(id: CID, value: T) {
+    this.pending.set(id.toString(), value);
+  }
+}
+
+class MemoryHistoryStore implements HistoryStore {
+  constructor(
+    private pending: Array<HistoricalRecord>,
+    private committed: Array<HistoricalRecord>,
+  ) {}
+
+  async append(record: HistoricalRecord) {
+    this.pending.push(record);
+  }
+
+  async getMostRecentEvent() {
+    const allRecords = this.committed.concat(this.pending);
+    const record = allRecords[allRecords.length - 1];
+    assert(record, 'History is empty. This should never happen.');
+
+    return record;
   }
 }
 
