@@ -4,6 +4,7 @@ import type { Instruction, Message } from './replication/interface';
 import type { HistoricalRecord } from './types';
 import { InstructionType } from './replication/interface';
 import BackendController from './backend-controller';
+import { quit } from './replication/utils';
 
 export default class Dataset {
   /**
@@ -43,32 +44,33 @@ export default class Dataset {
     instruction: Instruction<Type>,
   ): Promise<Message> {
     if (instruction?.type && this.handlers.hasOwnProperty(instruction.type)) {
-      return this.handlers[instruction.type](instruction);
+      const handler: InstructionHandler<Type> = this.handlers[instruction.type];
+      return handler(instruction);
     }
 
     // Invalid message.
     return {
-      reply: { type: InstructionType.Quit },
-      broadcast: { type: InstructionType.Quit },
+      reply: quit(),
+      broadcast: quit(),
     };
   }
 
-  private handlers: InstructionHandlers = {
+  private handlers = {
     [InstructionType.Quit]: () => ({
-      reply: { type: InstructionType.Quit },
-      broadcast: { type: InstructionType.Quit },
+      reply: quit(),
+      broadcast: quit(),
     }),
     [InstructionType.Integrate]: () => ({
-      reply: { type: InstructionType.Quit },
-      broadcast: { type: InstructionType.Quit },
+      reply: quit(),
+      broadcast: quit(),
     }),
     [InstructionType.FindCommonAncestor]: () => ({
-      reply: { type: InstructionType.Quit },
-      broadcast: { type: InstructionType.Quit },
+      reply: quit(),
+      broadcast: quit(),
     }),
     [InstructionType.ReceiveAncestors]: () => ({
-      reply: { type: InstructionType.Quit },
-      broadcast: { type: InstructionType.Quit },
+      reply: quit(),
+      broadcast: quit(),
     }),
   };
 }
@@ -84,6 +86,6 @@ interface InsertResult {
   historicalRecord: HistoricalRecord;
 }
 
-type InstructionHandlers = {
-  [Type in InstructionType]: (instruction: Instruction<Type>) => Message;
-};
+interface InstructionHandler<Type extends InstructionType> {
+  (instruction: Instruction<Type>): Message;
+}

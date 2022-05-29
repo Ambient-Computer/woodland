@@ -2,8 +2,8 @@ import { v4 as uuid } from 'uuid';
 import Dataset from '../dataset';
 import MemoryBackend from '../backend/memory';
 import { HistoricalRecordType } from '../types';
-import { InstructionType } from '../replication/interface';
 import type { Message } from '../replication/interface';
+import { quit } from '../replication/utils';
 
 describe('Dataset', () => {
   async function setup() {
@@ -95,13 +95,11 @@ describe('Dataset', () => {
     it('does nothing when given the `Quit` command', async () => {
       const { dataset } = await setup();
 
-      const promise = dataset.execute({
-        type: InstructionType.Quit,
-      });
+      const promise = dataset.execute(quit());
 
       await expect(promise).resolves.toEqual<Message>({
-        reply: { type: InstructionType.Quit },
-        broadcast: { type: InstructionType.Quit },
+        reply: quit(),
+        broadcast: quit(),
       });
     });
 
@@ -110,11 +108,12 @@ describe('Dataset', () => {
 
       const promise = dataset.execute({
         type: 'toString' as any,
+        payload: undefined,
       });
 
       await expect(promise).resolves.toEqual<Message>({
-        reply: { type: InstructionType.Quit },
-        broadcast: { type: InstructionType.Quit },
+        reply: quit(),
+        broadcast: quit(),
       });
     });
   });

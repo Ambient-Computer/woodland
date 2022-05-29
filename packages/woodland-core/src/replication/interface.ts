@@ -31,16 +31,16 @@ import type { Transaction } from '../types';
  */
 export interface Message {
   /** A reply to the actor that provided the new transactions. */
-  reply: AnyInstruction;
+  reply: Instruction<InstructionType>;
 
   /** A broadcast for everyone else. */
-  broadcast: AnyInstruction;
+  broadcast: Instruction<InstructionType>;
 }
 
-export type Instruction<Type extends InstructionType> =
-  Instructions[Type] extends void
-    ? { type: Type }
-    : Instructions[Type] & { type: Type };
+export interface Instruction<Type extends InstructionType> {
+  type: Type;
+  payload: Instructions[Type];
+}
 
 export enum InstructionType {
   /** The sequence is done. No need to send a reply. */
@@ -58,12 +58,6 @@ export enum InstructionType {
   /** Results from `FindCommonAncestor`. */
   ReceiveAncestors = 3,
 }
-
-// This will not work: Instruction<InstructionType>
-// It produces an intersection type, not a union.
-type AnyInstruction = {
-  [Type in InstructionType]: Instruction<Type>;
-}[InstructionType];
 
 export interface Instructions {
   [InstructionType.Quit]: void;
