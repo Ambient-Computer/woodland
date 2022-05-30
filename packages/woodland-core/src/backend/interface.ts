@@ -32,6 +32,9 @@ export interface StorageBackend {
    * on a webpage).
    */
   createTransaction<T>(runner: TransactionRunner<T>): Promise<T>;
+
+  /** Close the storage backend. */
+  close(): Promise<void>;
 }
 
 export interface TransactionRunner<ReturnType> {

@@ -140,4 +140,15 @@ describe('BackendController', () => {
       });
     });
   });
+
+  describe('close', () => {
+    it('closes the storage backend', async () => {
+      const { controller } = await setup();
+
+      await controller.close();
+      const promise = controller.insertOperation(new Uint8Array());
+
+      await expect(promise).rejects.toThrow(/closed/i);
+    });
+  });
 });

@@ -186,6 +186,10 @@ export default class BackendController {
     // The parent is a genesis block.
     return 1;
   }
+
+  async close() {
+    await this.backend.close();
+  }
 }
 
 function createLocalChangeEvent(transactionId: CID): HistoricalRecord {

@@ -110,4 +110,15 @@ describe('MemoryBackend', () => {
       await expect(stores.history.getMostRecentEvent()).resolves.toBe(record);
     });
   });
+
+  it('refuses transactions after close', async () => {
+    const { backend } = await setup();
+    backend.close();
+
+    const promise = backend.createTransaction(async () => {
+      // empty
+    });
+
+    await expect(promise).rejects.toThrow(/closed/i);
+  });
 });

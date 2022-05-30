@@ -33,6 +33,11 @@ export default class Dataset {
     private backend: BackendController,
   ) {}
 
+  /** Permanently close the dataset. */
+  async close() {
+    await this.backend.close();
+  }
+
   async insertOperation(operation: ArrayBuffer): Promise<InsertionDelta> {
     return this.backend.insertOperation(operation);
   }

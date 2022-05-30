@@ -44,6 +44,17 @@ describe('Dataset', () => {
     });
   });
 
+  describe('close', () => {
+    it('closes the storage backend', async () => {
+      const { dataset } = await setup();
+
+      await dataset.close();
+      const promise = dataset.insertOperation(new Uint8Array());
+
+      await expect(promise).rejects.toThrow(/closed/i);
+    });
+  });
+
   describe('replication', () => {
     it('does nothing when given the `Quit` command', async () => {
       const { dataset } = await setup();

@@ -31,9 +31,13 @@ export default class MemoryStoragePlugin implements StoragePlugin {
 }
 
 class MemoryBackend implements StorageBackend {
+  private closed = false;
+
   constructor(private store: Store) {}
 
   public async createTransaction<T>(runner: TransactionRunner<T>) {
+    assert(!this.closed, 'Cannot open transaction. Storage backend is closed.');
+
     const pending = createStore();
     const stores = new MemoryTransactionBuilder(pending, this.store);
 
@@ -43,7 +47,7 @@ class MemoryBackend implements StorageBackend {
     return result;
   }
 
-  public async commit(pending: Store) {
+  private async commit(pending: Store) {
     // Apply all the operations.
     for (const [key, operation] of pending.operations) {
       this.store.operations.set(key, operation);
@@ -55,6 +59,10 @@ class MemoryBackend implements StorageBackend {
     }
 
     this.store.history.push(...pending.history);
+  }
+
+  async close() {
+    this.closed = true;
   }
 }
 
