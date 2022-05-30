@@ -7,7 +7,7 @@ import type {
   StoragePlugin,
   ObjectStores,
 } from './backend/interface';
-import type { GenesisBlock, HistoricalRecord } from './types';
+import type { GenesisBlock, HistoricalRecord, InsertionDelta } from './types';
 import { HistoricalRecordType } from './types';
 
 /**
@@ -66,7 +66,7 @@ export default class BackendController {
 
   private constructor(private backend: StorageBackend) {}
 
-  async insertOperation(operation: ArrayBuffer): Promise<InsertResult> {
+  async insertOperation(operation: ArrayBuffer): Promise<InsertionDelta> {
     return this.backend.createTransaction(async (stores) => {
       const [{ head: parentId }, operationId] = await Promise.all([
         stores.history.getMostRecentEvent(),
@@ -85,7 +85,11 @@ export default class BackendController {
       stores.transactions.put(transactionId, record);
       stores.history.append(historicalRecord);
 
-      return { operationId, transactionId, historicalRecord };
+      return {
+        head: transactionId,
+        transactions: [record],
+        operations: new Map([[operationId, operation]]),
+      };
     });
   }
 
@@ -103,12 +107,6 @@ export default class BackendController {
     // The parent is a genesis block.
     return 1;
   }
-}
-
-interface InsertResult {
-  operationId: CID;
-  transactionId: CID;
-  historicalRecord: HistoricalRecord;
 }
 
 function createLocalChangeEvent(transactionId: CID): HistoricalRecord {

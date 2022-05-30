@@ -1,7 +1,6 @@
-import type { CID } from 'multiformats/cid';
 import type { StoragePlugin } from './backend/interface';
 import type { Instruction, Message } from './replication/interface';
-import type { HistoricalRecord } from './types';
+import type { InsertionDelta } from './types';
 import { InstructionType } from './replication/interface';
 import BackendController from './backend-controller';
 import { quit } from './replication/utils';
@@ -35,7 +34,7 @@ export default class Dataset {
     private backend: BackendController,
   ) {}
 
-  async insertOperation(operation: ArrayBuffer): Promise<InsertResult> {
+  async insertOperation(operation: ArrayBuffer): Promise<InsertionDelta> {
     return this.backend.insertOperation(operation);
   }
 
@@ -78,12 +77,6 @@ export default class Dataset {
 interface Config {
   /** A storage plugin. */
   storage: StoragePlugin;
-}
-
-interface InsertResult {
-  operationId: CID;
-  transactionId: CID;
-  historicalRecord: HistoricalRecord;
 }
 
 interface InstructionHandler<Type extends InstructionType> {

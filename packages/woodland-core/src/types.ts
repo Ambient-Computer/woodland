@@ -63,3 +63,25 @@ export interface Record {
 }
 
 export type Transaction = GenesisBlock | Record;
+
+/* ===== DELTAS ===== */
+
+export interface InsertionDelta {
+  /**
+   * Latest checksum known to the dataset. Note: If we're paginating, the
+   * transaction set might still be thousands of operations behind `head`.
+   */
+  head: CID;
+
+  /**
+   * An ordered list of transactions to integrate. If this is received from
+   * a remote, double check the hash integrity before saving anything.
+   */
+  transactions: Array<Record>;
+
+  /**
+   * Operations indexed by their hash. The hash is convenient for search but
+   * should be verified before saving anything.
+   */
+  operations: Map<CID, ArrayBuffer>;
+}

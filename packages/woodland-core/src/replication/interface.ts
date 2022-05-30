@@ -1,5 +1,5 @@
 import type { CID } from 'multiformats/cid';
-import type { Transaction } from '../types';
+import type { Transaction, InsertionDelta } from '../types';
 
 /**
  * States:
@@ -61,26 +61,7 @@ export enum InstructionType {
 
 export interface Instructions {
   [InstructionType.Quit]: void;
-  [InstructionType.Integrate]: {
-    /**
-     * Latest checksum known to the dataset. Note: If we're paginating, the
-     * transaction set might still be thousands of operations behind `head`.
-     */
-    head: CID;
-
-    /**
-     * An ordered list of transactions to integrate. Double check hash
-     * integrity before saving anything.
-     */
-    transactions: Array<Transaction>;
-
-    /**
-     * Operations indexed by their hash. The hash is convenient for search but
-     * should be verified before saving anything.
-     */
-    operations: Map<CID, ArrayBuffer>;
-  };
-
+  [InstructionType.Integrate]: InsertionDelta;
   [InstructionType.FindCommonAncestor]: {
     /** The transaction to start searching backwards from. */
     cursor: CID;

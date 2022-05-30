@@ -54,9 +54,11 @@ describe('BackendController', () => {
     it('saves the new operation in the storage backend', async () => {
       const { backend, controller } = await setup();
 
-      const { operationId } = await controller.insertOperation(
+      const { operations } = await controller.insertOperation(
         new Uint8Array([8]),
       );
+
+      const [operationId] = operations.keys();
 
       await backend.createTransaction(async (stores) => {
         await expect(stores.operations.get(operationId)).resolves.toEqual(
@@ -68,28 +70,19 @@ describe('BackendController', () => {
     it('generates a new transaction', async () => {
       const { backend, controller } = await setup();
 
-      const { transactionId, operationId } = await controller.insertOperation(
+      const { operations } = await controller.insertOperation(
         new Uint8Array(3),
       );
 
+      const [operationId] = operations.keys();
       await backend.createTransaction(async (stores) => {
-        await expect(
-          stores.transactions.get(transactionId),
-        ).resolves.toMatchObject({
+        const { head, type } = await stores.history.getMostRecentEvent();
+        expect(type).toBe(HistoricalRecordType.LocalChange);
+
+        await expect(stores.transactions.get(head)).resolves.toMatchObject({
           operationId,
           index: 1,
         });
-      });
-    });
-
-    it('appends to the changelog', async () => {
-      const { controller } = await setup();
-
-      const operation = new Uint8Array();
-      const { historicalRecord } = await controller.insertOperation(operation);
-
-      expect(historicalRecord).toMatchObject({
-        type: HistoricalRecordType.LocalChange,
       });
     });
   });

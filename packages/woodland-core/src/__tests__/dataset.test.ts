@@ -1,7 +1,6 @@
 import { v4 as uuid } from 'uuid';
 import Dataset from '../dataset';
 import MemoryBackend from '../backend/memory';
-import { HistoricalRecordType } from '../types';
 import type { Message } from '../replication/interface';
 import { quit } from '../replication/utils';
 
@@ -42,52 +41,6 @@ describe('Dataset', () => {
 
       const promise = Dataset.open(dataset.id, { storage });
       await expect(promise).resolves.not.toThrow();
-    });
-  });
-
-  describe('insertOperation', () => {
-    it('saves the new operation in the storage backend', async () => {
-      const { backend, dataset } = await setup();
-
-      const { operationId } = await dataset.insertOperation(
-        new Uint8Array([8]),
-      );
-
-      await backend.createTransaction(async (stores) => {
-        await expect(stores.operations.get(operationId)).resolves.toEqual(
-          new Uint8Array([8]),
-        );
-      });
-    });
-
-    it('generates a new transaction', async () => {
-      const { backend, dataset } = await setup();
-
-      const { transactionId, operationId } = await dataset.insertOperation(
-        new Uint8Array(3),
-      );
-
-      await backend.createTransaction(async (stores) => {
-        await expect(
-          stores.transactions.get(transactionId),
-        ).resolves.toMatchObject({
-          operationId,
-          index: 1,
-        });
-      });
-    });
-
-    it('appends to the changelog', async () => {
-      const { dataset } = await setup();
-
-      const { historicalRecord } = await dataset.insertOperation(
-        new Uint8Array(),
-      );
-
-      expect(historicalRecord).toMatchObject({
-        type: HistoricalRecordType.LocalChange,
-        // TODO: Verify TL record CIDs once this is implemented.
-      });
     });
   });
 
