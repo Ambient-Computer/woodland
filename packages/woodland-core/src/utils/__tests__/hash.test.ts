@@ -1,5 +1,5 @@
 import { CID } from 'multiformats/cid';
-import { createHash } from '../utils';
+import createHash from '../hash';
 import { sha256 } from 'multiformats/hashes/sha2';
 
 describe('hash()', () => {

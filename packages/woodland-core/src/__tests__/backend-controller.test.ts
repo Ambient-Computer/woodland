@@ -2,7 +2,7 @@ import { v4 as uuid } from 'uuid';
 import BackendController from '../backend-controller';
 import MemoryStoragePlugin from '../backend/memory';
 import { HistoricalRecordType } from '../types';
-import createHash from '../utils/hash';
+import { createHash, hashTransaction } from '../utils';
 
 describe('BackendController', () => {
   async function setup() {
@@ -104,6 +104,38 @@ describe('BackendController', () => {
         await expect(stores.transactions.get(head)).resolves.toMatchObject({
           operationId,
           index: 1,
+        });
+      });
+    });
+  });
+
+  describe('integrate', () => {
+    it('appends the new transactions', async () => {
+      const { controller, backend } = await setup();
+      const remote = await controller.createEmptyClone(
+        new MemoryStoragePlugin(),
+      );
+
+      const operation = new Uint8Array([5]);
+      const update = await remote.insertOperation(operation);
+      await controller.integrate(update);
+
+      // Assertions
+      await backend.createTransaction(async (stores) => {
+        const [opId] = update.operations.keys();
+        await expect(stores.operations.get(opId)).resolves.toEqual(operation);
+
+        const transactionId = await hashTransaction(update.transactions[0]);
+        await expect(stores.transactions.get(transactionId)).resolves.toEqual(
+          update.transactions[0],
+        );
+
+        await expect(
+          stores.history.getMostRecentEvent(),
+        ).resolves.toMatchObject({
+          type: HistoricalRecordType.RemoteChange,
+          head: transactionId,
+          changeset: [transactionId],
         });
       });
     });

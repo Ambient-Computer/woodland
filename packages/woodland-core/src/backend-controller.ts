@@ -1,7 +1,7 @@
 import type { CID } from 'multiformats/cid';
 import { v4 as uuid } from 'uuid';
 import assert from 'assert';
-import createHash from './utils/hash';
+import { createHash, hashIds, hashTransaction } from './utils';
 import type {
   StorageBackend,
   StoragePlugin,
@@ -12,6 +12,7 @@ import {
   HistoricalRecord,
   InsertionDelta,
   HistoricalRecordType,
+  Record,
 } from './types';
 
 /**
@@ -82,7 +83,7 @@ export default class BackendController {
 
       const [index, transactionId] = await Promise.all([
         this.computeNextIndex(parentId, stores),
-        createTransactionId(parentId, operationId),
+        hashIds([parentId, operationId]),
       ]);
 
       const historicalRecord = createLocalChangeEvent(transactionId);
@@ -119,6 +120,58 @@ export default class BackendController {
     });
   }
 
+  /**
+   * Integrate a changeset from a remote dataset.
+   *
+   * Assumptions:
+   * - The object is valid
+   * - Transactions are sequential
+   * - Transactions build on our latest change (FIXME)
+   */
+  async integrate(update: InsertionDelta) {
+    await this.backend.createTransaction(async (stores) => {
+      const allOperations = Array.from(update.operations.values());
+
+      const [transactionIds] = await Promise.all([
+        this.saveTransactions(stores, update.transactions),
+        this.saveOperations(stores, allOperations),
+      ]);
+
+      await stores.history.append({
+        type: HistoricalRecordType.RemoteChange,
+        timestamp: new Date().toISOString(),
+        head: transactionIds[transactionIds.length - 1],
+        changeset: transactionIds,
+      });
+    });
+  }
+
+  private async saveOperations(
+    stores: ObjectStores,
+    operations: Array<ArrayBuffer>,
+  ) {
+    const promises = operations.map(async (operation) => {
+      const hash = await createHash(operation);
+      stores.operations.put(hash, operation);
+    });
+
+    await Promise.all(promises);
+  }
+
+  private async saveTransactions(
+    stores: ObjectStores,
+    transactions: Array<Record>,
+  ) {
+    const promises = transactions.map(async (transaction) => {
+      const transactionId = await hashTransaction(transaction);
+      stores.transactions.put(transactionId, transaction);
+
+      return transactionId;
+    });
+
+    return Promise.all(promises);
+  }
+
   private async computeNextIndex(
     recordId: CID,
     stores: ObjectStores,
@@ -142,14 +195,4 @@ function createLocalChangeEvent(transactionId: CID): HistoricalRecord {
     changeset: [transactionId],
     head: transactionId,
   };
-}
-
-// hash(lastRecordId + newOperationId)
-function createTransactionId(lastId: CID, operationId: CID): Promise<CID> {
-  const src = new Uint8Array(lastId.bytes.length + operationId.bytes.length);
-
-  src.set(lastId.bytes, 0);
-  src.set(operationId.bytes, lastId.bytes.byteLength);
-
-  return createHash(src);
 }
