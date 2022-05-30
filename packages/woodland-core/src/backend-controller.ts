@@ -7,8 +7,12 @@ import type {
   StoragePlugin,
   ObjectStores,
 } from './backend/interface';
-import type { GenesisBlock, HistoricalRecord, InsertionDelta } from './types';
-import { HistoricalRecordType } from './types';
+import {
+  GenesisBlock,
+  HistoricalRecord,
+  InsertionDelta,
+  HistoricalRecordType,
+} from './types';
 
 /**
  * Manages queries and writes over the dataset backend.

@@ -1,5 +1,4 @@
-import type { Instruction } from './interface';
-import { InstructionType } from './interface';
+import { Instruction, InstructionType } from './interface';
 
 export function quit(): Instruction<InstructionType.Quit> {
   return {
