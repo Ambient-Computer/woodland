@@ -39,7 +39,7 @@ export default class BackendController {
     });
 
     return {
-      controller: new BackendController(backend),
+      controller: new BackendController(genesis.id, backend),
       genesis,
     };
   }
@@ -64,11 +64,14 @@ export default class BackendController {
         'Dataset does not exist.',
       );
 
-      return new BackendController(backend);
+      return new BackendController(config.datasetId, backend);
     });
   }
 
-  private constructor(private backend: StorageBackend) {}
+  private constructor(
+    private readonly id: Uint8Array,
+    private backend: StorageBackend,
+  ) {}
 
   async insertOperation(operation: ArrayBuffer): Promise<InsertionDelta> {
     return this.backend.createTransaction(async (stores) => {
@@ -94,6 +97,25 @@ export default class BackendController {
         transactions: [record],
         operations: new Map([[operationId, operation]]),
       };
+    });
+  }
+
+  /**
+   * Clones the root transaction to another storage backend and returns a new
+   * controller. This is useful for testing replication with another memory
+   * backend or for migrating an existing database to a different provider.
+   */
+  async createEmptyClone(plugin: StoragePlugin): Promise<BackendController> {
+    const backend = await plugin.open(this.id);
+    const genesisId = await createHash(this.id);
+
+    return backend.createTransaction(async (stores) => {
+      await Promise.all([
+        stores.transactions.put(genesisId, { id: this.id }),
+        stores.history.put(0, createLocalChangeEvent(genesisId)),
+      ]);
+
+      return new BackendController(this.id, backend);
     });
   }
 

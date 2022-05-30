@@ -90,4 +90,24 @@ describe('MemoryBackend', () => {
       );
     });
   });
+
+  it('allows insertion/retrieval of history at any index', async () => {
+    const { backend } = await setup();
+    const id = await createHash(new Uint8Array());
+    const record = {
+      type: HistoricalRecordType.LocalChange,
+      timestamp: new Date().toISOString(),
+      head: id,
+      changeset: [id],
+    };
+
+    await backend.createTransaction(async (stores) => {
+      await stores.history.put(0, record);
+    });
+
+    await backend.createTransaction(async (stores) => {
+      await expect(stores.history.get(0)).resolves.toBe(record);
+      await expect(stores.history.getMostRecentEvent()).resolves.toBe(record);
+    });
+  });
 });

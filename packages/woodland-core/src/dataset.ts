@@ -29,7 +29,7 @@ export default class Dataset {
 
   private constructor(
     /** A unique, persistent UUID which globally identifies the dataset. */
-    public id: Uint8Array,
+    public readonly id: Uint8Array,
     private backend: BackendController,
   ) {}
 

@@ -60,4 +60,8 @@ export interface ObjectStore<Value> {
 export interface HistoryStore {
   append(record: HistoricalRecord): Promise<void>;
   getMostRecentEvent(): Promise<HistoricalRecord>;
+
+  /** ID must be an incrementing number. `0` is the first record. */
+  put(id: number, record: HistoricalRecord): Promise<void>;
+  get(id: number): Promise<HistoricalRecord | null>;
 }

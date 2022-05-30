@@ -2,6 +2,7 @@ import { v4 as uuid } from 'uuid';
 import BackendController from '../backend-controller';
 import MemoryStoragePlugin from '../backend/memory';
 import { HistoricalRecordType } from '../types';
+import createHash from '../utils/hash';
 
 describe('BackendController', () => {
   async function setup() {
@@ -47,6 +48,27 @@ describe('BackendController', () => {
       });
 
       await expect(promise).resolves.toBeInstanceOf(BackendController);
+    });
+  });
+
+  describe('createEmptyClone', () => {
+    it('creates a new controller over the same dataset ID', async () => {
+      const store1 = new MemoryStoragePlugin();
+      const { controller, genesis } = await BackendController.initializeDataset(
+        store1,
+      );
+
+      const store2 = new MemoryStoragePlugin();
+      await controller.createEmptyClone(store2);
+
+      const backend = await store2.open(genesis.id);
+      await backend.createTransaction(async (stores) => {
+        const cid = await createHash(genesis.id);
+        await expect(stores.transactions.get(cid)).resolves.toEqual(genesis);
+        await expect(
+          stores.history.getMostRecentEvent(),
+        ).resolves.toMatchObject({ head: cid });
+      });
     });
   });
 

@@ -113,6 +113,20 @@ class MemoryHistoryStore implements HistoryStore {
 
     return record;
   }
+
+  async get(id: number) {
+    const allRecords = this.committed.concat(this.pending);
+    return allRecords[id] ?? null;
+  }
+
+  async put(id: number, record: HistoricalRecord) {
+    assert(
+      id >= this.committed.length,
+      'You may only update pending changelog records.',
+    );
+
+    this.pending[id - this.committed.length] = record;
+  }
 }
 
 function createStore(): Store {
