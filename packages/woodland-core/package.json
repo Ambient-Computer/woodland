@@ -16,9 +16,9 @@
   },
   "dependencies": {
     "multiformats": "9.7.1",
-    "uuid": "^8.3.2"
+    "uuid": "8.3.2"
   },
   "devDependencies": {
-    "@types/uuid": "^8.3.4"
+    "@types/uuid": "8.3.4"
   }
 }
