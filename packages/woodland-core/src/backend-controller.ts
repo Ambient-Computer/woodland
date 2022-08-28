@@ -6,6 +6,7 @@ import type {
   StorageBackend,
   StoragePlugin,
   ObjectStores,
+  Timeline,
 } from './backend/interface';
 import {
   GenesisBlock,
@@ -29,14 +30,14 @@ export default class BackendController {
     };
 
     // The UUID would do well enough, but using a CID keeps consistent size.
-    const [cid, backend] = await Promise.all([
+    const [genesisId, backend] = await Promise.all([
       createHash(genesis.id),
       storage.open(genesis.id),
     ]);
 
     await backend.createTransaction(async (stores) => {
-      stores.transactions.put(cid, genesis);
-      stores.history.append(createLocalChangeEvent(cid));
+      stores.transactions.put(genesisId, genesis);
+      stores.history.initialize(genesisId);
     });
 
     return {
@@ -76,7 +77,7 @@ export default class BackendController {
 
   async insertOperation(operation: ArrayBuffer): Promise<InsertionDelta> {
     return this.backend.createTransaction(async (stores) => {
-      const [{ head: parentId }, operationId] = await Promise.all([
+      const [{ head: parentId, timeline }, operationId] = await Promise.all([
         stores.history.getMostRecentEvent(),
         createHash(operation),
       ]);
@@ -86,12 +87,13 @@ export default class BackendController {
         hashIds([parentId, operationId]),
       ]);
 
-      const historicalRecord = createLocalChangeEvent(transactionId);
+      const historicalRecord = createLocalChangeEvent(transactionId, timeline);
       const record = { parentId, predecessorId: null, operationId, index };
 
       stores.operations.put(operationId, operation);
       stores.transactions.put(transactionId, record);
       stores.history.append(historicalRecord);
+      timeline.append([transactionId]);
 
       return {
         head: transactionId,
@@ -113,7 +115,7 @@ export default class BackendController {
     return backend.createTransaction(async (stores) => {
       await Promise.all([
         stores.transactions.put(genesisId, { id: this.id }),
-        stores.history.put(0, createLocalChangeEvent(genesisId)),
+        stores.history.initialize(genesisId),
       ]);
 
       return new BackendController(this.id, backend);
@@ -132,7 +134,8 @@ export default class BackendController {
     await this.backend.createTransaction(async (stores) => {
       const allOperations = Array.from(update.operations.values());
 
-      const [transactionIds] = await Promise.all([
+      const [{ timeline }, transactionIds] = await Promise.all([
+        stores.history.getMostRecentEvent(),
         this.saveTransactions(stores, update.transactions),
         this.saveOperations(stores, allOperations),
       ]);
@@ -142,6 +145,7 @@ export default class BackendController {
         timestamp: new Date().toISOString(),
         head: transactionIds[transactionIds.length - 1],
         changeset: transactionIds,
+        timeline: timeline.append(transactionIds),
       });
     });
   }
@@ -192,11 +196,15 @@ export default class BackendController {
   }
 }
 
-function createLocalChangeEvent(transactionId: CID): HistoricalRecord {
+function createLocalChangeEvent(
+  transactionId: CID,
+  timeline: Timeline,
+): HistoricalRecord {
   return {
     type: HistoricalRecordType.LocalChange,
     timestamp: new Date().toISOString(),
     changeset: [transactionId],
     head: transactionId,
+    timeline: timeline.append([transactionId]),
   };
 }

@@ -67,4 +67,14 @@ export interface HistoryStore {
   /** ID must be an incrementing number. `0` is the first record. */
   put(id: number, record: HistoricalRecord): Promise<void>;
   get(id: number): Promise<HistoricalRecord | null>;
+
+  /**
+   * UNSAFE: Mutates the first record by generating a genesis block. This
+   * should only be used to initialize local state.
+   *
+   * The transaction ID should be a hash of the dataset ID.
+   */
+  initialize(genesisId: CID): Promise<HistoricalRecord>;
 }
+
+export type { Timeline } from './timeline';

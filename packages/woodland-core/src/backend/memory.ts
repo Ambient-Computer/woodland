@@ -8,8 +8,9 @@ import type {
   ObjectStores,
   HistoryStore,
 } from './interface';
-import type { HistoricalRecord, Transaction } from '../types';
+import { HistoricalRecord, HistoricalRecordType, Transaction } from '../types';
 import { assert } from '../utils';
+import MemoryTimeline from './timeline/memory';
 
 export default class MemoryStoragePlugin implements StoragePlugin {
   private databases: Map<string, Store> = new Map();
@@ -134,6 +135,20 @@ class MemoryHistoryStore implements HistoryStore {
     );
 
     this.pending[id - this.committed.length] = record;
+  }
+
+  async initialize(genesisId: CID): Promise<HistoricalRecord> {
+    const record: HistoricalRecord = {
+      type: HistoricalRecordType.LocalChange,
+      timestamp: new Date().toISOString(),
+      changeset: [genesisId],
+      head: genesisId,
+      timeline: MemoryTimeline.withEntries([genesisId]),
+    };
+
+    await this.put(0, record);
+
+    return record;
   }
 }
 

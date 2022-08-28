@@ -2,6 +2,7 @@ import { v4 as uuid } from 'uuid';
 import MemoryStoragePlugin from '../memory';
 import { createHash } from '../../utils';
 import { HistoricalRecordType } from '../../types';
+import MemoryTimeline from '../timeline/memory';
 
 describe('MemoryBackend', () => {
   async function setup() {
@@ -23,6 +24,20 @@ describe('MemoryBackend', () => {
     });
 
     expect(result).toBe(message);
+  });
+
+  it('can generate genesis blocks', async () => {
+    const { backend, id } = await setup();
+
+    const genesisId = await createHash(id);
+
+    await backend.createTransaction(async (stores) => {
+      const record = await stores.history.initialize(genesisId);
+      await expect(record.timeline.read(0, 10)).resolves.toEqual([genesisId]);
+      await expect(stores.history.getMostRecentEvent()).resolves.toEqual(
+        record,
+      );
+    });
   });
 
   it('returns cached objects not yet committed', async () => {
@@ -60,6 +75,7 @@ describe('MemoryBackend', () => {
         timestamp: new Date().toISOString(),
         head: id,
         changeset: [id],
+        timeline: MemoryTimeline.withEntries([id]),
       };
 
       stores.history.append(record);
@@ -78,6 +94,7 @@ describe('MemoryBackend', () => {
       timestamp: new Date().toISOString(),
       head: id,
       changeset: [id],
+      timeline: MemoryTimeline.withEntries([id]),
     };
 
     await backend.createTransaction(async (stores) => {
@@ -99,6 +116,7 @@ describe('MemoryBackend', () => {
       timestamp: new Date().toISOString(),
       head: id,
       changeset: [id],
+      timeline: MemoryTimeline.withEntries([id]),
     };
 
     await backend.createTransaction(async (stores) => {

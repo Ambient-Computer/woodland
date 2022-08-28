@@ -1,4 +1,5 @@
 import type { CID } from 'multiformats/cid';
+import type { Timeline } from './backend/timeline';
 
 /* ===== LOCAL HISTORY ===== */
 
@@ -14,6 +15,9 @@ export interface HistoricalRecord {
 
   /** The newest transaction as of this change. */
   head: CID;
+
+  /** An index of the sequence of transactions. Derived from the oplog. */
+  timeline: Timeline;
 }
 
 export enum HistoricalRecordType {
