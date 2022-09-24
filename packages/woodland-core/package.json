@@ -15,7 +15,7 @@
     ]
   },
   "dependencies": {
-    "multiformats": "9.8.1",
+    "multiformats": "9.9.0",
     "uuid": "9.0.0"
   },
   "devDependencies": {
