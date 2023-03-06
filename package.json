@@ -1,12 +1,11 @@
 {
   "name": "@woodland/monorepo",
-  "version": "0.1.0",
-  "description": "An immutable database",
+  "version": "0.0.0",
+  "description": "An immutable database.",
   "repository": "https://github.com/PsychoLlama/woodland",
-  "author": "Jesse Gibson",
   "packageManager": "yarn@3.4.1",
+  "author": "Jesse Gibson",
   "license": "MIT",
-  "private": true,
   "type": "module",
   "scripts": {
     "test": "run test:coverage && run test:lint && run test:fmt && run test:types",

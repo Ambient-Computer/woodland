@@ -1,14 +1,41 @@
 {
   "name": "@woodland/core",
-  "version": "0.1.0",
-  "description": "An immutable database",
+  "version": "0.0.0",
+  "description": "The core of Woodland, an immutable database.",
   "type": "module",
-  "main": "src/index.ts",
-  "repository": "https://github.com/PsychoLlama/woodland",
   "author": "Jesse Gibson",
   "license": "MIT",
-  "private": true,
+  "main": "./dist/woodland-core.cjs",
+  "module": "./dist/woodland-core.js",
+  "types": "./src/index.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "require": "./dist/woodland-core.cjs",
+      "import": "./dist/woodland-core.js"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PsychoLlama/woodland",
+    "directory": "packages/woodland-core"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "keywords": [
+    "client-side",
+    "database",
+    "immutable",
+    "replicated",
+    "CRDT"
+  ],
   "scripts": {
+    "prepack": "vite build",
     "test:unit": "vitest --color",
     "test:types": "tsc"
   },
