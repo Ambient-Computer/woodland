@@ -4,21 +4,23 @@
   "description": "An immutable database",
   "main": "src/index.ts",
   "repository": "https://github.com/PsychoLlama/woodland",
-  "author": "Jesse Gibson <JesseTheGibson@gmail.com>",
+  "author": "Jesse Gibson",
   "license": "MIT",
   "private": true,
-  "jest": {
-    "displayName": "core",
-    "preset": "ts-jest",
-    "roots": [
-      "<rootDir>"
-    ]
+  "scripts": {
+    "test:unit": "vitest --color",
+    "test:types": "tsc"
   },
   "dependencies": {
     "multiformats": "9.9.0",
     "uuid": "9.0.0"
   },
   "devDependencies": {
-    "@types/uuid": "9.0.1"
+    "@types/node": "^18.14.6",
+    "@types/uuid": "9.0.1",
+    "@vitest/coverage-c8": "^0.29.2",
+    "typescript": "4.9.5",
+    "vite": "^4.1.4",
+    "vitest": "^0.29.2"
   }
 }

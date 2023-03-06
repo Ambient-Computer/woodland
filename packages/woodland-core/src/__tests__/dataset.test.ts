@@ -60,11 +60,12 @@ describe('Dataset', () => {
       const { dataset } = await setup();
 
       const promise = dataset.execute(quit());
-
-      await expect(promise).resolves.toEqual<Message>({
+      const expected: Message = {
         reply: quit(),
         broadcast: quit(),
-      });
+      };
+
+      await expect(promise).resolves.toEqual(expected);
     });
 
     it('does not fall to prototype trickery', async () => {
@@ -75,10 +76,12 @@ describe('Dataset', () => {
         payload: undefined,
       });
 
-      await expect(promise).resolves.toEqual<Message>({
+      const expected: Message = {
         reply: quit(),
         broadcast: quit(),
-      });
+      };
+
+      await expect(promise).resolves.toEqual(expected);
     });
   });
 });

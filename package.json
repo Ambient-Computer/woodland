@@ -3,16 +3,18 @@
   "version": "0.1.0",
   "description": "An immutable database",
   "repository": "https://github.com/PsychoLlama/woodland",
-  "author": "Jesse Gibson <JesseTheGibson@gmail.com>",
+  "author": "Jesse Gibson",
   "packageManager": "yarn@3.4.1",
   "license": "MIT",
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "./bin/run-tests",
-    "test:unit": "jest --passWithNoTests --color",
-    "test:lint": "eslint packages --color",
-    "test:fmt": "prettier --check packages --color"
+    "test": "run test:coverage && run test:lint && run test:fmt && run test:types",
+    "test:unit": "yarn workspaces foreach --parallel run test:unit --no-watch",
+    "test:coverage": "run test:unit --coverage",
+    "test:types": "yarn workspaces foreach --parallel run test:types",
+    "test:lint": "eslint packages/*/src --color",
+    "test:fmt": "prettier --check packages/*/src --color"
   },
   "workspaces": [
     "packages/*"
@@ -39,9 +41,6 @@
         "files": [
           "./**/__tests__/*.ts"
         ],
-        "env": {
-          "jest": true
-        },
         "rules": {
           "@typescript-eslint/no-explicit-any": "off"
         }
@@ -61,23 +60,14 @@
       "no-prototype-builtins": "off"
     }
   },
-  "jest": {
-    "testEnvironment": "node",
-    "preset": "ts-jest",
-    "projects": [
-      "<rootDir>/packages/*"
-    ]
-  },
   "devDependencies": {
-    "@types/jest": "29.4.0",
     "@typescript-eslint/eslint-plugin": "5.54.0",
     "@typescript-eslint/parser": "5.54.0",
     "eslint": "8.35.0",
     "husky": "8.0.3",
-    "jest": "29.4.3",
     "lint-staged": "13.1.2",
     "prettier": "2.8.4",
-    "ts-jest": "29.0.5",
-    "typescript": "4.9.5"
+    "typescript": "4.9.5",
+    "vitest": "^0.29.2"
   }
 }
