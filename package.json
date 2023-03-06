@@ -4,6 +4,7 @@
   "description": "An immutable database",
   "repository": "https://github.com/PsychoLlama/woodland",
   "author": "Jesse Gibson <JesseTheGibson@gmail.com>",
+  "packageManager": "yarn@3.4.1",
   "license": "MIT",
   "private": true,
   "type": "module",
