@@ -1,18 +1,6 @@
-import { defineConfig } from 'vite';
+import defineConfig from '../../build';
 
-export default defineConfig(async () => {
-  return {
-    build: {
-      lib: {
-        entry: './src/index.ts',
-        fileName: 'woodland-core',
-        formats: ['es', 'cjs'],
-      },
-      rollupOptions: {
-        output: {
-          exports: 'named',
-        },
-      },
-    },
-  };
+export default defineConfig({
+  packageName: 'woodland-core',
+  entry: './src/index.ts',
 });
