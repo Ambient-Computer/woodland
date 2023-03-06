@@ -1,5 +1,6 @@
 import type { StoragePlugin } from './backend/interface';
-import { Instruction, Message, InstructionType } from './replication/interface';
+import type { Instruction, Message } from './replication/interface';
+import { InstructionType } from './replication/interface';
 import type { InsertionDelta } from './types';
 import BackendController from './backend-controller';
 import { quit } from './replication/utils';

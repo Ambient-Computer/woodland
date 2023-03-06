@@ -1,4 +1,5 @@
-import { CID, createHash } from '../../../utils';
+import type { CID } from '../../../utils';
+import { createHash } from '../../../utils';
 import Timeline from '../memory';
 
 describe('MemoryTimeline', () => {

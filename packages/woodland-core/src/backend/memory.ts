@@ -1,5 +1,8 @@
 import type { CID } from 'multiformats/cid';
 import { stringify } from 'uuid';
+import type { HistoricalRecord, Transaction } from '../types';
+import { HistoricalRecordType } from '../types';
+import { assert } from '../utils';
 import type {
   StoragePlugin,
   StorageBackend,
@@ -8,8 +11,6 @@ import type {
   ObjectStores,
   HistoryStore,
 } from './interface';
-import { HistoricalRecord, HistoricalRecordType, Transaction } from '../types';
-import { assert } from '../utils';
 import MemoryTimeline from './timeline/memory';
 
 export default class MemoryStoragePlugin implements StoragePlugin {

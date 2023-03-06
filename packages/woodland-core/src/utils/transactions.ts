@@ -1,5 +1,6 @@
-import { createHash, CID } from './';
 import type { Record } from '../types';
+import type { CID } from './';
+import { createHash } from './';
 
 export function hashIds(values: Array<CID>): Promise<CID> {
   const byteLength = values.reduce(

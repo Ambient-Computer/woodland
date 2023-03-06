@@ -1,6 +1,6 @@
 import { CID } from 'multiformats/cid';
-import createHash from '../hash';
 import { sha256 } from 'multiformats/hashes/sha2';
+import createHash from '../hash';
 
 describe('hash()', () => {
   it('produces a sha-256 CID', async () => {

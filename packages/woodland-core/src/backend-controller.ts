@@ -1,6 +1,6 @@
+import assert from 'assert';
 import type { CID } from 'multiformats/cid';
 import { v4 as uuid } from 'uuid';
-import assert from 'assert';
 import { createHash, hashIds, hashTransaction } from './utils';
 import type {
   StorageBackend,
@@ -8,13 +8,13 @@ import type {
   ObjectStores,
   Timeline,
 } from './backend/interface';
-import {
+import type {
   GenesisBlock,
   HistoricalRecord,
   InsertionDelta,
-  HistoricalRecordType,
   Record,
 } from './types';
+import { HistoricalRecordType } from './types';
 
 /**
  * Manages queries and writes over the dataset backend.
