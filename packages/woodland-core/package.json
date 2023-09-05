@@ -40,7 +40,7 @@
     "test:types": "tsc"
   },
   "dependencies": {
-    "multiformats": "9.9.0",
+    "multiformats": "12.1.1",
     "uuid": "9.0.0"
   },
   "devDependencies": {
