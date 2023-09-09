@@ -7,9 +7,8 @@ import { createHash, hashTransaction } from '../utils';
 describe('BackendController', () => {
   async function setup() {
     const storage = new MemoryStoragePlugin();
-    const { controller, genesis } = await BackendController.initializeDataset(
-      storage,
-    );
+    const { controller, genesis } =
+      await BackendController.initializeDataset(storage);
 
     return {
       backend: await storage.open(genesis.id),
@@ -54,9 +53,8 @@ describe('BackendController', () => {
   describe('createEmptyClone', () => {
     it('creates a new controller over the same dataset ID', async () => {
       const store1 = new MemoryStoragePlugin();
-      const { controller, genesis } = await BackendController.initializeDataset(
-        store1,
-      );
+      const { controller, genesis } =
+        await BackendController.initializeDataset(store1);
 
       const store2 = new MemoryStoragePlugin();
       await controller.createEmptyClone(store2);

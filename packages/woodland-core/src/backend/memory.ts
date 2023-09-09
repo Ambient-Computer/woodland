@@ -69,7 +69,10 @@ class MemoryBackend implements StorageBackend {
 }
 
 class MemoryTransactionBuilder implements ObjectStores {
-  constructor(private pending: Store, private store: Store) {}
+  constructor(
+    private pending: Store,
+    private store: Store,
+  ) {}
 
   public operations = new MemoryObjectStore<ArrayBuffer>(
     this.pending.operations,
