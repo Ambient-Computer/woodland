@@ -8,7 +8,7 @@ import type { CID } from 'multiformats/cid';
  * standard provides metadata so the hash algorithm can migrate to newer
  * implementations in the future.
  */
-export default async function hash(value: ArrayBuffer): Promise<CID> {
+export default async function hash(value: Uint8Array): Promise<CID> {
   const block = await encode({
     hasher: sha256,
     codec,
