@@ -39,7 +39,7 @@ export default class Dataset {
     await this.backend.close();
   }
 
-  async insertOperation(operation: ArrayBuffer): Promise<InsertionDelta> {
+  async insertOperation(operation: Uint8Array): Promise<InsertionDelta> {
     return this.backend.insertOperation(operation);
   }
 

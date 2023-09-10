@@ -75,7 +75,7 @@ export default class BackendController {
     private backend: StorageBackend,
   ) {}
 
-  async insertOperation(operation: ArrayBuffer): Promise<InsertionDelta> {
+  async insertOperation(operation: Uint8Array): Promise<InsertionDelta> {
     return this.backend.createTransaction(async (stores) => {
       const [{ head: parentId, timeline }, operationId] = await Promise.all([
         stores.history.getMostRecentEvent(),
@@ -132,7 +132,10 @@ export default class BackendController {
    */
   async integrate(update: InsertionDelta) {
     await this.backend.createTransaction(async (stores) => {
-      const allOperations = Array.from(update.operations.values());
+      const allOperations = Array.from(
+        update.operations.values(),
+        (buffer) => new Uint8Array(buffer),
+      );
 
       const [{ timeline }, transactionIds] = await Promise.all([
         stores.history.getMostRecentEvent(),
@@ -152,7 +155,7 @@ export default class BackendController {
 
   private async saveOperations(
     stores: ObjectStores,
-    operations: Array<ArrayBuffer>,
+    operations: Array<Uint8Array>,
   ) {
     const promises = operations.map(async (operation) => {
       const hash = await createHash(operation);
