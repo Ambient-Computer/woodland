@@ -83,7 +83,7 @@
     "eslint-import-resolver-typescript": "^3.5.3",
     "eslint-plugin-import": "^2.27.5",
     "husky": "8.0.3",
-    "lint-staged": "15.0.0",
+    "lint-staged": "15.0.1",
     "prettier": "3.0.3",
     "typescript": "5.2.2",
     "vite": "^4.1.4",
