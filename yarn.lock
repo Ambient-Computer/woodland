@@ -956,7 +956,7 @@ __metadata:
     "@types/node": ^20.0.0
     "@types/uuid": 9.0.7
     "@vitest/coverage-v8": ^0.34.0
-    multiformats: 12.1.1
+    multiformats: 13.1.0
     typescript: 5.2.2
     uuid: 9.0.1
     vite: ^4.1.4
@@ -3511,10 +3511,10 @@ __metadata:
   languageName: node
   linkType: hard
 
-"multiformats@npm:12.1.1":
-  version: 12.1.1
-  resolution: "multiformats@npm:12.1.1"
-  checksum: cdd19168ea110eec37b6c193bd76dea36c1716de68cf1280f701928d00bbba3aa5e32dc71395091254738a11db47f1acf040f8ddf1688bc4b7cda5d6bbf1eb46
+"multiformats@npm:13.1.0":
+  version: 13.1.0
+  resolution: "multiformats@npm:13.1.0"
+  checksum: b970e3622a80192a4df8c23378c4854520df8b2d17db773ac8b77c19750019e1c9813cc05e12b0e3b0d03599ff5d073681e847d43b4b273efca5aabbb28eb0e0
   languageName: node
   linkType: hard
 
