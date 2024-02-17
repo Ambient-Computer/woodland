@@ -3,7 +3,7 @@
     "module": "es2020",
     "noEmit": true,
     "strict": true,
-    "moduleResolution": "node",
+    "moduleResolution": "Bundler",
     "resolveJsonModule": true,
     "allowSyntheticDefaultImports": true,
     "target": "ES2019",
