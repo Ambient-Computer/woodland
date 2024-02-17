@@ -3,15 +3,15 @@
   "version": "0.0.0",
   "description": "An immutable database.",
   "repository": "https://github.com/PsychoLlama/woodland",
-  "packageManager": "yarn@3.6.4",
+  "packageManager": "yarn@4.1.0",
   "author": "Jesse Gibson",
   "license": "MIT",
   "type": "module",
   "scripts": {
     "test": "run test:coverage && run test:lint && run test:fmt && run test:types",
-    "test:unit": "yarn workspaces foreach --parallel run test:unit --no-watch",
+    "test:unit": "yarn workspaces foreach --all --parallel run test:unit --no-watch",
     "test:coverage": "run test:unit --coverage",
-    "test:types": "yarn workspaces foreach --parallel run test:types",
+    "test:types": "yarn workspaces foreach --all --parallel run test:types",
     "test:lint": "eslint packages/*/src --color",
     "test:fmt": "prettier --check packages/*/src --color"
   },
