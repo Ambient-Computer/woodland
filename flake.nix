@@ -1,19 +1,39 @@
 {
-  description = "Farnsworth Development Environment";
+  description = "Development environment";
 
-  # Use `nix develop` to enter the dev environment.
-  outputs = { self, nixpkgs, flake-utils }:
-    let inherit (nixpkgs) lib;
+  inputs = {
+    rust-overlay.url = "github:oxalica/rust-overlay";
+    systems.url = "github:nix-systems/default";
+  };
 
-    in {
-      devShell = lib.genAttrs lib.systems.flakeExposed (system:
-        let pkgs = import nixpkgs { inherit system; };
+  outputs =
+    {
+      self,
+      nixpkgs,
+      rust-overlay,
+      systems,
+    }:
 
-        in pkgs.mkShell {
-          nativeBuildInputs = with pkgs; [
-            nodejs-18_x
-            (yarn.override { nodejs = nodejs-18_x; })
+    let
+      inherit (nixpkgs) lib;
+
+      overlays = [ (import rust-overlay) ];
+
+      eachSystem = lib.flip lib.mapAttrs (
+        lib.genAttrs (import systems) (system: import nixpkgs { inherit system overlays; })
+      );
+    in
+    {
+      devShell = eachSystem (
+        system: pkgs:
+        pkgs.mkShell {
+          packages = [
+            pkgs.just
+            pkgs.wasm-bindgen-cli
+            pkgs.nodejs
+            (pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml)
           ];
-        });
+        }
+      );
     };
 }

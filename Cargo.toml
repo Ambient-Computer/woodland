@@ -1,0 +1,16 @@
+[package]
+name = "woodland"
+version = "0.0.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Must be exact for compatibility with compiled output.
+wasm-bindgen = "=0.2.95"
+
+# Not necessary in newer versions.
+# See: https://github.com/rustwasm/wasm-bindgen/issues/4283
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(wasm_bindgen_unstable_test_coverage)'] }

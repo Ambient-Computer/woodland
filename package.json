@@ -1,92 +1,30 @@
 {
-  "name": "@woodland/monorepo",
+  "name": "@woodland/core",
   "version": "0.0.0",
-  "description": "An immutable database.",
-  "repository": "https://github.com/PsychoLlama/woodland",
-  "packageManager": "yarn@4.1.0",
-  "author": "Jesse Gibson",
-  "license": "MIT",
+  "description": "Replicated state engine for federated and P2P applications",
+  "homepage": "https://github.com/PsychoLlama/woodland#readme",
+  "author": "Jesse Gibson <JesseTheGibson@gmail.com>",
+  "license": "0BSD",
   "type": "module",
-  "scripts": {
-    "test": "run test:coverage && run test:lint && run test:fmt && run test:types",
-    "test:unit": "yarn workspaces foreach --all --parallel run test:unit --no-watch",
-    "test:coverage": "run test:unit --coverage",
-    "test:types": "yarn workspaces foreach --all --parallel run test:types",
-    "test:lint": "eslint packages/*/src --color",
-    "test:fmt": "prettier --check packages/*/src --color"
+  "exports": {
+    "types": "./wasm-lib/woodland.d.ts",
+    "import": "./wasm-lib/woodland.js"
   },
-  "workspaces": [
-    "packages/*"
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PsychoLlama/woodland.git"
+  },
+  "include": [
+    "wasm-lib"
   ],
-  "husky": {
-    "hooks": {
-      "pre-commit": "lint-staged"
-    }
-  },
-  "lint-staged": {
-    "*.{t,j}s": [
-      "eslint",
-      "prettier --check"
-    ]
-  },
-  "prettier": {
-    "singleQuote": true,
-    "trailingComma": "all"
-  },
-  "eslintConfig": {
-    "parser": "@typescript-eslint/parser",
-    "overrides": [
-      {
-        "files": [
-          "./**/__tests__/*.ts"
-        ],
-        "rules": {
-          "@typescript-eslint/no-explicit-any": "off"
-        }
-      }
-    ],
-    "env": {
-      "browser": true,
-      "es2021": true
-    },
-    "plugins": [
-      "@typescript-eslint",
-      "import"
-    ],
-    "extends": [
-      "eslint:recommended",
-      "plugin:@typescript-eslint/recommended",
-      "plugin:import/recommended",
-      "plugin:import/typescript"
-    ],
-    "rules": {
-      "@typescript-eslint/no-namespace": "off",
-      "@typescript-eslint/no-unused-vars": "error",
-      "no-prototype-builtins": "off",
-      "@typescript-eslint/consistent-type-imports": "error",
-      "import/order": [
-        "error"
-      ]
-    },
-    "settings": {
-      "import/resolver": {
-        "typescript": true,
-        "node": true
-      }
-    }
-  },
-  "devDependencies": {
-    "@types/node": "^22.0.0",
-    "@typescript-eslint/eslint-plugin": "^8.0.0",
-    "@typescript-eslint/parser": "^8.0.0",
-    "eslint": "^8.56.0",
-    "eslint-import-resolver-typescript": "^3.6.1",
-    "eslint-plugin-import": "^2.29.1",
-    "husky": "^9.0.11",
-    "lint-staged": "^15.2.2",
-    "prettier": "^3.2.5",
-    "typescript": "^5.3.3",
-    "vite": "^6.0.0",
-    "vitest": "^3.0.0"
+  "keywords": [
+    "crdt",
+    "p2p",
+    "federated",
+    "state",
+    "sync"
+  ],
+  "bugs": {
+    "url": "https://github.com/PsychoLlama/woodland/issues"
   }
 }

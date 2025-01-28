@@ -1,3 +1,3 @@
 # Woodland
 
-An append-only log designed for peer-to-peer applications.
+Replicated state machine for federated and P2P applications.
