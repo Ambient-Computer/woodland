@@ -11,11 +11,11 @@ pub enum Operation {
     Set(SIZE),
 }
 
-pub struct Counter;
+pub struct Counter(pub SIZE);
 
 impl Counter {
     pub fn new() -> Self {
-        Self
+        Self(0)
     }
 
     pub fn increment(&self, count: SIZE) -> Datatype {
@@ -28,5 +28,13 @@ impl Counter {
 
     pub fn set(&self, value: SIZE) -> Datatype {
         Datatype::Counter(Operation::Set(value))
+    }
+
+    pub fn update(&mut self, operation: Operation) {
+        self.0 = match operation {
+            Operation::Increment(count) => self.0 + count,
+            Operation::Decrement(count) => self.0 - count,
+            Operation::Set(value) => value,
+        }
     }
 }
