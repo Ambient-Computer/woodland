@@ -1,3 +1,6 @@
+_:
+  just --list
+
 build: build-wasm
 
 build-cargo:

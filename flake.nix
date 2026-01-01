@@ -4,6 +4,7 @@
   inputs = {
     rust-overlay.url = "github:oxalica/rust-overlay";
     systems.url = "github:nix-systems/default";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
   };
 
   outputs =
@@ -20,7 +21,12 @@
       overlays = [ (import rust-overlay) ];
 
       eachSystem = lib.flip lib.mapAttrs (
-        lib.genAttrs (import systems) (system: import nixpkgs { inherit system overlays; })
+        lib.genAttrs (import systems) (
+          system:
+          import nixpkgs {
+            inherit system overlays;
+          }
+        )
       );
     in
     {
