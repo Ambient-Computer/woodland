@@ -1,19 +1,36 @@
 {
   description = "Farnsworth Development Environment";
 
-  # Use `nix develop` to enter the dev environment.
-  outputs = { self, nixpkgs, flake-utils }:
-    let inherit (nixpkgs) lib;
+  inputs = {
+    systems.url = "github:nix-systems/default";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+  };
 
-    in {
-      devShell = lib.genAttrs lib.systems.flakeExposed (system:
-        let pkgs = import nixpkgs { inherit system; };
+  outputs =
+    {
+      self,
+      nixpkgs,
+      systems,
+    }:
 
-        in pkgs.mkShell {
-          nativeBuildInputs = with pkgs; [
-            nodejs-18_x
-            (yarn.override { nodejs = nodejs-18_x; })
-          ];
-        });
+    let
+      inherit (nixpkgs) lib;
+
+      eachSystem = lib.flip lib.mapAttrs (
+        lib.genAttrs (import systems) (system: nixpkgs.legacyPackages.${system})
+      );
+    in
+
+    {
+      devShells = eachSystem (
+        system: pkgs: {
+          default = pkgs.mkShell {
+            packages = with pkgs; [
+              nodejs
+              yarn
+            ];
+          };
+        }
+      );
     };
 }
