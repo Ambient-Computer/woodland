@@ -41,7 +41,7 @@
   },
   "dependencies": {
     "multiformats": "^13.1.0",
-    "uuid": "^9.0.1"
+    "uuid": "^14.0.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
