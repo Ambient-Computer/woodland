@@ -47,6 +47,7 @@
                 "rustc"
                 "rustfmt"
               ])
+              pkgs.cargo-nextest
               pkgs.nixfmt
               pkgs.prettier
               pkgs.treefmt

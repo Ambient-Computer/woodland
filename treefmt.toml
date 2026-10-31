@@ -1,5 +1,8 @@
 #:schema https://www.schemastore.org/treefmt.json
 
+[global]
+excludes = ["target/**", "*.lock"]
+
 [formatter.rustfmt]
 command = "rustfmt"
 includes = ["*.rs"]
