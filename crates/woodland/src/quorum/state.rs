@@ -2,52 +2,30 @@ use std::collections::BTreeSet;
 
 use super::{Change, Initialize};
 
-/// A quorum's state, derived from `Initialize` and the changes decided
-/// since.
+/// The quorum as it stands during one epoch, derived from the [`Ledger`](super::Ledger).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct State<PublicKey> {
-    id: blake3::Hash,
     controller: PublicKey,
     contributors: BTreeSet<PublicKey>,
 }
 
-impl<PublicKey: Ord + AsRef<[u8]>> State<PublicKey> {
-    /// Replays decided changes on top of `Initialize`.
-    pub fn derive(
-        initialize: Initialize<PublicKey>,
-        changes: impl IntoIterator<Item = Change<PublicKey>>,
-    ) -> Self {
-        let mut state = Self {
-            id: initialize.id(),
-            controller: initialize.controller,
-            contributors: initialize.contributors,
-        };
-
-        for change in changes {
-            state.apply(change);
-        }
-
-        state
-    }
-
-    /// Applies the next decided change.
-    pub fn apply(&mut self, change: Change<PublicKey>) {
-        match change {
-            Change::SetContributors { contributors } => {
-                self.contributors = contributors;
-            }
+impl<PublicKey: Ord + Clone> State<PublicKey> {
+    /// The quorum at epoch 0.
+    pub(super) fn initial(initialize: &Initialize<PublicKey>) -> Self {
+        Self {
+            controller: initialize.controller.clone(),
+            contributors: initialize.contributors.clone(),
         }
     }
 
-    #[must_use]
-    pub fn id(&self) -> blake3::Hash {
-        self.id
-    }
-
-    /// Whether `count` contributors are a strict majority.
-    #[must_use]
-    pub fn is_majority(&self, count: usize) -> bool {
-        count > self.contributors.len() / 2
+    /// Merges a commit into this state, producing the next epoch's state.
+    pub(super) fn merge(&self, commit: &Change<PublicKey>) -> Self {
+        match commit {
+            Change::SetContributors { contributors } => Self {
+                controller: self.controller.clone(),
+                contributors: contributors.clone(),
+            },
+        }
     }
 
     /// Controllers represent an administrator, someone who owns or manages
@@ -70,56 +48,47 @@ impl<PublicKey: Ord + AsRef<[u8]>> State<PublicKey> {
     pub fn contributors(&self) -> &BTreeSet<PublicKey> {
         &self.contributors
     }
+
+    #[must_use]
+    pub fn is_contributor(&self, key: &PublicKey) -> bool {
+        self.contributors.contains(key)
+    }
+
+    /// Whether `count` contributors are a strict majority.
+    #[must_use]
+    pub fn is_majority(&self, count: usize) -> bool {
+        count > self.contributors.len() / 2
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn initialize(
-        controller: &'static str,
-        contributors: &[&'static str],
-    ) -> Initialize<&'static str> {
-        Initialize {
-            controller,
+    fn state(contributors: &[&'static str]) -> State<&'static str> {
+        State::initial(&Initialize {
+            controller: "controller",
             contributors: contributors.iter().copied().collect(),
-        }
-    }
-
-    fn set_contributors(contributors: &[&'static str]) -> Change<&'static str> {
-        Change::SetContributors {
-            contributors: contributors.iter().copied().collect(),
-        }
+        })
     }
 
     #[test]
-    fn derives_from_initialize() {
-        let state = State::derive(initialize("controller", &["phone", "laptop"]), []);
+    fn merge_applies_the_commit() {
+        let merged = state(&["phone"]).merge(&Change::SetContributors {
+            contributors: BTreeSet::from(["laptop", "nas"]),
+        });
 
-        assert_eq!(state.controller(), &"controller");
-        assert_eq!(state.contributors(), &BTreeSet::from(["phone", "laptop"]));
-    }
-
-    #[test]
-    fn applies_changes_in_order() {
-        let state = State::derive(
-            initialize("controller", &["phone"]),
-            [
-                set_contributors(&["phone", "laptop"]),
-                set_contributors(&["laptop", "nas"]),
-            ],
-        );
-
-        assert_eq!(state.contributors(), &BTreeSet::from(["laptop", "nas"]));
+        assert_eq!(merged.controller(), &"controller");
+        assert_eq!(merged.contributors(), &BTreeSet::from(["laptop", "nas"]));
     }
 
     #[test]
     fn majority_is_strict() {
-        let even = State::derive(initialize("controller", &["phone", "laptop"]), []);
+        let even = state(&["phone", "laptop"]);
         assert!(!even.is_majority(1));
         assert!(even.is_majority(2));
 
-        let odd = State::derive(initialize("controller", &["phone", "laptop", "nas"]), []);
+        let odd = state(&["phone", "laptop", "nas"]);
         assert!(!odd.is_majority(1));
         assert!(odd.is_majority(2));
     }
