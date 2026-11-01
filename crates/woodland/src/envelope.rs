@@ -14,10 +14,13 @@ pub trait Payload {
 ///
 /// The signature covers the quorum's ID, so a contributor using the same key
 /// in several quorums can't have its payloads replayed from one to another.
+///
+/// Envelopes are untrusted until verified, so the payload is only reachable
+/// through [`verify`](Self::verify).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Envelope<PublicKey, Signature, T> {
     pub author: PublicKey,
-    pub payload: T,
+    payload: T,
     pub signature: Signature,
 }
 
@@ -41,17 +44,20 @@ impl<PublicKey, Signature, T: Payload> Envelope<PublicKey, Signature, T> {
         })
     }
 
-    /// Checks that `author` signed this payload for `quorum`.
+    /// Checks that `author` signed this payload for `quorum`, then hands it
+    /// over.
     ///
     /// # Errors
     ///
     /// Fails if the signature is invalid.
-    pub fn verify(&self, quorum: &blake3::Hash) -> Result<(), signature::Error>
+    pub fn verify(&self, quorum: &blake3::Hash) -> Result<&T, signature::Error>
     where
         PublicKey: Verifier<Signature>,
     {
         self.author
-            .verify(&signed_bytes(quorum, &self.payload), &self.signature)
+            .verify(&signed_bytes(quorum, &self.payload), &self.signature)?;
+
+        Ok(&self.payload)
     }
 }
 
@@ -101,7 +107,8 @@ mod tests {
         let envelope = Signed::sign(&signing_key("phone"), &quorum, set_contributors(&["phone"]))?;
 
         assert_eq!(envelope.author, signing_key("phone").verifying_key());
-        envelope.verify(&quorum)
+        assert_eq!(envelope.verify(&quorum)?, &set_contributors(&["phone"]));
+        Ok(())
     }
 
     #[test]
