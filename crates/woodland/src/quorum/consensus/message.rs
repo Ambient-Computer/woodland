@@ -146,68 +146,72 @@ mod tests {
 
     use super::*;
     use crate::quorum::ContributorChange;
+    use crate::testing::{Actor, PublicKey, keys, laptop, nas, phone};
 
-    fn ballot(round: u64, proposer: &'static str) -> Ballot<&'static str> {
-        Ballot { round, proposer }
+    fn ballot(round: u64, proposer: &Actor) -> Ballot<PublicKey> {
+        Ballot {
+            round,
+            proposer: proposer.key(),
+        }
     }
 
-    fn proposal(round: u64, added: &'static str) -> Proposal<&'static str> {
+    fn proposal(round: u64, added: &Actor) -> Proposal<PublicKey> {
         Proposal {
-            ballot: ballot(round, "phone"),
+            ballot: ballot(round, &phone()),
             operation: Operation::Contributors(ContributorChange {
-                added: BTreeSet::from([added]),
+                added: keys(&[added]),
                 removed: BTreeSet::new(),
             }),
         }
     }
 
-    fn prepare(epoch: u64, ballot: Ballot<&'static str>) -> Prepare<&'static str> {
+    fn prepare(epoch: u64, ballot: Ballot<PublicKey>) -> Prepare<PublicKey> {
         Prepare { epoch, ballot }
     }
 
     #[test]
     fn prepare_digest_covers_every_field() {
-        let base = prepare(1, ballot(1, "phone")).digest();
+        let base = prepare(1, ballot(1, &phone())).digest();
 
-        assert_ne!(base, prepare(2, ballot(1, "phone")).digest());
-        assert_ne!(base, prepare(1, ballot(2, "phone")).digest());
-        assert_ne!(base, prepare(1, ballot(1, "laptop")).digest());
+        assert_ne!(base, prepare(2, ballot(1, &phone())).digest());
+        assert_ne!(base, prepare(1, ballot(2, &phone())).digest());
+        assert_ne!(base, prepare(1, ballot(1, &laptop())).digest());
     }
 
     #[test]
     fn promise_digest_covers_every_field() {
         let promise = |epoch, round, accepted| Promise {
             epoch,
-            ballot: ballot(round, "laptop"),
+            ballot: ballot(round, &laptop()),
             accepted,
         };
-        let base = promise(1, 2, Some(proposal(1, "nas"))).digest();
+        let base = promise(1, 2, Some(proposal(1, &nas()))).digest();
 
-        assert_ne!(base, promise(2, 2, Some(proposal(1, "nas"))).digest());
-        assert_ne!(base, promise(1, 3, Some(proposal(1, "nas"))).digest());
-        assert_ne!(base, promise(1, 2, Some(proposal(0, "nas"))).digest());
-        assert_ne!(base, promise(1, 2, Some(proposal(1, "laptop"))).digest());
+        assert_ne!(base, promise(2, 2, Some(proposal(1, &nas()))).digest());
+        assert_ne!(base, promise(1, 3, Some(proposal(1, &nas()))).digest());
+        assert_ne!(base, promise(1, 2, Some(proposal(0, &nas()))).digest());
+        assert_ne!(base, promise(1, 2, Some(proposal(1, &laptop()))).digest());
         assert_ne!(base, promise(1, 2, None).digest());
     }
 
     #[test]
     fn accept_digest_covers_every_field() {
         let accept = |epoch, proposal| Accept { epoch, proposal };
-        let base = accept(1, proposal(1, "nas")).digest();
+        let base = accept(1, proposal(1, &nas())).digest();
 
-        assert_ne!(base, accept(2, proposal(1, "nas")).digest());
-        assert_ne!(base, accept(1, proposal(2, "nas")).digest());
-        assert_ne!(base, accept(1, proposal(1, "laptop")).digest());
+        assert_ne!(base, accept(2, proposal(1, &nas())).digest());
+        assert_ne!(base, accept(1, proposal(2, &nas())).digest());
+        assert_ne!(base, accept(1, proposal(1, &laptop())).digest());
     }
 
     #[test]
     fn accepted_digest_covers_every_field() {
         let accepted = |epoch, proposal| Accepted { epoch, proposal };
-        let base = accepted(1, proposal(1, "nas")).digest();
+        let base = accepted(1, proposal(1, &nas())).digest();
 
-        assert_ne!(base, accepted(2, proposal(1, "nas")).digest());
-        assert_ne!(base, accepted(1, proposal(2, "nas")).digest());
-        assert_ne!(base, accepted(1, proposal(1, "laptop")).digest());
+        assert_ne!(base, accepted(2, proposal(1, &nas())).digest());
+        assert_ne!(base, accepted(1, proposal(2, &nas())).digest());
+        assert_ne!(base, accepted(1, proposal(1, &laptop())).digest());
     }
 
     // `Accept` and `Accepted` have identical fields. Without distinct type
@@ -216,11 +220,11 @@ mod tests {
     fn accept_and_accepted_differ() {
         let accept = Accept {
             epoch: 1,
-            proposal: proposal(1, "nas"),
+            proposal: proposal(1, &nas()),
         };
         let accepted = Accepted {
             epoch: 1,
-            proposal: proposal(1, "nas"),
+            proposal: proposal(1, &nas()),
         };
 
         assert_ne!(accept.digest(), accepted.digest());

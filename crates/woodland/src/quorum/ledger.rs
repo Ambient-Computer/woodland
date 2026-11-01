@@ -21,22 +21,28 @@ pub struct Ledger<PublicKey, Signature> {
 }
 
 impl<PublicKey: Ord + Clone + AsRef<[u8]>, Signature> Ledger<PublicKey, Signature> {
-    /// Replays commits on top of the initial state.
-    pub fn derive(
-        initial_state: Initialize<PublicKey>,
-        commits: impl IntoIterator<Item = Certificate<PublicKey, Signature>>,
-    ) -> Self {
-        let ledger = Self {
+    /// Starts a new quorum, with nothing committed yet.
+    #[must_use]
+    pub fn new(initial_state: Initialize<PublicKey>) -> Self {
+        Self {
             id: initial_state.id(),
             states: vec![State::initial(&initial_state)],
             initial_state,
             commits: Vec::new(),
-        };
+        }
+    }
 
-        commits.into_iter().fold(ledger, |mut ledger, commit| {
-            ledger.append(commit);
-            ledger
-        })
+    /// Restores a ledger by replaying commits on top of the initial state.
+    pub fn derive(
+        initial_state: Initialize<PublicKey>,
+        commits: impl IntoIterator<Item = Certificate<PublicKey, Signature>>,
+    ) -> Self {
+        commits
+            .into_iter()
+            .fold(Self::new(initial_state), |mut ledger, commit| {
+                ledger.append(commit);
+                ledger
+            })
     }
 
     /// Appends the next commit, starting a new epoch. Commits are validated
@@ -89,42 +95,25 @@ impl<PublicKey, Signature> Ledger<PublicKey, Signature> {
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
-    use ed25519_dalek::Signature;
-
     use super::*;
     use crate::quorum::consensus::{Ballot, Proposal};
     use crate::quorum::{ContributorChange, Operation};
+    use crate::testing::{Ledger, PublicKey, keys, laptop, nas, phone, quorum};
 
     // Commits carry no signatures here: the ledger trusts its commits.
-    type Ledger = super::Ledger<&'static str, Signature>;
-
-    fn keys(keys: &[&'static str]) -> BTreeSet<&'static str> {
-        keys.iter().copied().collect()
-    }
-
-    fn initialize(contributors: &[&'static str]) -> Initialize<&'static str> {
-        Initialize {
-            controller: "controller",
-            contributors: keys(contributors),
-        }
-    }
-
     fn commit(
-        epoch: u64,
-        added: &[&'static str],
-        removed: &[&'static str],
-    ) -> Certificate<&'static str, Signature> {
+        ledger: &Ledger,
+        added: BTreeSet<PublicKey>,
+        removed: BTreeSet<PublicKey>,
+    ) -> Certificate<PublicKey, ed25519_dalek::Signature> {
         Certificate {
-            epoch,
+            epoch: ledger.epoch(),
             proposal: Proposal {
                 ballot: Ballot {
                     round: 1,
-                    proposer: "phone",
+                    proposer: phone().key(),
                 },
-                operation: Operation::Contributors(ContributorChange {
-                    added: keys(added),
-                    removed: keys(removed),
-                }),
+                operation: Operation::Contributors(ContributorChange { added, removed }),
             },
             signatures: BTreeMap::new(),
         }
@@ -132,35 +121,53 @@ mod tests {
 
     #[test]
     fn starts_at_epoch_zero() {
-        let ledger = Ledger::derive(initialize(&["phone", "laptop"]), []);
+        let ledger = quorum(&[&phone(), &laptop()]);
 
         assert_eq!(ledger.epoch(), 0);
-        assert_eq!(ledger.current().contributors(), &keys(&["phone", "laptop"]));
+        assert_eq!(
+            ledger.current().contributors(),
+            &keys(&[&phone(), &laptop()])
+        );
     }
 
     #[test]
     fn applies_commits_in_order() {
-        let ledger = Ledger::derive(
-            initialize(&["phone"]),
-            [commit(0, &["laptop"], &[]), commit(1, &["nas"], &["phone"])],
-        );
+        let mut ledger = quorum(&[&phone()]);
+        ledger.append(commit(&ledger, keys(&[&laptop()]), keys(&[])));
+        ledger.append(commit(&ledger, keys(&[&nas()]), keys(&[&phone()])));
 
         assert_eq!(ledger.epoch(), 2);
-        assert_eq!(ledger.current().contributors(), &keys(&["laptop", "nas"]));
+        assert_eq!(ledger.current().contributors(), &keys(&[&laptop(), &nas()]));
     }
 
     #[test]
     fn keeps_past_states() {
-        let ledger = Ledger::derive(initialize(&["phone"]), [commit(0, &["laptop"], &["phone"])]);
+        let mut ledger = quorum(&[&phone()]);
+        ledger.append(commit(&ledger, keys(&[&laptop()]), keys(&[&phone()])));
 
         assert_eq!(
-            ledger.state(0).map(|state| state.is_contributor(&"phone")),
+            ledger
+                .state(0)
+                .map(|state| state.is_contributor(&phone().key())),
             Some(true)
         );
         assert_eq!(
-            ledger.state(1).map(|state| state.is_contributor(&"phone")),
+            ledger
+                .state(1)
+                .map(|state| state.is_contributor(&phone().key())),
             Some(false)
         );
         assert_eq!(ledger.state(2), None);
+    }
+
+    #[test]
+    fn restores_from_what_was_persisted() {
+        let mut ledger = quorum(&[&phone()]);
+        ledger.append(commit(&ledger, keys(&[&laptop()]), keys(&[])));
+        ledger.append(commit(&ledger, keys(&[&nas()]), keys(&[&phone()])));
+
+        let restored = Ledger::derive(ledger.initial_state().clone(), ledger.commits().to_vec());
+
+        assert_eq!(restored, ledger);
     }
 }

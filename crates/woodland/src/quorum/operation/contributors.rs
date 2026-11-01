@@ -58,12 +58,9 @@ impl<PublicKey: Ord + Clone> ContributorChange<PublicKey> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{Actor, PublicKey, keys, laptop, nas, phone};
 
-    fn keys(keys: &[&'static str]) -> BTreeSet<&'static str> {
-        keys.iter().copied().collect()
-    }
-
-    fn change(added: &[&'static str], removed: &[&'static str]) -> ContributorChange<&'static str> {
+    fn change(added: &[&Actor], removed: &[&Actor]) -> ContributorChange<PublicKey> {
         ContributorChange {
             added: keys(added),
             removed: keys(removed),
@@ -73,22 +70,25 @@ mod tests {
     #[test]
     fn applies_additions_and_removals() {
         assert_eq!(
-            change(&["nas"], &["phone"]).apply(&keys(&["phone", "laptop"])),
-            keys(&["laptop", "nas"])
+            change(&[&nas()], &[&phone()]).apply(&keys(&[&phone(), &laptop()])),
+            keys(&[&laptop(), &nas()])
         );
     }
 
     #[test]
     fn accepts_a_change_that_fits() {
-        let contributors = keys(&["phone", "laptop"]);
+        let contributors = keys(&[&phone(), &laptop()]);
 
-        assert_eq!(change(&["nas"], &["phone"]).validate(&contributors), Ok(()));
+        assert_eq!(
+            change(&[&nas()], &[&phone()]).validate(&contributors),
+            Ok(())
+        );
     }
 
     #[test]
     fn rejects_adding_a_contributor() {
         assert_eq!(
-            change(&["phone"], &[]).validate(&keys(&["phone"])),
+            change(&[&phone()], &[]).validate(&keys(&[&phone()])),
             Err(Error::AlreadyContributor)
         );
     }
@@ -96,7 +96,7 @@ mod tests {
     #[test]
     fn rejects_removing_a_stranger() {
         assert_eq!(
-            change(&[], &["nas"]).validate(&keys(&["phone"])),
+            change(&[], &[&nas()]).validate(&keys(&[&phone()])),
             Err(Error::NotContributor)
         );
     }
@@ -104,11 +104,11 @@ mod tests {
     #[test]
     fn rejects_adding_and_removing_the_same_key() {
         assert_eq!(
-            change(&["nas"], &["nas"]).validate(&keys(&["phone"])),
+            change(&[&nas()], &[&nas()]).validate(&keys(&[&phone()])),
             Err(Error::NotContributor)
         );
         assert_eq!(
-            change(&["nas"], &["nas"]).validate(&keys(&["phone", "nas"])),
+            change(&[&nas()], &[&nas()]).validate(&keys(&[&phone(), &nas()])),
             Err(Error::AlreadyContributor)
         );
     }
@@ -116,7 +116,7 @@ mod tests {
     #[test]
     fn rejects_removing_everyone() {
         assert_eq!(
-            change(&[], &["phone", "laptop"]).validate(&keys(&["phone", "laptop"])),
+            change(&[], &[&phone(), &laptop()]).validate(&keys(&[&phone(), &laptop()])),
             Err(Error::NoContributors)
         );
     }

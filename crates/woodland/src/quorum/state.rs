@@ -66,33 +66,30 @@ impl<PublicKey: Ord + Clone> State<PublicKey> {
 mod tests {
     use super::*;
     use crate::quorum::ContributorChange;
-
-    fn state(contributors: &[&'static str]) -> State<&'static str> {
-        State::initial(&Initialize {
-            controller: "controller",
-            contributors: contributors.iter().copied().collect(),
-        })
-    }
+    use crate::testing::{keys, laptop, nas, phone, quorum};
 
     #[test]
     fn merge_applies_the_commit() {
-        let merged = state(&["phone"]).merge(&Operation::Contributors(ContributorChange {
-            added: BTreeSet::from(["laptop", "nas"]),
-            removed: BTreeSet::from(["phone"]),
-        }));
+        let ledger = quorum(&[&phone()]);
+        let merged = ledger
+            .current()
+            .merge(&Operation::Contributors(ContributorChange {
+                added: keys(&[&laptop(), &nas()]),
+                removed: keys(&[&phone()]),
+            }));
 
-        assert_eq!(merged.controller(), &"controller");
-        assert_eq!(merged.contributors(), &BTreeSet::from(["laptop", "nas"]));
+        assert_eq!(merged.controller(), &ledger.initial_state().controller);
+        assert_eq!(merged.contributors(), &keys(&[&laptop(), &nas()]));
     }
 
     #[test]
     fn majority_is_strict() {
-        let even = state(&["phone", "laptop"]);
-        assert!(!even.is_majority(1));
-        assert!(even.is_majority(2));
+        let even = quorum(&[&phone(), &laptop()]);
+        assert!(!even.current().is_majority(1));
+        assert!(even.current().is_majority(2));
 
-        let odd = state(&["phone", "laptop", "nas"]);
-        assert!(!odd.is_majority(1));
-        assert!(odd.is_majority(2));
+        let odd = quorum(&[&phone(), &laptop(), &nas()]);
+        assert!(!odd.current().is_majority(1));
+        assert!(odd.current().is_majority(2));
     }
 }

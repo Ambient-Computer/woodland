@@ -105,59 +105,61 @@ impl<PublicKey: AsRef<[u8]>> Payload for Operation<PublicKey> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn initialize(
-        controller: &'static str,
-        contributors: &[&'static str],
-    ) -> Initialize<&'static str> {
-        Initialize {
-            controller,
-            contributors: contributors.iter().copied().collect(),
-        }
-    }
-
-    fn add_contributors(added: &[&'static str]) -> Operation<&'static str> {
-        Operation::Contributors(ContributorChange {
-            added: added.iter().copied().collect(),
-            removed: BTreeSet::new(),
-        })
-    }
+    use crate::testing::{controller, keys, laptop, nas, phone, quorum};
 
     #[test]
     fn id_is_stable() {
+        let initialize = Initialize {
+            controller: controller().key(),
+            contributors: keys(&[&phone(), &laptop()]),
+        };
+
         assert_eq!(
-            initialize("controller", &["phone", "laptop"])
-                .id()
-                .to_hex()
-                .as_str(),
-            "5ef36b99cd4293f04e77ed47fbb6fd7bc1ba1b71b752fd9173489640cbe45efd",
+            initialize.id().to_hex().as_str(),
+            "54e425629998d30a32f61faa4fc5f55e4a5719f8fee6434e99829bfd2accd5a9"
         );
     }
 
     #[test]
     fn id_depends_on_every_field() {
-        let id = initialize("controller", &["phone", "laptop"]).id();
+        let initialize = quorum(&[&phone(), &laptop()]).initial_state().clone();
 
-        assert_ne!(
-            id,
-            initialize("another controller", &["phone", "laptop"]).id()
-        );
-        assert_ne!(id, initialize("controller", &["phone", "nas"]).id());
+        let other_controller = Initialize {
+            controller: quorum(&[&phone(), &laptop()]).initial_state().controller,
+            ..initialize.clone()
+        };
+        let other_contributors = Initialize {
+            contributors: keys(&[&phone(), &nas()]),
+            ..initialize.clone()
+        };
+
+        assert_ne!(initialize.id(), other_controller.id());
+        assert_ne!(initialize.id(), other_contributors.id());
     }
 
-    // Crafted keys, not device names: both sets concatenate to the same bytes.
+    // Crafted keys, not actors: both sets concatenate to the same bytes.
     #[test]
     fn key_boundaries_are_unambiguous() {
-        assert_ne!(
-            add_contributors(&["ab", "c"]).digest(),
-            add_contributors(&["a", "bc"]).digest(),
-        );
+        let add = |added: &[&'static str]| {
+            Operation::Contributors(ContributorChange {
+                added: added.iter().copied().collect(),
+                removed: BTreeSet::new(),
+            })
+        };
+
+        assert_ne!(add(&["ab", "c"]).digest(), add(&["a", "bc"]).digest());
     }
 
     #[test]
     fn orders_by_digest() {
-        let laptop = add_contributors(&["laptop"]);
-        let nas = add_contributors(&["nas"]);
+        let add = |added| {
+            Operation::Contributors(ContributorChange {
+                added,
+                removed: BTreeSet::new(),
+            })
+        };
+        let laptop = add(keys(&[&laptop()]));
+        let nas = add(keys(&[&nas()]));
 
         assert_eq!(
             laptop.cmp(&nas),
