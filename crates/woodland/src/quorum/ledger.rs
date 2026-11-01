@@ -1,5 +1,7 @@
+use signature::Verifier;
+
 use super::consensus::Certificate;
-use super::{Initialize, State};
+use super::{Genesis, Initialize, State};
 
 /// Every committed quorum operation, in order, each with the certificate
 /// proving it was decided. The source of truth for quorum state: states are
@@ -8,12 +10,12 @@ use super::{Initialize, State};
 /// The epoch is the number of commits, and indexes the state that was
 /// current at the time.
 ///
-/// Persist `initial_state` and `commits`, then restore with
+/// Persist `genesis` and `commits`, then restore with
 /// [`derive`](Self::derive). Everything else is rebuilt from them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ledger<PublicKey, Signature> {
     id: blake3::Hash,
-    initial_state: Initialize<PublicKey>,
+    genesis: Genesis<PublicKey, Signature>,
     commits: Vec<Certificate<PublicKey, Signature>>,
 
     /// One per epoch, so past epochs can be checked without replaying.
@@ -21,28 +23,49 @@ pub struct Ledger<PublicKey, Signature> {
 }
 
 impl<PublicKey: Ord + Clone + AsRef<[u8]>, Signature> Ledger<PublicKey, Signature> {
-    /// Starts a new quorum, with nothing committed yet.
-    #[must_use]
-    pub fn new(initial_state: Initialize<PublicKey>) -> Self {
-        Self {
+    /// Starts a new quorum, with nothing committed yet. Also how to join one
+    /// created elsewhere, from a genesis someone sent.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the controller's signature on `genesis` is invalid. For a
+    /// genesis just signed locally, that means the controller's key pair is
+    /// broken, e.g. a public key that doesn't match its private key. Better
+    /// to find out now than when the key is needed. For one received from
+    /// someone else, it means it was tampered with or forged.
+    pub fn new(genesis: Genesis<PublicKey, Signature>) -> Result<Self, signature::Error>
+    where
+        PublicKey: Verifier<Signature>,
+    {
+        let initial_state = genesis.verify()?;
+
+        Ok(Self {
             id: initial_state.id(),
-            states: vec![State::initial(&initial_state)],
-            initial_state,
+            states: vec![State::initial(initial_state)],
+            genesis,
             commits: Vec::new(),
-        }
+        })
     }
 
     /// Restores a ledger by replaying commits on top of the initial state.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the controller's signature on `genesis` is invalid, e.g. if
+    /// it was corrupted in storage.
     pub fn derive(
-        initial_state: Initialize<PublicKey>,
+        genesis: Genesis<PublicKey, Signature>,
         commits: impl IntoIterator<Item = Certificate<PublicKey, Signature>>,
-    ) -> Self {
-        commits
-            .into_iter()
-            .fold(Self::new(initial_state), |mut ledger, commit| {
-                ledger.append(commit);
-                ledger
-            })
+    ) -> Result<Self, signature::Error>
+    where
+        PublicKey: Verifier<Signature>,
+    {
+        let ledger = Self::new(genesis)?;
+
+        Ok(commits.into_iter().fold(ledger, |mut ledger, commit| {
+            ledger.append(commit);
+            ledger
+        }))
     }
 
     /// Appends the next commit, starting a new epoch. Commits are validated
@@ -63,8 +86,14 @@ impl<PublicKey, Signature> Ledger<PublicKey, Signature> {
     }
 
     #[must_use]
+    pub fn genesis(&self) -> &Genesis<PublicKey, Signature> {
+        &self.genesis
+    }
+
+    /// The initial state, verified when the ledger was created.
+    #[must_use]
     pub fn initial_state(&self) -> &Initialize<PublicKey> {
-        &self.initial_state
+        &self.genesis.initial_state
     }
 
     #[must_use]
@@ -161,13 +190,14 @@ mod tests {
     }
 
     #[test]
-    fn restores_from_what_was_persisted() {
+    fn restores_from_what_was_persisted() -> Result<(), signature::Error> {
         let mut ledger = quorum(&[&phone()]);
         ledger.append(commit(&ledger, keys(&[&laptop()]), keys(&[])));
         ledger.append(commit(&ledger, keys(&[&nas()]), keys(&[&phone()])));
 
-        let restored = Ledger::derive(ledger.initial_state().clone(), ledger.commits().to_vec());
+        let restored = Ledger::derive(ledger.genesis().clone(), ledger.commits().to_vec())?;
 
         assert_eq!(restored, ledger);
+        Ok(())
     }
 }

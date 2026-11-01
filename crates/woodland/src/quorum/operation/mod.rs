@@ -1,27 +1,12 @@
 mod contributors;
 
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
 
 pub use contributors::{ContributorChange, Error};
 
-use crate::content_hash::{PayloadType, hasher_for, update_key, update_keys};
+use crate::content_hash::{PayloadType, hasher_for, update_keys};
 use crate::envelope::Payload;
 use crate::quorum::State;
-
-/// Creates a new quorum. The quorum determines who has write access. All
-/// mutable data must be associated with exactly one quorum.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Initialize<PublicKey> {
-    /// Controller keys are assumed to be globally unique. Quorum identity
-    /// comes from this struct, so reusing a key could make two quorums
-    /// appear the same. Identity may be used as a cache key. Avoid the
-    /// trouble and always generate a fresh key.
-    pub controller: PublicKey,
-
-    /// Initial actors with write access. Must not be empty.
-    pub contributors: BTreeSet<PublicKey>,
-}
 
 /// A change to quorum state.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -70,23 +55,6 @@ impl<PublicKey: Ord + Clone> Operation<PublicKey> {
     }
 }
 
-impl<PublicKey: AsRef<[u8]>> Initialize<PublicKey> {
-    /// Identifies the quorum. Primarily useful as a stable cache key.
-    #[must_use]
-    pub fn id(&self) -> blake3::Hash {
-        let mut hasher = hasher_for(PayloadType::Initialize);
-        update_key(&mut hasher, &self.controller);
-        update_keys(&mut hasher, &self.contributors);
-        hasher.finalize()
-    }
-}
-
-impl<PublicKey: AsRef<[u8]>> Payload for Initialize<PublicKey> {
-    fn digest(&self) -> blake3::Hash {
-        self.id()
-    }
-}
-
 impl<PublicKey: AsRef<[u8]>> Payload for Operation<PublicKey> {
     fn digest(&self) -> blake3::Hash {
         let mut hasher = hasher_for(PayloadType::Operation);
@@ -104,38 +72,10 @@ impl<PublicKey: AsRef<[u8]>> Payload for Operation<PublicKey> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
-    use crate::testing::{controller, keys, laptop, nas, phone, quorum};
-
-    #[test]
-    fn id_is_stable() {
-        let initialize = Initialize {
-            controller: controller().key(),
-            contributors: keys(&[&phone(), &laptop()]),
-        };
-
-        assert_eq!(
-            initialize.id().to_hex().as_str(),
-            "54e425629998d30a32f61faa4fc5f55e4a5719f8fee6434e99829bfd2accd5a9"
-        );
-    }
-
-    #[test]
-    fn id_depends_on_every_field() {
-        let initialize = quorum(&[&phone(), &laptop()]).initial_state().clone();
-
-        let other_controller = Initialize {
-            controller: quorum(&[&phone(), &laptop()]).initial_state().controller,
-            ..initialize.clone()
-        };
-        let other_contributors = Initialize {
-            contributors: keys(&[&phone(), &nas()]),
-            ..initialize.clone()
-        };
-
-        assert_ne!(initialize.id(), other_controller.id());
-        assert_ne!(initialize.id(), other_contributors.id());
-    }
+    use crate::testing::{keys, laptop, nas};
 
     // Crafted keys, not actors: both sets concatenate to the same bytes.
     #[test]

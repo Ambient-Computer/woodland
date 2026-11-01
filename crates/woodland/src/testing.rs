@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 use signature::{Keypair, Signer, Verifier};
 
-use crate::quorum::{self, Initialize};
+use crate::quorum::{self, Genesis};
 
 pub(crate) type Ledger = quorum::Ledger<PublicKey, Signature>;
 
@@ -85,8 +85,8 @@ pub(crate) fn nas() -> Actor {
     Actor::named("nas")
 }
 
-/// A controller with a fixed key, for tests that need a stable quorum ID.
-/// Real quorums get a fresh one; see [`quorum`].
+/// Controls every test quorum. They're told apart by nonce, the same way
+/// one person's quorums are.
 pub(crate) fn controller() -> Actor {
     Actor::named("controller")
 }
@@ -96,15 +96,15 @@ pub(crate) fn keys(actors: &[&Actor]) -> BTreeSet<PublicKey> {
 }
 
 /// A new quorum of `contributors`, created the way an application would:
-/// under a fresh controller key.
+/// signed by the controller, with a fresh nonce.
 pub(crate) fn quorum(contributors: &[&Actor]) -> Ledger {
-    // Unique per quorum, like a freshly generated key.
+    // Unique per quorum, standing in for random bytes.
     static QUORUMS: AtomicU64 = AtomicU64::new(0);
-    let count = QUORUMS.fetch_add(1, Ordering::Relaxed);
-    let controller = Actor::named(&format!("controller {count}"));
+    let mut nonce = [0; 16];
+    nonce[..8].copy_from_slice(&QUORUMS.fetch_add(1, Ordering::Relaxed).to_le_bytes());
 
-    Ledger::new(Initialize {
-        controller: controller.key(),
-        contributors: keys(contributors),
-    })
+    let genesis =
+        Genesis::sign(&controller(), nonce, keys(contributors)).expect("test keys always sign");
+
+    Ledger::new(genesis).expect("a freshly signed genesis verifies")
 }
