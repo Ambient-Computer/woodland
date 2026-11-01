@@ -5,21 +5,6 @@ use super::Tally;
 use super::{Ballot, Proposal};
 use crate::quorum::Operation;
 
-/// What a contributor has promised and accepted during one epoch.
-///
-/// Persisted. A contributor that forgets a promise could vote for two
-/// different operations, letting two commits win the same epoch.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Acceptor<PublicKey> {
-    pub epoch: u64,
-
-    /// The highest ballot it promised. Lower ballots are ignored.
-    pub promised: Option<Ballot<PublicKey>>,
-
-    /// The last proposal it accepted, reported in later promises.
-    pub accepted: Option<Proposal<PublicKey>>,
-}
-
 /// A contributor's attempt to commit an operation during one epoch.
 ///
 /// Persisted, except for `phase`. A proposer that forgets its ballot could
