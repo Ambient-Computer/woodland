@@ -26,6 +26,11 @@ pub enum Error {
     /// tally after committing, instead of starting a new one.
     #[error("tally is for an earlier epoch than the ledger")]
     StaleTally,
+
+    /// Like [`StaleTally`](Self::StaleTally), for a proposer kept after
+    /// committing.
+    #[error("proposer is for an earlier epoch than the ledger")]
+    StaleProposer,
 }
 
 impl<PublicKey: Ord + Clone, Signature> Ledger<PublicKey, Signature> {
