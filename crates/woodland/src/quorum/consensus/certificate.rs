@@ -178,6 +178,7 @@ mod tests {
             certificate.verify(&ledger),
             Err(InvalidCertificate::NoMajority)
         ));
+
         Ok(())
     }
 
@@ -190,6 +191,7 @@ mod tests {
             certificate.verify(&ledger),
             Err(InvalidCertificate::NotContributor)
         ));
+
         Ok(())
     }
 
@@ -203,6 +205,7 @@ mod tests {
             certificate.verify(&ledger),
             Err(InvalidCertificate::InvalidSignature(_))
         ));
+
         Ok(())
     }
 
@@ -216,6 +219,7 @@ mod tests {
             certificate.verify(&ours),
             Err(InvalidCertificate::InvalidSignature(_))
         ));
+
         Ok(())
     }
 
@@ -228,6 +232,7 @@ mod tests {
             certificate.verify(&ledger),
             Err(InvalidCertificate::InvalidOperation(_))
         ));
+
         Ok(())
     }
 
@@ -241,6 +246,7 @@ mod tests {
             certificate.verify(&ledger),
             Err(InvalidCertificate::UnknownEpoch)
         ));
+
         Ok(())
     }
 }

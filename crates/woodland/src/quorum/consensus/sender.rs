@@ -4,7 +4,7 @@ use super::Message;
 use crate::envelope::Envelope;
 use crate::quorum::Ledger;
 
-/// Why a message wasn't accepted from its sender.
+/// Why a message was rejected.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("invalid signature")]
@@ -20,6 +20,12 @@ pub enum Error {
 
     #[error("sender is not the ballot's proposer")]
     NotProposer,
+
+    /// A vote for an epoch after the tally's, which the ledger has already
+    /// reached. Not the sender's fault: the caller kept counting in an old
+    /// tally after committing, instead of starting a new one.
+    #[error("tally is for an earlier epoch than the ledger")]
+    StaleTally,
 }
 
 impl<PublicKey: Ord + Clone, Signature> Ledger<PublicKey, Signature> {
@@ -136,6 +142,7 @@ mod tests {
             ours.verify(&envelope),
             Err(Error::InvalidSignature(_))
         ));
+
         Ok(())
     }
 
@@ -157,6 +164,7 @@ mod tests {
             ledger.verify(&envelope),
             Err(Error::NotContributor)
         ));
+
         Ok(())
     }
 
