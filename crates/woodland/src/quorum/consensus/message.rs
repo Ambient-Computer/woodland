@@ -68,6 +68,56 @@ pub struct Accepted<PublicKey> {
     pub proposal: Proposal<PublicKey>,
 }
 
+/// A Paxos message, as far as checking its sender goes.
+pub trait Message<PublicKey>: Payload {
+    /// The epoch it's for. Only that epoch's contributors may send it.
+    fn epoch(&self) -> u64;
+
+    /// The one contributor allowed to sign it, if not any contributor. A
+    /// ballot belongs to its proposer, so only they may ask for votes on it.
+    fn required_signer(&self) -> Option<&PublicKey>;
+}
+
+impl<PublicKey: AsRef<[u8]>> Message<PublicKey> for Prepare<PublicKey> {
+    fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    fn required_signer(&self) -> Option<&PublicKey> {
+        Some(&self.ballot.proposer)
+    }
+}
+
+impl<PublicKey: AsRef<[u8]>> Message<PublicKey> for Promise<PublicKey> {
+    fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    fn required_signer(&self) -> Option<&PublicKey> {
+        None
+    }
+}
+
+impl<PublicKey: AsRef<[u8]>> Message<PublicKey> for Accept<PublicKey> {
+    fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    fn required_signer(&self) -> Option<&PublicKey> {
+        Some(&self.proposal.ballot.proposer)
+    }
+}
+
+impl<PublicKey: AsRef<[u8]>> Message<PublicKey> for Accepted<PublicKey> {
+    fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    fn required_signer(&self) -> Option<&PublicKey> {
+        None
+    }
+}
+
 impl<PublicKey: AsRef<[u8]>> Payload for Prepare<PublicKey> {
     fn digest(&self) -> blake3::Hash {
         let mut hasher = hasher_for(PayloadType::Prepare);
