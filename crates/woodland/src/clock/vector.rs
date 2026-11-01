@@ -1,6 +1,9 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
+use crate::content_hash::{PayloadType, hasher_for, update_key, update_len};
+use crate::envelope::Payload;
+
 /// Identifies a contributor's transaction. Both fields only increase, so
 /// any gap between two versions is exactly the transactions in between.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -122,6 +125,19 @@ impl<PublicKey: Ord> VersionVector<PublicKey> {
     }
 }
 
+impl<PublicKey: AsRef<[u8]>> Payload for VersionVector<PublicKey> {
+    fn digest(&self) -> blake3::Hash {
+        let mut hasher = hasher_for(PayloadType::VersionVector);
+        update_len(&mut hasher, self.versions.len());
+        for (contributor, version) in &self.versions {
+            update_key(&mut hasher, contributor);
+            hasher.update(&version.epoch.to_le_bytes());
+            hasher.update(&version.counter.to_le_bytes());
+        }
+        hasher.finalize()
+    }
+}
+
 impl<PublicKey: Ord> FromIterator<(PublicKey, Version)> for VersionVector<PublicKey> {
     fn from_iter<I: IntoIterator<Item = (PublicKey, Version)>>(versions: I) -> Self {
         Self {
@@ -229,6 +245,15 @@ mod tests {
 
         assert_eq!(left.compare(&right)?, None);
         Ok(())
+    }
+
+    #[test]
+    fn digest_covers_every_version() {
+        let base = vector(&[("a", version(1, 2))]);
+
+        assert_ne!(base.digest(), vector(&[("a", version(2, 2))]).digest());
+        assert_ne!(base.digest(), vector(&[("a", version(1, 3))]).digest());
+        assert_ne!(base.digest(), vector(&[("b", version(1, 2))]).digest());
     }
 
     #[test]

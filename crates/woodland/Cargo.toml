@@ -11,5 +11,8 @@ blake3.workspace = true
 signature.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+ed25519-dalek.workspace = true
+
 [lints]
 workspace = true
