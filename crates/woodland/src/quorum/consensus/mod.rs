@@ -4,5 +4,5 @@
 mod message;
 mod role;
 
-pub use message::{Accept, Accepted, Ballot, Prepare, Promise, Proposal};
+pub use message::{Accept, Accepted, Ballot, Certificate, Prepare, Promise, Proposal};
 pub use role::{Acceptor, Phase, Proposer};
