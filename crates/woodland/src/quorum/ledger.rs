@@ -1,4 +1,4 @@
-use super::{Change, Initialize, State};
+use super::{Initialize, Operation, State};
 
 /// Every committed quorum operation, in order. The source of truth for
 /// quorum state: states are derived from it, never stored on their own.
@@ -9,7 +9,7 @@ use super::{Change, Initialize, State};
 pub struct Ledger<PublicKey> {
     id: blake3::Hash,
     initial_state: Initialize<PublicKey>,
-    commits: Vec<Change<PublicKey>>,
+    commits: Vec<Operation<PublicKey>>,
 
     /// One per epoch, so past epochs can be checked without replaying.
     states: Vec<State<PublicKey>>,
@@ -19,7 +19,7 @@ impl<PublicKey: Ord + Clone + AsRef<[u8]>> Ledger<PublicKey> {
     /// Replays commits on top of the initial state.
     pub fn derive(
         initial_state: Initialize<PublicKey>,
-        commits: impl IntoIterator<Item = Change<PublicKey>>,
+        commits: impl IntoIterator<Item = Operation<PublicKey>>,
     ) -> Self {
         let ledger = Self {
             id: initial_state.id(),
@@ -35,7 +35,7 @@ impl<PublicKey: Ord + Clone + AsRef<[u8]>> Ledger<PublicKey> {
     }
 
     /// Appends the next commit, starting a new epoch.
-    pub fn append(&mut self, commit: Change<PublicKey>) {
+    pub fn append(&mut self, commit: Operation<PublicKey>) {
         self.states.push(self.current().merge(&commit));
         self.commits.push(commit);
     }
@@ -53,7 +53,7 @@ impl<PublicKey> Ledger<PublicKey> {
     }
 
     #[must_use]
-    pub fn commits(&self) -> &[Change<PublicKey>] {
+    pub fn commits(&self) -> &[Operation<PublicKey>] {
         &self.commits
     }
 
@@ -89,8 +89,8 @@ mod tests {
         }
     }
 
-    fn set_contributors(contributors: &[&'static str]) -> Change<&'static str> {
-        Change::SetContributors {
+    fn set_contributors(contributors: &[&'static str]) -> Operation<&'static str> {
+        Operation::SetContributors {
             contributors: contributors.iter().copied().collect(),
         }
     }

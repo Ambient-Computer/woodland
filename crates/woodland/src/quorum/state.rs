@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use super::{Change, Initialize};
+use super::{Initialize, Operation};
 
 /// The quorum as it stands during one epoch, derived from the [`Ledger`](super::Ledger).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -19,9 +19,9 @@ impl<PublicKey: Ord + Clone> State<PublicKey> {
     }
 
     /// Merges a commit into this state, producing the next epoch's state.
-    pub(super) fn merge(&self, commit: &Change<PublicKey>) -> Self {
+    pub(super) fn merge(&self, commit: &Operation<PublicKey>) -> Self {
         match commit {
-            Change::SetContributors { contributors } => Self {
+            Operation::SetContributors { contributors } => Self {
                 controller: self.controller.clone(),
                 contributors: contributors.clone(),
             },
@@ -74,7 +74,7 @@ mod tests {
 
     #[test]
     fn merge_applies_the_commit() {
-        let merged = state(&["phone"]).merge(&Change::SetContributors {
+        let merged = state(&["phone"]).merge(&Operation::SetContributors {
             contributors: BTreeSet::from(["laptop", "nas"]),
         });
 

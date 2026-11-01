@@ -72,9 +72,9 @@ mod tests {
     use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 
     use super::*;
-    use crate::quorum::{Change, Initialize};
+    use crate::quorum::{Initialize, Operation};
 
-    type Signed = Envelope<VerifyingKey, Signature, Change<&'static str>>;
+    type Signed = Envelope<VerifyingKey, Signature, Operation<&'static str>>;
 
     // The same key for the same device in every run.
     fn signing_key(device: &str) -> SigningKey {
@@ -89,8 +89,8 @@ mod tests {
         .id()
     }
 
-    fn set_contributors(contributors: &[&'static str]) -> Change<&'static str> {
-        Change::SetContributors {
+    fn set_contributors(contributors: &[&'static str]) -> Operation<&'static str> {
+        Operation::SetContributors {
             contributors: contributors.iter().copied().collect(),
         }
     }

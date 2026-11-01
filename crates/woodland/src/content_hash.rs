@@ -24,7 +24,7 @@ use std::collections::BTreeSet;
 #[repr(u8)]
 pub(crate) enum PayloadType {
     Initialize = 0,
-    Change = 1,
+    Operation = 1,
     VersionVector = 2,
 }
 

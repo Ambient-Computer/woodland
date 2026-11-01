@@ -19,7 +19,7 @@ pub struct Initialize<PublicKey> {
 
 /// A change to quorum state.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Change<PublicKey> {
+pub enum Operation<PublicKey> {
     /// Replace the set of contributors.
     SetContributors { contributors: BTreeSet<PublicKey> },
 }
@@ -41,9 +41,9 @@ impl<PublicKey: AsRef<[u8]>> Payload for Initialize<PublicKey> {
     }
 }
 
-impl<PublicKey: AsRef<[u8]>> Payload for Change<PublicKey> {
+impl<PublicKey: AsRef<[u8]>> Payload for Operation<PublicKey> {
     fn digest(&self) -> blake3::Hash {
-        let mut hasher = hasher_for(PayloadType::Change);
+        let mut hasher = hasher_for(PayloadType::Operation);
         match self {
             // Each variant gets its own number, like payload types do.
             Self::SetContributors { contributors } => {
@@ -69,8 +69,8 @@ mod tests {
         }
     }
 
-    fn set_contributors(contributors: &[&'static str]) -> Change<&'static str> {
-        Change::SetContributors {
+    fn set_contributors(contributors: &[&'static str]) -> Operation<&'static str> {
+        Operation::SetContributors {
             contributors: contributors.iter().copied().collect(),
         }
     }
