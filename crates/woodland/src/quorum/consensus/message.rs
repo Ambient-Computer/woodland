@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use crate::content_hash::{PayloadType, hasher_for, update_key};
 use crate::envelope::Payload;
 use crate::quorum::Operation;
@@ -173,21 +171,6 @@ fn update_ballot(hasher: &mut blake3::Hasher, ballot: &Ballot<impl AsRef<[u8]>>)
 fn update_proposal(hasher: &mut blake3::Hasher, proposal: &Proposal<impl AsRef<[u8]>>) {
     update_ballot(hasher, &proposal.ballot);
     hasher.update(proposal.operation.digest().as_bytes());
-}
-
-/// Proof that an operation committed: signed `Accepted` messages from a
-/// strict majority of the epoch's contributors, all for the same proposal.
-///
-/// Persisted alongside the commit. Peers that weren't part of the vote check
-/// it during sync instead of trusting whoever sent the commit.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Certificate<PublicKey, Signature> {
-    pub epoch: u64,
-    pub proposal: Proposal<PublicKey>,
-
-    /// Each contributor's signature on `Accepted { epoch, proposal }`.
-    /// Every vote signs the same message, so only the signatures are kept.
-    pub signatures: BTreeMap<PublicKey, Signature>,
 }
 
 #[cfg(test)]

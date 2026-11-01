@@ -66,7 +66,7 @@ impl<PublicKey, Signature, T: Payload> Envelope<PublicKey, Signature, T> {
 /// One key may contribute to several quorums, but a payload only means
 /// something in the quorum it was written for. Including the quorum's ID
 /// keeps a signature from being replayed into another quorum.
-fn signed_bytes(quorum: &blake3::Hash, payload: &impl Payload) -> [u8; 64] {
+pub(crate) fn signed_bytes(quorum: &blake3::Hash, payload: &impl Payload) -> [u8; 64] {
     let mut bytes = [0; 64];
     bytes[..32].copy_from_slice(quorum.as_bytes());
     bytes[32..].copy_from_slice(payload.digest().as_bytes());
