@@ -1,7 +1,9 @@
-use super::{Initialize, Operation, State};
+use super::consensus::Certificate;
+use super::{Initialize, State};
 
-/// Every committed quorum operation, in order. The source of truth for
-/// quorum state: states are derived from it, never stored on their own.
+/// Every committed quorum operation, in order, each with the certificate
+/// proving it was decided. The source of truth for quorum state: states are
+/// derived from it, never stored on their own.
 ///
 /// The epoch is the number of commits, and indexes the state that was
 /// current at the time.
@@ -9,20 +11,20 @@ use super::{Initialize, Operation, State};
 /// Persist `initial_state` and `commits`, then restore with
 /// [`derive`](Self::derive). Everything else is rebuilt from them.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Ledger<PublicKey> {
+pub struct Ledger<PublicKey, Signature> {
     id: blake3::Hash,
     initial_state: Initialize<PublicKey>,
-    commits: Vec<Operation<PublicKey>>,
+    commits: Vec<Certificate<PublicKey, Signature>>,
 
     /// One per epoch, so past epochs can be checked without replaying.
     states: Vec<State<PublicKey>>,
 }
 
-impl<PublicKey: Ord + Clone + AsRef<[u8]>> Ledger<PublicKey> {
+impl<PublicKey: Ord + Clone + AsRef<[u8]>, Signature> Ledger<PublicKey, Signature> {
     /// Replays commits on top of the initial state.
     pub fn derive(
         initial_state: Initialize<PublicKey>,
-        commits: impl IntoIterator<Item = Operation<PublicKey>>,
+        commits: impl IntoIterator<Item = Certificate<PublicKey, Signature>>,
     ) -> Self {
         let ledger = Self {
             id: initial_state.id(),
@@ -38,14 +40,17 @@ impl<PublicKey: Ord + Clone + AsRef<[u8]>> Ledger<PublicKey> {
     }
 
     /// Appends the next commit, starting a new epoch. Commits are validated
-    /// long before they get here, when proposed and accepted.
-    pub fn append(&mut self, commit: Operation<PublicKey>) {
-        self.states.push(self.current().merge(&commit));
+    /// long before they get here, when proposed and accepted, and their
+    /// certificates when received.
+    pub fn append(&mut self, commit: Certificate<PublicKey, Signature>) {
+        self.states
+            .push(self.current().merge(&commit.proposal.operation));
+
         self.commits.push(commit);
     }
 }
 
-impl<PublicKey> Ledger<PublicKey> {
+impl<PublicKey, Signature> Ledger<PublicKey, Signature> {
     #[must_use]
     pub fn id(&self) -> blake3::Hash {
         self.id
@@ -57,7 +62,7 @@ impl<PublicKey> Ledger<PublicKey> {
     }
 
     #[must_use]
-    pub fn commits(&self) -> &[Operation<PublicKey>] {
+    pub fn commits(&self) -> &[Certificate<PublicKey, Signature>] {
         &self.commits
     }
 
@@ -82,10 +87,16 @@ impl<PublicKey> Ledger<PublicKey> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use ed25519_dalek::Signature;
 
     use super::*;
-    use crate::quorum::ContributorChange;
+    use crate::quorum::consensus::{Ballot, Proposal};
+    use crate::quorum::{ContributorChange, Operation};
+
+    // Commits carry no signatures here: the ledger trusts its commits.
+    type Ledger = super::Ledger<&'static str, Signature>;
 
     fn keys(keys: &[&'static str]) -> BTreeSet<&'static str> {
         keys.iter().copied().collect()
@@ -98,11 +109,25 @@ mod tests {
         }
     }
 
-    fn change(added: &[&'static str], removed: &[&'static str]) -> Operation<&'static str> {
-        Operation::Contributors(ContributorChange {
-            added: keys(added),
-            removed: keys(removed),
-        })
+    fn commit(
+        epoch: u64,
+        added: &[&'static str],
+        removed: &[&'static str],
+    ) -> Certificate<&'static str, Signature> {
+        Certificate {
+            epoch,
+            proposal: Proposal {
+                ballot: Ballot {
+                    round: 1,
+                    proposer: "phone",
+                },
+                operation: Operation::Contributors(ContributorChange {
+                    added: keys(added),
+                    removed: keys(removed),
+                }),
+            },
+            signatures: BTreeMap::new(),
+        }
     }
 
     #[test]
@@ -117,7 +142,7 @@ mod tests {
     fn applies_commits_in_order() {
         let ledger = Ledger::derive(
             initialize(&["phone"]),
-            [change(&["laptop"], &[]), change(&["nas"], &["phone"])],
+            [commit(0, &["laptop"], &[]), commit(1, &["nas"], &["phone"])],
         );
 
         assert_eq!(ledger.epoch(), 2);
@@ -126,7 +151,7 @@ mod tests {
 
     #[test]
     fn keeps_past_states() {
-        let ledger = Ledger::derive(initialize(&["phone"]), [change(&["laptop"], &["phone"])]);
+        let ledger = Ledger::derive(initialize(&["phone"]), [commit(0, &["laptop"], &["phone"])]);
 
         assert_eq!(
             ledger.state(0).map(|state| state.is_contributor(&"phone")),
