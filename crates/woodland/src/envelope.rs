@@ -69,60 +69,74 @@ fn signed_bytes(quorum: &blake3::Hash, payload: &impl Payload) -> [u8; 64] {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-
     use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 
     use super::*;
-    use crate::quorum::Change;
+    use crate::quorum::{Change, Initialize};
 
     type Signed = Envelope<VerifyingKey, Signature, Change<&'static str>>;
 
-    fn key(seed: u8) -> SigningKey {
-        SigningKey::from_bytes(&[seed; 32])
+    // The same key for the same device in every run.
+    fn signing_key(device: &str) -> SigningKey {
+        SigningKey::from_bytes(blake3::hash(device.as_bytes()).as_bytes())
     }
 
-    fn change(contributors: &[&'static str]) -> Change<&'static str> {
-        Change::SetContributors {
-            contributors: contributors.iter().copied().collect::<BTreeSet<_>>(),
+    fn quorum(contributors: &[&'static str]) -> blake3::Hash {
+        Initialize {
+            controller: "controller",
+            contributors: contributors.iter().copied().collect(),
         }
+        .id()
     }
 
-    fn quorum(seed: u8) -> blake3::Hash {
-        blake3::hash(&[seed])
+    fn set_contributors(contributors: &[&'static str]) -> Change<&'static str> {
+        Change::SetContributors {
+            contributors: contributors.iter().copied().collect(),
+        }
     }
 
     #[test]
     fn verifies_what_it_signs() -> Result<(), signature::Error> {
-        let envelope = Signed::sign(&key(1), &quorum(1), change(&["a"]))?;
+        let quorum = quorum(&["phone", "laptop"]);
+        let envelope = Signed::sign(&signing_key("phone"), &quorum, set_contributors(&["phone"]))?;
 
-        assert_eq!(envelope.author, key(1).verifying_key());
-        envelope.verify(&quorum(1))
+        assert_eq!(envelope.author, signing_key("phone").verifying_key());
+        envelope.verify(&quorum)
     }
 
     #[test]
     fn rejects_another_quorum() -> Result<(), signature::Error> {
-        let envelope = Signed::sign(&key(1), &quorum(1), change(&["a"]))?;
+        let laptop_quorum = quorum(&["phone", "laptop"]);
+        let nas_quorum = quorum(&["phone", "nas"]);
+        let envelope = Signed::sign(
+            &signing_key("phone"),
+            &laptop_quorum,
+            set_contributors(&["phone"]),
+        )?;
 
-        assert!(envelope.verify(&quorum(2)).is_err());
+        assert!(envelope.verify(&nas_quorum).is_err());
         Ok(())
     }
 
     #[test]
     fn rejects_a_tampered_payload() -> Result<(), signature::Error> {
-        let mut envelope = Signed::sign(&key(1), &quorum(1), change(&["a"]))?;
-        envelope.payload = change(&["a", "b"]);
+        let quorum = quorum(&["phone", "laptop"]);
+        let mut envelope =
+            Signed::sign(&signing_key("phone"), &quorum, set_contributors(&["phone"]))?;
+        envelope.payload = set_contributors(&["phone", "nas"]);
 
-        assert!(envelope.verify(&quorum(1)).is_err());
+        assert!(envelope.verify(&quorum).is_err());
         Ok(())
     }
 
     #[test]
     fn rejects_another_author() -> Result<(), signature::Error> {
-        let mut envelope = Signed::sign(&key(1), &quorum(1), change(&["a"]))?;
-        envelope.author = key(2).verifying_key();
+        let quorum = quorum(&["phone", "laptop"]);
+        let mut envelope =
+            Signed::sign(&signing_key("phone"), &quorum, set_contributors(&["phone"]))?;
+        envelope.author = signing_key("laptop").verifying_key();
 
-        assert!(envelope.verify(&quorum(1)).is_err());
+        assert!(envelope.verify(&quorum).is_err());
         Ok(())
     }
 }

@@ -126,88 +126,98 @@ mod tests {
 
     #[test]
     fn applies_newer_rows() -> Result<(), Error> {
-        let mut matrix = Matrix::new(["a", "b"]);
+        let mut matrix = Matrix::new(["phone", "laptop"]);
 
         assert_eq!(
-            matrix.update(&"a", row(&[("a", 1), ("b", 0)]))?,
+            matrix.update(&"phone", row(&[("phone", 1), ("laptop", 0)]))?,
             Freshness::Newer
         );
         assert_eq!(
-            matrix.update(&"a", row(&[("a", 2), ("b", 0)]))?,
+            matrix.update(&"phone", row(&[("phone", 2), ("laptop", 0)]))?,
             Freshness::Newer
         );
-        assert_eq!(matrix.row(&"a"), Some(&row(&[("a", 2), ("b", 0)])));
+        assert_eq!(
+            matrix.row(&"phone"),
+            Some(&row(&[("phone", 2), ("laptop", 0)]))
+        );
+
         Ok(())
     }
 
     #[test]
     fn freshness_does_not_apply() -> Result<(), Error> {
-        let matrix = Matrix::new(["a", "b"]);
-        let newer = row(&[("a", 1), ("b", 0)]);
+        let matrix = Matrix::new(["phone", "laptop"]);
+        let newer = row(&[("phone", 1), ("laptop", 0)]);
 
-        assert_eq!(matrix.freshness(&"a", &newer)?, Freshness::Newer);
-        assert_eq!(matrix.row(&"a"), Some(&row(&[("a", 0), ("b", 0)])));
+        assert_eq!(matrix.freshness(&"phone", &newer)?, Freshness::Newer);
+        assert_eq!(
+            matrix.row(&"phone"),
+            Some(&row(&[("phone", 0), ("laptop", 0)]))
+        );
+
         Ok(())
     }
 
     #[test]
     fn ignores_stale_rows() -> Result<(), Error> {
-        let mut matrix = Matrix::new(["a", "b"]);
-        let _ = matrix.update(&"a", row(&[("a", 2), ("b", 0)]))?;
+        let mut matrix = Matrix::new(["phone", "laptop"]);
+        let _ = matrix.update(&"phone", row(&[("phone", 2), ("laptop", 0)]))?;
 
         assert_eq!(
-            matrix.update(&"a", row(&[("a", 1), ("b", 0)]))?,
+            matrix.update(&"phone", row(&[("phone", 1), ("laptop", 0)]))?,
             Freshness::Stale
         );
         assert_eq!(
-            matrix.update(&"a", row(&[("a", 2), ("b", 0)]))?,
+            matrix.update(&"phone", row(&[("phone", 2), ("laptop", 0)]))?,
             Freshness::Stale
         );
+
         Ok(())
     }
 
     #[test]
     fn reports_conflicting_rows() -> Result<(), Error> {
-        let mut matrix = Matrix::new(["a", "b"]);
-        let _ = matrix.update(&"a", row(&[("a", 2), ("b", 1)]))?;
+        let mut matrix = Matrix::new(["phone", "laptop"]);
+        let _ = matrix.update(&"phone", row(&[("phone", 2), ("laptop", 1)]))?;
 
         assert_eq!(
-            matrix.update(&"a", row(&[("a", 1), ("b", 2)]))?,
+            matrix.update(&"phone", row(&[("phone", 1), ("laptop", 2)]))?,
             Freshness::Conflict
         );
+
         Ok(())
     }
 
     #[test]
     fn rejects_unknown_contributors() {
-        let mut matrix = Matrix::new(["a", "b"]);
+        let mut matrix = Matrix::new(["phone", "laptop"]);
 
         assert_eq!(
-            matrix.update(&"c", row(&[("a", 1), ("b", 0)])),
+            matrix.update(&"nas", row(&[("phone", 1), ("laptop", 0)])),
             Err(Error::UnknownContributor),
         );
         assert_eq!(
-            matrix.update(&"a", row(&[("a", 1), ("c", 0)])),
+            matrix.update(&"phone", row(&[("phone", 1), ("nas", 0)])),
             Err(Error::ContributorMismatch),
         );
     }
 
     #[test]
     fn lower_bound_is_what_everyone_has_seen() -> Result<(), Error> {
-        let mut matrix = Matrix::new(["a", "b"]);
-        let _ = matrix.update(&"a", row(&[("a", 3), ("b", 1)]))?;
-        let _ = matrix.update(&"b", row(&[("a", 2), ("b", 2)]))?;
+        let mut matrix = Matrix::new(["phone", "laptop"]);
+        let _ = matrix.update(&"phone", row(&[("phone", 3), ("laptop", 1)]))?;
+        let _ = matrix.update(&"laptop", row(&[("phone", 2), ("laptop", 2)]))?;
 
-        assert_eq!(matrix.lower_bound(), row(&[("a", 2), ("b", 1)]));
+        assert_eq!(matrix.lower_bound(), row(&[("phone", 2), ("laptop", 1)]));
         Ok(())
     }
 
     #[test]
     fn lower_bound_waits_for_silent_contributors() -> Result<(), Error> {
-        let mut matrix = Matrix::new(["a", "b"]);
-        let _ = matrix.update(&"a", row(&[("a", 3), ("b", 1)]))?;
+        let mut matrix = Matrix::new(["phone", "laptop"]);
+        let _ = matrix.update(&"phone", row(&[("phone", 3), ("laptop", 1)]))?;
 
-        assert_eq!(matrix.lower_bound(), row(&[("a", 0), ("b", 0)]));
+        assert_eq!(matrix.lower_bound(), row(&[("phone", 0), ("laptop", 0)]));
         Ok(())
     }
 }

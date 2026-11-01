@@ -94,29 +94,32 @@ mod tests {
 
     #[test]
     fn derives_from_initialize() {
-        let state = State::derive(initialize("c", &["a", "b"]), []);
+        let state = State::derive(initialize("controller", &["phone", "laptop"]), []);
 
-        assert_eq!(state.controller(), &"c");
-        assert_eq!(state.contributors(), &BTreeSet::from(["a", "b"]));
+        assert_eq!(state.controller(), &"controller");
+        assert_eq!(state.contributors(), &BTreeSet::from(["phone", "laptop"]));
     }
 
     #[test]
     fn applies_changes_in_order() {
         let state = State::derive(
-            initialize("c", &["a"]),
-            [set_contributors(&["a", "b"]), set_contributors(&["b", "d"])],
+            initialize("controller", &["phone"]),
+            [
+                set_contributors(&["phone", "laptop"]),
+                set_contributors(&["laptop", "nas"]),
+            ],
         );
 
-        assert_eq!(state.contributors(), &BTreeSet::from(["b", "d"]));
+        assert_eq!(state.contributors(), &BTreeSet::from(["laptop", "nas"]));
     }
 
     #[test]
     fn majority_is_strict() {
-        let even = State::derive(initialize("c", &["1", "2", "3", "4"]), []);
-        assert!(!even.is_majority(2));
-        assert!(even.is_majority(3));
+        let even = State::derive(initialize("controller", &["phone", "laptop"]), []);
+        assert!(!even.is_majority(1));
+        assert!(even.is_majority(2));
 
-        let odd = State::derive(initialize("c", &["1", "2", "3"]), []);
+        let odd = State::derive(initialize("controller", &["phone", "laptop", "nas"]), []);
         assert!(!odd.is_majority(1));
         assert!(odd.is_majority(2));
     }

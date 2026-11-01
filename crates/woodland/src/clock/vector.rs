@@ -176,61 +176,71 @@ mod tests {
 
     #[test]
     fn starts_with_nothing_seen() {
-        let vector = VersionVector::new(["a"]);
+        let vector = VersionVector::new(["phone"]);
 
-        assert_eq!(vector.get(&"a"), Some(Version::default()));
-        assert_eq!(vector.get(&"b"), None);
+        assert_eq!(vector.get(&"phone"), Some(Version::default()));
+        assert_eq!(vector.get(&"laptop"), None);
     }
 
     #[test]
     fn increment_counts_within_an_epoch() -> Result<(), Error> {
-        let mut vector = vector(&[("a", version(1, 2))]);
+        let mut vector = vector(&[("phone", version(1, 2))]);
 
-        assert_eq!(vector.increment(&"a", 1)?, version(1, 3));
+        assert_eq!(vector.increment(&"phone", 1)?, version(1, 3));
         Ok(())
     }
 
     #[test]
     fn increment_keeps_counting_in_a_new_epoch() -> Result<(), Error> {
-        let mut vector = vector(&[("a", version(1, 5))]);
+        let mut vector = vector(&[("phone", version(1, 5))]);
 
-        assert_eq!(vector.increment(&"a", 2)?, version(2, 6));
+        assert_eq!(vector.increment(&"phone", 2)?, version(2, 6));
         Ok(())
     }
 
     #[test]
     fn advance_never_goes_backwards() -> Result<(), Error> {
-        let mut vector = vector(&[("a", version(2, 1))]);
-        vector.advance(&"a", version(1, 9))?;
+        let mut vector = vector(&[("phone", version(2, 1))]);
+        vector.advance(&"phone", version(1, 9))?;
 
-        assert_eq!(vector.get(&"a"), Some(version(2, 1)));
+        assert_eq!(vector.get(&"phone"), Some(version(2, 1)));
         Ok(())
     }
 
     #[test]
     fn rejects_unknown_contributors() {
-        let mut vector = VersionVector::new(["a"]);
+        let mut vector = VersionVector::new(["phone"]);
 
-        assert_eq!(vector.increment(&"b", 0), Err(Error::UnknownContributor));
         assert_eq!(
-            vector.advance(&"b", version(0, 1)),
+            vector.increment(&"laptop", 0),
+            Err(Error::UnknownContributor)
+        );
+        assert_eq!(
+            vector.advance(&"laptop", version(0, 1)),
             Err(Error::UnknownContributor),
         );
     }
 
     #[test]
     fn merge_takes_the_latest_versions() -> Result<(), Error> {
-        let mut ours = vector(&[("a", version(1, 3)), ("b", version(0, 1))]);
-        ours.merge(&vector(&[("a", version(0, 9)), ("b", version(1, 1))]))?;
+        let mut ours = vector(&[("phone", version(1, 3)), ("laptop", version(0, 1))]);
+        ours.merge(&vector(&[
+            ("phone", version(0, 9)),
+            ("laptop", version(1, 1)),
+        ]))?;
 
-        assert_eq!(ours, vector(&[("a", version(1, 3)), ("b", version(1, 1))]));
+        assert_eq!(
+            ours,
+            vector(&[("phone", version(1, 3)), ("laptop", version(1, 1))])
+        );
+
         Ok(())
     }
 
     #[test]
     fn orders_causally() -> Result<(), Error> {
-        let before = vector(&[("a", version(0, 1)), ("b", version(0, 0))]);
-        let after = vector(&[("a", version(1, 1)), ("b", version(0, 1))]);
+        let before = vector(&[("phone", version(0, 1)), ("laptop", version(0, 0))]);
+        let after = vector(&[("phone", version(1, 1)), ("laptop", version(0, 1))]);
 
         assert_eq!(before.compare(&after)?, Some(Ordering::Less));
         assert_eq!(after.compare(&before)?, Some(Ordering::Greater));
@@ -240,8 +250,8 @@ mod tests {
 
     #[test]
     fn detects_concurrency() -> Result<(), Error> {
-        let left = vector(&[("a", version(0, 2)), ("b", version(0, 1))]);
-        let right = vector(&[("a", version(0, 1)), ("b", version(0, 2))]);
+        let left = vector(&[("phone", version(0, 2)), ("laptop", version(0, 1))]);
+        let right = vector(&[("phone", version(0, 1)), ("laptop", version(0, 2))]);
 
         assert_eq!(left.compare(&right)?, None);
         Ok(())
@@ -249,19 +259,25 @@ mod tests {
 
     #[test]
     fn digest_covers_every_version() {
-        let base = vector(&[("a", version(1, 2))]);
+        let base = vector(&[("phone", version(1, 2))]);
 
-        assert_ne!(base.digest(), vector(&[("a", version(2, 2))]).digest());
-        assert_ne!(base.digest(), vector(&[("a", version(1, 3))]).digest());
-        assert_ne!(base.digest(), vector(&[("b", version(1, 2))]).digest());
+        assert_ne!(base.digest(), vector(&[("phone", version(2, 2))]).digest());
+        assert_ne!(base.digest(), vector(&[("phone", version(1, 3))]).digest());
+        assert_ne!(base.digest(), vector(&[("laptop", version(1, 2))]).digest());
     }
 
     #[test]
     fn rejects_mismatched_contributors() {
-        let mut ab = VersionVector::new(["a", "b"]);
-        let ac = VersionVector::new(["a", "c"]);
+        let mut phone_laptop = VersionVector::new(["phone", "laptop"]);
+        let phone_nas = VersionVector::new(["phone", "nas"]);
 
-        assert_eq!(ab.compare(&ac), Err(Error::ContributorMismatch));
-        assert_eq!(ab.merge(&ac), Err(Error::ContributorMismatch));
+        assert_eq!(
+            phone_laptop.compare(&phone_nas),
+            Err(Error::ContributorMismatch)
+        );
+        assert_eq!(
+            phone_laptop.merge(&phone_nas),
+            Err(Error::ContributorMismatch)
+        );
     }
 }

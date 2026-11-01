@@ -78,19 +78,26 @@ mod tests {
     #[test]
     fn id_is_stable() {
         assert_eq!(
-            initialize("controller", &["a", "b"]).id().to_hex().as_str(),
-            "87c9610efc78e3e6abff196f3194f121c5bb7cab903040a3dc3c1e6a7775f5ea",
+            initialize("controller", &["phone", "laptop"])
+                .id()
+                .to_hex()
+                .as_str(),
+            "5ef36b99cd4293f04e77ed47fbb6fd7bc1ba1b71b752fd9173489640cbe45efd",
         );
     }
 
     #[test]
     fn id_depends_on_every_field() {
-        let id = initialize("c", &["a", "b"]).id();
+        let id = initialize("controller", &["phone", "laptop"]).id();
 
-        assert_ne!(id, initialize("d", &["a", "b"]).id());
-        assert_ne!(id, initialize("c", &["a"]).id());
+        assert_ne!(
+            id,
+            initialize("another controller", &["phone", "laptop"]).id()
+        );
+        assert_ne!(id, initialize("controller", &["phone", "nas"]).id());
     }
 
+    // Crafted keys, not device names: both sets concatenate to the same bytes.
     #[test]
     fn key_boundaries_are_unambiguous() {
         assert_ne!(
