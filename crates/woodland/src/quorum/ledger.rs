@@ -37,7 +37,8 @@ impl<PublicKey: Ord + Clone + AsRef<[u8]>> Ledger<PublicKey> {
         })
     }
 
-    /// Appends the next commit, starting a new epoch.
+    /// Appends the next commit, starting a new epoch. Commits are validated
+    /// long before they get here, when proposed and accepted.
     pub fn append(&mut self, commit: Operation<PublicKey>) {
         self.states.push(self.current().merge(&commit));
         self.commits.push(commit);
@@ -84,18 +85,24 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+    use crate::quorum::ContributorChange;
+
+    fn keys(keys: &[&'static str]) -> BTreeSet<&'static str> {
+        keys.iter().copied().collect()
+    }
 
     fn initialize(contributors: &[&'static str]) -> Initialize<&'static str> {
         Initialize {
             controller: "controller",
-            contributors: contributors.iter().copied().collect(),
+            contributors: keys(contributors),
         }
     }
 
-    fn set_contributors(contributors: &[&'static str]) -> Operation<&'static str> {
-        Operation::SetContributors {
-            contributors: contributors.iter().copied().collect(),
-        }
+    fn change(added: &[&'static str], removed: &[&'static str]) -> Operation<&'static str> {
+        Operation::Contributors(ContributorChange {
+            added: keys(added),
+            removed: keys(removed),
+        })
     }
 
     #[test]
@@ -103,32 +110,23 @@ mod tests {
         let ledger = Ledger::derive(initialize(&["phone", "laptop"]), []);
 
         assert_eq!(ledger.epoch(), 0);
-        assert_eq!(
-            ledger.current().contributors(),
-            &BTreeSet::from(["phone", "laptop"])
-        );
+        assert_eq!(ledger.current().contributors(), &keys(&["phone", "laptop"]));
     }
 
     #[test]
     fn applies_commits_in_order() {
         let ledger = Ledger::derive(
             initialize(&["phone"]),
-            [
-                set_contributors(&["phone", "laptop"]),
-                set_contributors(&["laptop", "nas"]),
-            ],
+            [change(&["laptop"], &[]), change(&["nas"], &["phone"])],
         );
 
         assert_eq!(ledger.epoch(), 2);
-        assert_eq!(
-            ledger.current().contributors(),
-            &BTreeSet::from(["laptop", "nas"])
-        );
+        assert_eq!(ledger.current().contributors(), &keys(&["laptop", "nas"]));
     }
 
     #[test]
     fn keeps_past_states() {
-        let ledger = Ledger::derive(initialize(&["phone"]), [set_contributors(&["laptop"])]);
+        let ledger = Ledger::derive(initialize(&["phone"]), [change(&["laptop"], &["phone"])]);
 
         assert_eq!(
             ledger.state(0).map(|state| state.is_contributor(&"phone")),

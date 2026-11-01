@@ -4,5 +4,5 @@ mod operation;
 mod state;
 
 pub use ledger::Ledger;
-pub use operation::{Initialize, Operation};
+pub use operation::{ContributorChange, Error, Initialize, Operation};
 pub use state::State;

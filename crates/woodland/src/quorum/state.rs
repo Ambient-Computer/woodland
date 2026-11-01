@@ -19,11 +19,12 @@ impl<PublicKey: Ord + Clone> State<PublicKey> {
     }
 
     /// Merges a commit into this state, producing the next epoch's state.
+    /// Commits were validated before they were committed.
     pub(super) fn merge(&self, commit: &Operation<PublicKey>) -> Self {
         match commit {
-            Operation::SetContributors { contributors } => Self {
+            Operation::Contributors(change) => Self {
                 controller: self.controller.clone(),
-                contributors: contributors.clone(),
+                contributors: change.apply(&self.contributors),
             },
         }
     }
@@ -64,6 +65,7 @@ impl<PublicKey: Ord + Clone> State<PublicKey> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::quorum::ContributorChange;
 
     fn state(contributors: &[&'static str]) -> State<&'static str> {
         State::initial(&Initialize {
@@ -74,9 +76,10 @@ mod tests {
 
     #[test]
     fn merge_applies_the_commit() {
-        let merged = state(&["phone"]).merge(&Operation::SetContributors {
-            contributors: BTreeSet::from(["laptop", "nas"]),
-        });
+        let merged = state(&["phone"]).merge(&Operation::Contributors(ContributorChange {
+            added: BTreeSet::from(["laptop", "nas"]),
+            removed: BTreeSet::from(["phone"]),
+        }));
 
         assert_eq!(merged.controller(), &"controller");
         assert_eq!(merged.contributors(), &BTreeSet::from(["laptop", "nas"]));

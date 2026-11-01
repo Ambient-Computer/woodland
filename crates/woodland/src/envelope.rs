@@ -78,7 +78,7 @@ mod tests {
     use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 
     use super::*;
-    use crate::quorum::{Initialize, Operation};
+    use crate::quorum::{ContributorChange, Initialize, Operation};
 
     type Signed = Envelope<VerifyingKey, Signature, Operation<&'static str>>;
 
@@ -95,19 +95,20 @@ mod tests {
         .id()
     }
 
-    fn set_contributors(contributors: &[&'static str]) -> Operation<&'static str> {
-        Operation::SetContributors {
-            contributors: contributors.iter().copied().collect(),
-        }
+    fn change(added: &[&'static str], removed: &[&'static str]) -> Operation<&'static str> {
+        Operation::Contributors(ContributorChange {
+            added: added.iter().copied().collect(),
+            removed: removed.iter().copied().collect(),
+        })
     }
 
     #[test]
     fn verifies_what_it_signs() -> Result<(), signature::Error> {
         let quorum = quorum(&["phone", "laptop"]);
-        let envelope = Signed::sign(&signing_key("phone"), &quorum, set_contributors(&["phone"]))?;
+        let envelope = Signed::sign(&signing_key("phone"), &quorum, change(&["nas"], &[]))?;
 
         assert_eq!(envelope.author, signing_key("phone").verifying_key());
-        assert_eq!(envelope.verify(&quorum)?, &set_contributors(&["phone"]));
+        assert_eq!(envelope.verify(&quorum)?, &change(&["nas"], &[]));
         Ok(())
     }
 
@@ -115,11 +116,7 @@ mod tests {
     fn rejects_another_quorum() -> Result<(), signature::Error> {
         let laptop_quorum = quorum(&["phone", "laptop"]);
         let nas_quorum = quorum(&["phone", "nas"]);
-        let envelope = Signed::sign(
-            &signing_key("phone"),
-            &laptop_quorum,
-            set_contributors(&["phone"]),
-        )?;
+        let envelope = Signed::sign(&signing_key("phone"), &laptop_quorum, change(&["nas"], &[]))?;
 
         assert!(envelope.verify(&nas_quorum).is_err());
         Ok(())
@@ -128,9 +125,8 @@ mod tests {
     #[test]
     fn rejects_a_tampered_payload() -> Result<(), signature::Error> {
         let quorum = quorum(&["phone", "laptop"]);
-        let mut envelope =
-            Signed::sign(&signing_key("phone"), &quorum, set_contributors(&["phone"]))?;
-        envelope.payload = set_contributors(&["phone", "nas"]);
+        let mut envelope = Signed::sign(&signing_key("phone"), &quorum, change(&["nas"], &[]))?;
+        envelope.payload = change(&[], &["laptop"]);
 
         assert!(envelope.verify(&quorum).is_err());
         Ok(())
@@ -139,8 +135,7 @@ mod tests {
     #[test]
     fn rejects_another_author() -> Result<(), signature::Error> {
         let quorum = quorum(&["phone", "laptop"]);
-        let mut envelope =
-            Signed::sign(&signing_key("phone"), &quorum, set_contributors(&["phone"]))?;
+        let mut envelope = Signed::sign(&signing_key("phone"), &quorum, change(&["nas"], &[]))?;
         envelope.author = signing_key("laptop").verifying_key();
 
         assert!(envelope.verify(&quorum).is_err());
