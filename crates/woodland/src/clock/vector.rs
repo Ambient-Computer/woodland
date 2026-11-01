@@ -1,14 +1,14 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
-/// Identifies a contributor's transaction. Counters restart with each
-/// quorum epoch, so the epoch is compared first.
+/// Identifies a contributor's transaction. Both fields only increase, so
+/// any gap between two versions is exactly the transactions in between.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Version {
     /// Committed quorum log length when the transaction was created.
     pub epoch: u64,
 
-    /// Transactions created by the contributor within this epoch.
+    /// Transactions created by the contributor.
     pub counter: u64,
 }
 
@@ -42,8 +42,7 @@ impl<PublicKey: Ord> VersionVector<PublicKey> {
         self.versions.get(contributor).copied()
     }
 
-    /// Creates the next version for `contributor` in `epoch`. The counter
-    /// restarts when the epoch advances.
+    /// Creates the next version for `contributor` in `epoch`.
     ///
     /// # Errors
     ///
@@ -54,13 +53,9 @@ impl<PublicKey: Ord> VersionVector<PublicKey> {
             .get_mut(contributor)
             .ok_or(Error::UnknownContributor)?;
 
-        *version = if epoch > version.epoch {
-            Version { epoch, counter: 1 }
-        } else {
-            Version {
-                epoch: version.epoch,
-                counter: version.counter + 1,
-            }
+        *version = Version {
+            epoch: epoch.max(version.epoch),
+            counter: version.counter + 1,
         };
 
         Ok(*version)
@@ -180,10 +175,10 @@ mod tests {
     }
 
     #[test]
-    fn increment_restarts_in_a_new_epoch() -> Result<(), Error> {
+    fn increment_keeps_counting_in_a_new_epoch() -> Result<(), Error> {
         let mut vector = vector(&[("a", version(1, 5))]);
 
-        assert_eq!(vector.increment(&"a", 2)?, version(2, 1));
+        assert_eq!(vector.increment(&"a", 2)?, version(2, 6));
         Ok(())
     }
 
