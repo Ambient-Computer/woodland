@@ -11,6 +11,7 @@ repository = "https://github.com/Ambient-Computer/woodland"
 [workspace.dependencies]
 blake3 = { version = "1.8.7", default-features = false }
 signature = "3.0.0"
+thiserror = "2.0.21"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
