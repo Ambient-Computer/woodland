@@ -1,3 +1,4 @@
+pub mod consensus;
 mod ledger;
 mod operation;
 mod state;

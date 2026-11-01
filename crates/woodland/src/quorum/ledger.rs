@@ -5,6 +5,9 @@ use super::{Initialize, Operation, State};
 ///
 /// The epoch is the number of commits, and indexes the state that was
 /// current at the time.
+///
+/// Persist `initial_state` and `commits`, then restore with
+/// [`derive`](Self::derive). Everything else is rebuilt from them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ledger<PublicKey> {
     id: blake3::Hash,
