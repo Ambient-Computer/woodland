@@ -160,15 +160,35 @@ impl<PublicKey: Ord + Clone + AsRef<[u8]>> Proposer<PublicKey> {
         Ok(self.accept())
     }
 
-    /// Verifies a rejection and, if it outbid this ballot, starts over
-    /// above the ballot it names. Returns the new `Prepare` to send. Persist
-    /// the proposer before sending it.
+    // TODO: A WINNER THAT NEVER RETURNS STALLS THE EPOCH FOREVER.
+    //
+    // Everyone it outbid has yielded, and nothing raises a round any more,
+    // so nobody takes over. Offline for weeks is fine: it resumes when it's
+    // back. Gone for good (a lost phone, a wiped browser) is not. Taking
+    // over needs a signal that comes from state, not a clock, e.g. the
+    // winner being removed from the contributors. Needs real design work.
+
+    /// Verifies a rejection, and whether it outbid this ballot. If so, the
+    /// proposer yields: stop advertising and drop it, persisted state
+    /// included.
+    ///
+    /// Yielding is how dueling proposers settle without clocks. Retrying
+    /// above the winner would just invite it to retry above us, forever.
+    /// Instead, the higher ballot gets the floor. Our operation isn't lost
+    /// if a majority may have accepted it: the winner adopts it from the
+    /// promises. Otherwise, propose it again next epoch.
+    ///
+    /// Proposals as a state-based CRDT could keep both sides' changes:
+    /// instead of yielding, merge the winner's intent into ours and duel
+    /// again above it. The winner would then see a proposal that already
+    /// includes its own changes, and stop competing. In theory, that
+    /// converges.
     ///
     /// One rejection is enough. That contributor will refuse this ballot
-    /// for good, and someone else is competing for the epoch, so waiting
-    /// for the rest only delays the retry.
+    /// for good, and someone with a higher ballot is competing for the
+    /// epoch.
     ///
-    /// Returns `None` for rejections that change nothing: replies to an
+    /// Returns `false` for rejections that change nothing: replies to an
     /// earlier ballot or epoch, or one naming a ballot that doesn't beat
     /// this one.
     ///
@@ -176,11 +196,11 @@ impl<PublicKey: Ord + Clone + AsRef<[u8]>> Proposer<PublicKey> {
     ///
     /// Fails if the rejection doesn't verify against `ledger`, or if it's
     /// for a later epoch (see [`Error::StaleProposer`]).
-    pub fn rejected<Signature>(
-        &mut self,
+    pub fn outbid<Signature>(
+        &self,
         ledger: &Ledger<PublicKey, Signature>,
         rejected: &Envelope<PublicKey, Signature, Rejected<PublicKey>>,
-    ) -> Result<Option<Prepare<PublicKey>>, Error>
+    ) -> Result<bool, Error>
     where
         PublicKey: Verifier<Signature>,
     {
@@ -191,22 +211,10 @@ impl<PublicKey: Ord + Clone + AsRef<[u8]>> Proposer<PublicKey> {
         }
 
         // An honest contributor only rejects for a higher ballot. Anything
-        // else would only make the proposer jump rounds for no reason.
-        if message.epoch < self.epoch
-            || message.ballot != self.ballot
-            || message.promised <= self.ballot
-        {
-            return Ok(None);
-        }
-
-        // Keeps the current operation, even if it was adopted: it may
-        // already have a majority.
-        self.ballot.round = message.promised.round + 1;
-        self.phase = Phase::Preparing {
-            promises: BTreeMap::new(),
-        };
-
-        Ok(Some(self.prepare()))
+        // else would make the proposer drop out for no reason.
+        Ok(message.epoch == self.epoch
+            && message.ballot == self.ballot
+            && message.promised > self.ballot)
     }
 }
 
@@ -348,22 +356,18 @@ mod tests {
     }
 
     #[test]
-    fn ignores_promises_for_an_old_ballot() -> Result<(), Box<dyn std::error::Error>> {
+    fn ignores_promises_for_another_ballot() -> Result<(), Box<dyn std::error::Error>> {
         let ledger = quorum(&[&phone(), &laptop(), &nas()]);
         let mut proposer = Proposer::new(&ledger, phone().key(), remove(&nas()))?;
-        let old = proposer.ballot.clone();
-        let outbid = Ballot {
+        let other = Ballot {
             round: 2,
-            proposer: laptop().key(),
+            proposer: phone().key(),
         };
-        proposer.rejected(&ledger, &rejected(&ledger, &nas(), &old, outbid)?)?;
 
-        proposer.promise(&ledger, &promise(&ledger, &phone(), &old, None)?)?;
-        let late = proposer.promise(&ledger, &promise(&ledger, &laptop(), &old, None)?)?;
+        proposer.promise(&ledger, &promise(&ledger, &phone(), &other, None)?)?;
+        let late = proposer.promise(&ledger, &promise(&ledger, &laptop(), &other, None)?)?;
 
-        assert_eq!(proposer.ballot.round, 3);
         assert_eq!(late, None);
-
         Ok(())
     }
 
@@ -405,30 +409,27 @@ mod tests {
     }
 
     #[test]
-    fn retries_above_the_ballot_that_won() -> Result<(), Box<dyn std::error::Error>> {
+    fn yields_to_a_higher_ballot() -> Result<(), Box<dyn std::error::Error>> {
         let ledger = quorum(&[&phone(), &laptop(), &nas()]);
-        let mut proposer = Proposer::new(&ledger, phone().key(), remove(&nas()))?;
-        let outbid = proposer.ballot.clone();
+        let proposer = Proposer::new(&ledger, phone().key(), remove(&nas()))?;
         let winner = Ballot {
             round: 5,
             proposer: laptop().key(),
         };
+        let rejection = rejected(&ledger, &nas(), &proposer.ballot, winner)?;
 
-        let prepare = proposer.rejected(&ledger, &rejected(&ledger, &nas(), &outbid, winner)?)?;
-
-        assert_eq!(prepare.map(|prepare| prepare.ballot.round), Some(6));
-        assert_eq!(proposer.ballot.round, 6);
-
+        assert!(proposer.outbid(&ledger, &rejection)?);
         Ok(())
     }
 
     #[test]
     fn ignores_rejections_that_change_nothing() -> Result<(), Box<dyn std::error::Error>> {
         let ledger = quorum(&[&phone(), &laptop(), &nas()]);
-        let mut proposer = Proposer::new(&ledger, phone().key(), remove(&nas()))?;
-        let old = proposer.ballot.clone();
-        proposer.ballot.round = 2;
-        let current = proposer.ballot.clone();
+        let proposer = Proposer::new(&ledger, phone().key(), remove(&nas()))?;
+        let other = Ballot {
+            round: 2,
+            proposer: phone().key(),
+        };
         let lower = Ballot {
             round: 0,
             proposer: laptop().key(),
@@ -438,39 +439,49 @@ mod tests {
             proposer: laptop().key(),
         };
 
-        let for_old_ballot = rejected(&ledger, &nas(), &old, higher)?;
-        let not_outbid = rejected(&ledger, &nas(), &current, lower)?;
+        let for_another_ballot = rejected(&ledger, &nas(), &other, higher)?;
+        let not_outbid = rejected(&ledger, &nas(), &proposer.ballot, lower)?;
 
-        assert_eq!(proposer.rejected(&ledger, &for_old_ballot)?, None);
-        assert_eq!(proposer.rejected(&ledger, &not_outbid)?, None);
-        assert_eq!(proposer.ballot, current);
+        assert!(!proposer.outbid(&ledger, &for_another_ballot)?);
+        assert!(!proposer.outbid(&ledger, &not_outbid)?);
 
         Ok(())
     }
 
-    // Dueling proposers: the one that was outbid learns the winning ballot
-    // from a rejection, and commits on its next try.
+    // Dueling proposers: both start at round 1, so the ballots differ only
+    // by proposer. Whoever every acceptor heard from first wins, and the
+    // other yields instead of fighting back.
     #[test]
-    fn recovers_from_being_outbid() -> Result<(), Box<dyn std::error::Error>> {
+    fn duels_end_with_one_proposer() -> Result<(), Box<dyn std::error::Error>> {
         let ledger = quorum(&[&phone(), &laptop(), &nas()]);
-        let mut acceptor = Acceptor::new(0);
-        let mut rival = Proposer::new(&ledger, laptop().key(), remove(&nas()))?;
-        rival.ballot.round = 5;
-        let rival_prepare = Envelope::sign(&laptop(), &ledger.id(), rival.prepare())?;
-        acceptor.prepare(&ledger, &rival_prepare)?;
+        let (winner, loser) = if ballot_of(&phone()) > ballot_of(&laptop()) {
+            (phone(), laptop())
+        } else {
+            (laptop(), phone())
+        };
+        let winning = Proposer::new(&ledger, winner.key(), remove(&nas()))?;
+        let losing = Proposer::new(&ledger, loser.key(), remove(&nas()))?;
+        let winning_prepare = Envelope::sign(&winner, &ledger.id(), winning.prepare())?;
+        let losing_prepare = Envelope::sign(&loser, &ledger.id(), losing.prepare())?;
 
-        let mut proposer = Proposer::new(&ledger, phone().key(), remove(&laptop()))?;
-        let prepare = Envelope::sign(&phone(), &ledger.id(), proposer.prepare())?;
-        let Err(Refusal::Superseded(refused)) = acceptor.prepare(&ledger, &prepare) else {
+        let mut acceptor = Acceptor::new(0);
+        acceptor.prepare(&ledger, &winning_prepare)?;
+        let Err(Refusal::Superseded(refused)) = acceptor.prepare(&ledger, &losing_prepare) else {
             return Err("a higher ballot was promised".into());
         };
-
         let rejection = Envelope::sign(&nas(), &ledger.id(), refused)?;
-        let retry = proposer.rejected(&ledger, &rejection)?.ok_or("outbid")?;
-        let retry = Envelope::sign(&phone(), &ledger.id(), retry)?;
 
-        assert!(acceptor.prepare(&ledger, &retry).is_ok());
+        assert!(losing.outbid(&ledger, &rejection)?);
+        assert!(acceptor.prepare(&ledger, &winning_prepare).is_ok());
+
         Ok(())
+    }
+
+    fn ballot_of(proposer: &Actor) -> Ballot<PublicKey> {
+        Ballot {
+            round: 1,
+            proposer: proposer.key(),
+        }
     }
 
     // Every role together: a proposal reaches a majority and commits.

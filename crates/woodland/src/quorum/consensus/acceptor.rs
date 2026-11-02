@@ -20,7 +20,7 @@ pub struct Acceptor<PublicKey> {
 }
 
 /// Why an acceptor refused a message. Refusing is always safe: at worst,
-/// the proposer retries with a higher ballot.
+/// the epoch waits for another proposer.
 #[derive(Debug, thiserror::Error)]
 pub enum Refusal<PublicKey> {
     #[error("message rejected")]
@@ -38,7 +38,7 @@ pub enum Refusal<PublicKey> {
     StaleAcceptor,
 
     /// A higher ballot was already promised. Sign the rejection and send it
-    /// back, so the proposer can retry above the promised ballot.
+    /// back, so the proposer knows to yield.
     #[error("ballot is lower than one already promised")]
     Superseded(Rejected<PublicKey>),
 

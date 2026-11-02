@@ -70,8 +70,8 @@ pub struct Accepted<PublicKey> {
 ///
 /// Signed by the contributor that refused.
 ///
-/// Tells the proposer which ballot it has to beat, so it can retry above
-/// it. Without this, nothing would tell a proposer it lost.
+/// Tells the proposer it lost to a higher ballot, so it can yield. Without
+/// this, nothing would tell a proposer it lost.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Rejected<PublicKey> {
     pub epoch: u64,
