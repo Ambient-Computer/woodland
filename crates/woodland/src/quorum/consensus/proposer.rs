@@ -10,11 +10,11 @@ use crate::quorum::{self, Ledger, Operation};
 
 /// A contributor's attempt to commit an operation during one epoch.
 ///
-/// Persisted, except for `phase`, until the epoch commits. That includes
-/// after yielding. A proposer that forgets its ballot could start over
-/// under the same one, asking for a different operation. Two operations
-/// under one ballot can both win: acceptors accept either, since each
-/// matches their promise.
+/// Persisted until the epoch commits, except for the promises in `phase`.
+/// That includes after yielding. A proposer that forgets its ballot could
+/// start over under the same one, asking for a different operation. Two
+/// operations under one ballot can both win: acceptors accept either,
+/// since each matches their promise.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Proposer<PublicKey> {
     pub epoch: u64,
@@ -24,8 +24,13 @@ pub struct Proposer<PublicKey> {
     /// be replaced by one adopted from a promise.
     pub operation: Operation<PublicKey>,
 
-    /// Not persisted. Votes can be lost safely, but must then be collected
-    /// again from each contributor.
+    /// Persisted, except for the promises collected while preparing. Those
+    /// can be lost safely, but must then be collected again from each
+    /// contributor.
+    ///
+    /// Once accepting, the operation is settled. A proposer that forgot
+    /// would prepare again, and a different majority could hand it a
+    /// different operation to adopt, under the same ballot.
     pub phase: Phase<PublicKey>,
 
     /// Whether it lost to a higher ballot. A yielded proposer asks for

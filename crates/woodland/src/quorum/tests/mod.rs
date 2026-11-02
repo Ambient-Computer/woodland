@@ -9,6 +9,7 @@
 //! failure points at the step that broke them.
 
 mod agreement;
+mod restarts;
 mod yielding;
 
 use ed25519_dalek::Signature;
@@ -16,8 +17,8 @@ use proptest::sample::Index;
 
 use crate::envelope::{Envelope, Payload};
 use crate::quorum::consensus::{
-    Accept, Accepted, Acceptor, Ballot, Certificate, Prepare, Promise, Proposer, Refusal, Rejected,
-    Tally,
+    Accept, Accepted, Acceptor, Ballot, Certificate, Phase, Prepare, Promise, Proposer, Refusal,
+    Rejected, Tally,
 };
 use crate::quorum::{ContributorChange, Operation};
 use crate::testing::{Actor, Ledger, PublicKey, keys, laptop, nas, phone, quorum};
@@ -54,6 +55,13 @@ enum Event {
 
     /// A message in flight arrives twice, e.g. through two peers.
     Duplicate(Index),
+
+    /// A node restarts, keeping only what its roles say to persist.
+    Restart(usize),
+
+    /// A node resends whatever it's still waiting on: its proposer's
+    /// request, and its acceptor's vote.
+    Advertise(usize),
 }
 
 #[derive(Debug)]
@@ -149,6 +157,8 @@ impl Network {
                     self.in_flight.push(self.in_flight[index].clone());
                 }
             }
+            Event::Restart(node) => self.restart(*node),
+            Event::Advertise(node) => self.advertise(*node),
         }
     }
 
@@ -172,6 +182,46 @@ impl Network {
         let prepare = sign(node, proposer.prepare().expect("a new proposer asks"));
         node.proposer = Some(proposer);
         self.broadcast(&Message::Prepare(prepare));
+    }
+
+    /// Forgets everything documented as not persisted.
+    fn restart(&mut self, at: usize) {
+        let node = &mut self.nodes[at];
+        node.tally = Tally::new(node.ledger.epoch());
+
+        if let Some(Proposer {
+            phase: Phase::Preparing { promises },
+            ..
+        }) = &mut node.proposer
+        {
+            promises.clear();
+        }
+    }
+
+    fn advertise(&mut self, at: usize) {
+        let node = &self.nodes[at];
+        let mut messages = Vec::new();
+
+        if let Some(proposer) = &node.proposer {
+            if let Some(accept) = proposer.accept() {
+                messages.push(Message::Accept(sign(node, accept)));
+            } else if let Some(prepare) = proposer.prepare() {
+                messages.push(Message::Prepare(sign(node, prepare)));
+            }
+        }
+
+        if let Some(proposal) = &node.acceptor.accepted {
+            let accepted = Accepted {
+                epoch: node.acceptor.epoch,
+                proposal: proposal.clone(),
+            };
+
+            messages.push(Message::Accepted(sign(node, accepted)));
+        }
+
+        for message in &messages {
+            self.broadcast(message);
+        }
     }
 
     fn receive(&mut self, packet: Packet) {
