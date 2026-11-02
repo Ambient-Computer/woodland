@@ -9,6 +9,7 @@
 //! failure points at the step that broke them.
 
 mod agreement;
+mod liveness;
 mod restarts;
 mod yielding;
 
@@ -32,6 +33,10 @@ enum Message {
     Accept(Signed<Accept<PublicKey>>),
     Accepted(Signed<Accepted<PublicKey>>),
     Rejected(Signed<Rejected<PublicKey>>),
+
+    /// Proof of a commit, for a node that missed it. Needs no envelope:
+    /// it carries its voters' signatures.
+    Certificate(Certificate<PublicKey, Signature>),
 }
 
 /// A message on its way to one node.
@@ -59,8 +64,8 @@ enum Event {
     /// A node restarts, keeping only what its roles say to persist.
     Restart(usize),
 
-    /// A node resends whatever it's still waiting on: its proposer's
-    /// request, and its acceptor's vote.
+    /// A node resends whatever it's still waiting on (its proposer's
+    /// request, and its acceptor's vote), and shares its latest commit.
     Advertise(usize),
 }
 
@@ -71,6 +76,9 @@ struct Node {
     acceptor: Acceptor<PublicKey>,
     tally: Tally<PublicKey, Signature>,
     proposer: Option<Proposer<PublicKey>>,
+
+    /// Gone for good, e.g. a lost phone. Hears nothing, says nothing.
+    gone: bool,
 
     /// What this node would propose. Each node wants something different,
     /// so agreement means something.
@@ -106,6 +114,7 @@ impl Network {
                 acceptor: Acceptor::new(0),
                 tally: Tally::new(0),
                 proposer: None,
+                gone: false,
                 operation: Operation::Contributors(ContributorChange {
                     added: keys(&[]),
                     removed: [removed].into(),
@@ -135,6 +144,23 @@ impl Network {
             let packet = self.in_flight.remove(0);
             self.receive(packet);
             self.check();
+        }
+    }
+
+    /// Lets the network recover: no more losses, and every node keeps
+    /// advertising until nothing changes.
+    fn heal(&mut self) {
+        loop {
+            self.settle();
+            let before = self.commits.len();
+            for node in 0..self.nodes.len() {
+                self.advertise(node);
+            }
+
+            self.settle();
+            if self.commits.len() == before {
+                return;
+            }
         }
     }
 
@@ -200,6 +226,10 @@ impl Network {
 
     fn advertise(&mut self, at: usize) {
         let node = &self.nodes[at];
+        if node.gone {
+            return;
+        }
+
         let mut messages = Vec::new();
 
         if let Some(proposer) = &node.proposer {
@@ -219,14 +249,28 @@ impl Network {
             messages.push(Message::Accepted(sign(node, accepted)));
         }
 
+        // Without it, a node that missed every vote never catches up. If
+        // it has nothing of its own to advertise, nobody even hears of it.
+        if let Some(certificate) = node.ledger.commits().last() {
+            messages.push(Message::Certificate(certificate.clone()));
+        }
+
         for message in &messages {
             self.broadcast(message);
         }
     }
 
+    fn vanish(&mut self, at: usize) {
+        self.nodes[at].gone = true;
+        self.in_flight.retain(|packet| packet.to != at);
+    }
+
     fn receive(&mut self, packet: Packet) {
         let at = packet.to;
         let node = &mut self.nodes[at];
+        if node.gone {
+            return;
+        }
 
         match packet.message {
             Message::Prepare(prepare) => match node.acceptor.prepare(&node.ledger, &prepare) {
@@ -281,6 +325,12 @@ impl Network {
                         .expect("honest nodes send valid rejections");
                 }
             }
+
+            Message::Certificate(certificate) => {
+                if certificate.epoch == node.ledger.epoch() {
+                    self.commit(at, certificate);
+                }
+            }
         }
     }
 
@@ -304,7 +354,7 @@ impl Network {
         let node = &mut self.nodes[at];
         certificate
             .verify(&node.ledger)
-            .expect("tallies only build valid certificates");
+            .expect("honest nodes build valid certificates");
 
         node.ledger.append(certificate.clone());
         node.acceptor = Acceptor::new(node.ledger.epoch());
@@ -400,6 +450,7 @@ enum Kind {
     Accept,
     Accepted,
     Rejected,
+    Certificate,
 }
 
 impl Peek {
@@ -440,6 +491,11 @@ impl Peek {
                 let m = m.verify(quorum).expect("honest messages verify");
                 peek(Kind::Rejected, &m.ballot, None)
             }
+            Message::Certificate(m) => peek(
+                Kind::Certificate,
+                &m.proposal.ballot,
+                Some(&m.proposal.operation),
+            ),
         }
     }
 }

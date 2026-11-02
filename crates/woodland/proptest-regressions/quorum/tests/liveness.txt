@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 0ce683c3f3358e5d32722d6ba9fe5e34c8d7814cfb4be4fd3df860d5f9205497 # shrinks to schedule = [Propose(0), Propose(0), Deliver(Index(0)), Deliver(Index(12297829382473034411)), Deliver(Index(0)), Duplicate(Index(9223372036854775808)), Duplicate(Index(0)), Deliver(Index(0)), Deliver(Index(4611686018427387904)), Deliver(Index(0)), Deliver(Index(0)), Drop(Index(6917529027641081856)), Duplicate(Index(0)), Propose(1), Deliver(Index(467596)), Drop(Index(11659822563351849441)), Deliver(Index(2823263878866171021)), Drop(Index(1607540693406294298)), Drop(Index(15914159037478249390)), Advertise(1), Propose(1), Deliver(Index(362903839415224523))]
+cc 3558316ad00f9628d2570a604357482920eeb926a000c00d0fd0fe8f0444df4e # shrinks to schedule = [Propose(0), Deliver(Index(0)), Drop(Index(0)), Propose(1), Duplicate(Index(3689348814741910324)), Deliver(Index(9223372036854775808)), Deliver(Index(6148914691236517206)), Deliver(Index(6148914691236517206)), Duplicate(Index(3689348814741910324)), Deliver(Index(9223372036854775808)), Deliver(Index(9223372036854775808)), Deliver(Index(6148914691236517206)), Duplicate(Index(0)), Deliver(Index(14347467612885206813)), Duplicate(Index(3353953467947191203)), Deliver(Index(15372286728091487701)), Deliver(Index(6183390995884164992)), Duplicate(Index(4229469574647784260)), Deliver(Index(11695454825481340957)), Drop(Index(8155778398861167694)), Restart(1), Drop(Index(13621487755766358583))]
