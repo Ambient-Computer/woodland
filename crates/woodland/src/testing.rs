@@ -85,6 +85,10 @@ pub(crate) fn nas() -> Actor {
     Actor::named("nas")
 }
 
+pub(crate) fn friend() -> Actor {
+    Actor::named("friend")
+}
+
 /// Controls every test quorum. They're told apart by nonce, the same way
 /// one person's quorums are.
 pub(crate) fn controller() -> Actor {

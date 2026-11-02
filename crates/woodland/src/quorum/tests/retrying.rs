@@ -19,10 +19,8 @@ fn an_outbid_proposer_never_starts_over() {
 
     // Copied out, so the matchers don't borrow the network.
     let keys: Vec<_> = network.nodes.iter().map(|node| node.actor.key()).collect();
-    let operations: Vec<_> = network
-        .nodes
-        .iter()
-        .map(|node| node.operation.clone())
+    let operations: Vec<_> = (0..network.nodes.len())
+        .map(|node| network.wants(node))
         .collect();
 
     let from = |kind: Kind, proposer: usize| {

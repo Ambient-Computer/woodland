@@ -1,4 +1,5 @@
-//! Once the network heals, everyone commits whatever someone proposed.
+//! Once the network heals, every proposal ends in a commit, and everyone
+//! catches up on every commit.
 //!
 //! Safety holds on any schedule. Progress can't: a network that loses
 //! everything decides nothing. So these schedules are followed by healing,
@@ -10,29 +11,27 @@ use super::{Event, Kind, Network, Peek};
 
 fn event() -> impl Strategy<Value = Event> {
     prop_oneof![
-        1 => (0..3_usize).prop_map(Event::Propose),
+        1 => (0..4_usize).prop_map(Event::Propose),
         6 => any::<prop::sample::Index>().prop_map(Event::Deliver),
         1 => any::<prop::sample::Index>().prop_map(Event::Drop),
         1 => any::<prop::sample::Index>().prop_map(Event::Duplicate),
-        1 => (0..3_usize).prop_map(Event::Restart),
-        1 => (0..3_usize).prop_map(Event::Advertise),
+        1 => (0..4_usize).prop_map(Event::Restart),
+        1 => (0..4_usize).prop_map(Event::Advertise),
     ]
 }
 
 proptest! {
     #[test]
-    fn commit_once_the_network_heals(schedule in prop::collection::vec(event(), 0..300)) {
+    fn catch_up_once_the_network_heals(schedule in prop::collection::vec(event(), 0..300)) {
         let mut network = Network::new();
         network.run(&schedule);
         network.heal();
 
-        let proposed = !network.commits.is_empty()
-            || network.nodes.iter().any(|node| node.proposer.is_some());
-
-        if proposed {
-            for node in &network.nodes {
-                prop_assert_eq!(node.ledger.epoch(), 1);
-            }
+        // Every proposal ended in a commit, and everyone has every commit.
+        let epoch = network.nodes[0].ledger.epoch();
+        for node in &network.nodes {
+            prop_assert_eq!(node.ledger.epoch(), epoch);
+            prop_assert!(node.proposer.is_none());
         }
     }
 }

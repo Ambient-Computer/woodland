@@ -7,7 +7,7 @@ use super::{Event, Network};
 
 fn event() -> impl Strategy<Value = Event> {
     prop_oneof![
-        1 => (0..3_usize).prop_map(Event::Propose),
+        1 => (0..4_usize).prop_map(Event::Propose),
         6 => any::<prop::sample::Index>().prop_map(Event::Deliver),
         1 => any::<prop::sample::Index>().prop_map(Event::Drop),
         1 => any::<prop::sample::Index>().prop_map(Event::Duplicate),

@@ -9,20 +9,23 @@
 //! failure points at the step that broke them.
 
 mod agreement;
+mod epochs;
 mod liveness;
 mod restarts;
 mod retrying;
+
+use std::collections::BTreeSet;
 
 use ed25519_dalek::Signature;
 use proptest::sample::Index;
 
 use crate::envelope::{Envelope, Payload};
 use crate::quorum::consensus::{
-    Accept, Accepted, Acceptor, Ballot, Certificate, Phase, Prepare, Promise, Proposer, Refusal,
-    Rejected, Tally,
+    Accept, Accepted, Acceptor, Ballot, Certificate, Error, Phase, Prepare, Promise, Proposer,
+    Refusal, Rejected, Tally,
 };
 use crate::quorum::{ContributorChange, Operation};
-use crate::testing::{Actor, Ledger, PublicKey, keys, laptop, nas, phone, quorum};
+use crate::testing::{Actor, Ledger, PublicKey, friend, laptop, nas, phone, quorum};
 
 type Signed<T> = Envelope<PublicKey, Signature, T>;
 
@@ -49,7 +52,7 @@ struct Packet {
 /// What can happen next.
 #[derive(Clone, Debug)]
 enum Event {
-    /// A node starts proposing its operation.
+    /// A node starts proposing what it wants this epoch.
     Propose(usize),
 
     /// A message in flight arrives.
@@ -65,7 +68,7 @@ enum Event {
     Restart(usize),
 
     /// A node resends whatever it's still waiting on (its proposer's
-    /// request, and its acceptor's vote), and shares its latest commit.
+    /// request, and its acceptor's vote), and shares its commits.
     Advertise(usize),
 }
 
@@ -79,16 +82,15 @@ struct Node {
 
     /// Gone for good, e.g. a lost phone. Hears nothing, says nothing.
     gone: bool,
-
-    /// What this node would propose. Each node wants something different,
-    /// so agreement means something.
-    operation: Operation<PublicKey>,
 }
 
 #[derive(Debug)]
 struct Network {
     nodes: Vec<Node>,
     in_flight: Vec<Packet>,
+
+    /// Everything any node proposed, as (epoch, operation).
+    proposed: Vec<(u64, Operation<PublicKey>)>,
 
     /// Every commit any node made, as (node, certificate).
     commits: Vec<(usize, Certificate<PublicKey, Signature>)>,
@@ -98,36 +100,53 @@ struct Network {
 }
 
 impl Network {
-    /// `phone`, `laptop`, and `nas` in one quorum. Each wants to remove
-    /// the next one, so every proposal is valid and no two are the same.
+    /// `phone`, `laptop`, and `nas` in one quorum, and `friend` waiting to
+    /// join.
     fn new() -> Self {
-        let actors = [phone(), laptop(), nas()];
+        let actors = [phone(), laptop(), nas(), friend()];
         let ledger = quorum(&[&actors[0], &actors[1], &actors[2]]);
-        let removes = [nas().key(), phone().key(), laptop().key()];
 
-        let nodes = actors
+        let nodes: Vec<_> = actors
             .into_iter()
-            .zip(removes)
-            .map(|(actor, removed)| Node {
+            .map(|actor| Node {
                 actor,
                 ledger: ledger.clone(),
                 acceptor: Acceptor::new(0),
                 tally: Tally::new(0),
                 proposer: None,
                 gone: false,
-                operation: Operation::Contributors(ContributorChange {
-                    added: keys(&[]),
-                    removed: [removed].into(),
-                }),
             })
             .collect();
 
         Self {
-            promised: vec![(0, None); 3],
+            promised: vec![(0, None); nodes.len()],
             nodes,
             in_flight: Vec::new(),
+            proposed: Vec::new(),
             commits: Vec::new(),
         }
+    }
+
+    /// What `at` would propose now: to add the next node if it's out, or
+    /// remove it if it's in. Each node wants something different, so
+    /// agreement means something, and membership keeps changing.
+    fn wants(&self, at: usize) -> Operation<PublicKey> {
+        let next = self.nodes[(at + 1) % self.nodes.len()].actor.key();
+        let joined = self.nodes[at].ledger.current().is_contributor(&next);
+
+        let change = if joined {
+            ContributorChange {
+                added: BTreeSet::new(),
+                removed: [next].into(),
+            }
+        } else {
+            ContributorChange {
+                added: [next].into(),
+                removed: BTreeSet::new(),
+            }
+        };
+
+        Operation::Contributors(change)
     }
 
     fn run(&mut self, schedule: &[Event]) {
@@ -201,18 +220,20 @@ impl Network {
         (!self.in_flight.is_empty()).then(|| index.index(self.in_flight.len()))
     }
 
-    /// Starts a proposal, unless the node already started one this epoch
-    /// or its proposal no longer fits.
+    /// Starts a proposal, unless the node already started one this epoch,
+    /// isn't a contributor, or wants something that doesn't fit.
     fn propose(&mut self, at: usize) {
+        let operation = self.wants(at);
         let node = &mut self.nodes[at];
-        if node.proposer.is_some() || node.ledger.epoch() > 0 {
+        if node.proposer.is_some() || !node.ledger.current().is_contributor(&node.actor.key()) {
             return;
         }
 
-        let Ok(proposer) = Proposer::new(&node.ledger, node.actor.key(), node.operation.clone())
-        else {
+        let Ok(proposer) = Proposer::new(&node.ledger, node.actor.key(), operation.clone()) else {
             return;
         };
+
+        self.proposed.push((node.ledger.epoch(), operation));
 
         let prepare = sign(node, proposer.prepare());
         node.proposer = Some(proposer);
@@ -258,9 +279,10 @@ impl Network {
             messages.push(Message::Accepted(sign(node, accepted)));
         }
 
-        // Without it, a node that missed every vote never catches up. If
+        // Without them, a node that missed every vote never catches up. If
         // it has nothing of its own to advertise, nobody even hears of it.
-        if let Some(certificate) = node.ledger.commits().last() {
+        // Stands in for sync, which doesn't exist yet.
+        for certificate in node.ledger.commits() {
             messages.push(Message::Certificate(certificate.clone()));
         }
 
@@ -281,6 +303,13 @@ impl Network {
             return;
         }
 
+        // An acceptor doesn't know whose it is, so it can't tell it isn't a
+        // contributor. Until the API decides who checks, the node does.
+        let votes = node.ledger.current().is_contributor(&node.actor.key());
+        if !votes && matches!(packet.message, Message::Prepare(_) | Message::Accept(_)) {
+            return;
+        }
+
         match packet.message {
             Message::Prepare(prepare) => match node.acceptor.prepare(&node.ledger, &prepare) {
                 Ok(promise) => {
@@ -296,9 +325,7 @@ impl Network {
                     return;
                 };
 
-                let accept = proposer
-                    .promise(&node.ledger, &promise)
-                    .expect("honest nodes send valid promises");
+                let accept = ahead(proposer.promise(&node.ledger, &promise));
 
                 if let Some(accept) = accept {
                     let accept = sign(node, accept);
@@ -315,10 +342,7 @@ impl Network {
             },
 
             Message::Accepted(accepted) => {
-                let certificate = node
-                    .tally
-                    .count(&node.ledger, accepted)
-                    .expect("honest nodes send valid votes");
+                let certificate = ahead(node.tally.count(&node.ledger, accepted));
 
                 if let Some(certificate) = certificate {
                     self.commit(at, certificate);
@@ -330,9 +354,7 @@ impl Network {
                     return;
                 };
 
-                let retry = proposer
-                    .outbid(&node.ledger, &rejected)
-                    .expect("honest nodes send valid rejections");
+                let retry = ahead(proposer.outbid(&node.ledger, &rejected));
 
                 if let Some(retry) = retry {
                     let retry = sign(node, retry);
@@ -349,7 +371,8 @@ impl Network {
     }
 
     /// Answers a refusal the way an application would. Only `Superseded`
-    /// has an answer; the rest are expected when messages arrive late.
+    /// has an answer. Messages from finished epochs, and from epochs this
+    /// node hasn't reached, are expected and ignored.
     fn refused(&mut self, at: usize, refusal: Refusal<PublicKey>) {
         match refusal {
             Refusal::Superseded(rejected) => {
@@ -357,8 +380,8 @@ impl Network {
                 let rejected = sign(&self.nodes[at], rejected);
                 self.send(to, Message::Rejected(rejected));
             }
-            Refusal::EpochOver => {}
-            other => panic!("unexpected refusal from an honest network: {other}"),
+            Refusal::EpochOver | Refusal::Rejected(Error::UnknownEpoch) => {}
+            other => panic!("unexpected refusal from an honest network: {other:?}"),
         }
     }
 
@@ -397,13 +420,14 @@ impl Network {
             );
         }
 
-        // Validity: only operations someone proposed get committed.
+        // Validity: only operations someone proposed for that epoch get
+        // committed.
         for (_, certificate) in &self.commits {
+            let proposed = (certificate.epoch, certificate.proposal.operation.clone());
             assert!(
-                self.nodes
-                    .iter()
-                    .any(|node| node.operation == certificate.proposal.operation),
-                "committed an operation nobody proposed"
+                self.proposed.contains(&proposed),
+                "committed an operation nobody proposed for epoch {}",
+                certificate.epoch
             );
         }
 
@@ -511,6 +535,17 @@ impl Peek {
                 Some(&m.proposal.operation),
             ),
         }
+    }
+}
+
+/// Unwraps what a role made of a message from an honest node. The only
+/// failure expected is a message from an epoch this node hasn't reached:
+/// it's behind, and catches up from certificates instead.
+fn ahead<T>(result: Result<Option<T>, Error>) -> Option<T> {
+    match result {
+        Ok(made) => made,
+        Err(Error::UnknownEpoch) => None,
+        Err(error) => panic!("unexpected error from an honest network: {error:?}"),
     }
 }
 
