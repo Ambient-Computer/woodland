@@ -1,14 +1,15 @@
-//! A proposer that yields holds on to its ballot until the epoch commits.
+//! A proposer that's outbid retries above the winner, never under a ballot
+//! it already used.
 //!
-//! Every proposer starts at round 1. One that yielded, forgot, and started
-//! over would reuse its ballot, possibly for a different operation, and two
-//! operations under one ballot can both win. Random schedules rarely find
-//! this, so the interleaving is spelled out here.
+//! Every proposer starts at round 1. One that forgot it was outbid and
+//! started over would reuse its ballot, possibly for a different operation,
+//! and two operations under one ballot can both win. Random schedules
+//! rarely find this, so the interleaving is spelled out here.
 
 use super::{Kind, Network, Peek};
 
 #[test]
-fn a_yielded_proposer_never_starts_over() {
+fn an_outbid_proposer_never_starts_over() {
     let mut network = Network::new();
 
     // Name the nodes by ballot order: `low` < `mid` < `high`.
@@ -53,19 +54,23 @@ fn a_yielded_proposer_never_starts_over() {
     network.deliver_first(mid, from(Kind::Promise, mid));
     network.deliver_first(mid, from(Kind::Promise, mid));
 
-    // `high` outbids it, and `mid` yields.
+    // `high` outbids it, and `mid` retries above it.
     network.propose(high);
     network.deliver_first(high, from(Kind::Prepare, high));
     network.deliver_first(high, wants(mid, mid));
     network.deliver_first(mid, from(Kind::Rejected, mid));
 
-    // Starting over would reuse `mid`'s ballot. It would adopt `low`'s
-    // operation from `low`'s promise, putting two operations under one
-    // ballot. It must not ask for anything.
+    // Starting over would reuse `mid`'s first ballot. It would adopt
+    // `low`'s operation from `low`'s promise, putting two operations under
+    // one ballot. It must not ask for anything new.
     let in_flight = network.in_flight.len();
     network.propose(mid);
 
     assert_eq!(network.in_flight.len(), in_flight);
+    assert_eq!(
+        network.nodes[mid].proposer.as_ref().map(|p| p.ballot.round),
+        Some(2)
+    );
 
     // Whatever arrives from here, agreement holds.
     network.settle();

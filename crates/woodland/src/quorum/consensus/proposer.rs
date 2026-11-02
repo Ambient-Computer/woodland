@@ -11,10 +11,9 @@ use crate::quorum::{self, Ledger, Operation};
 /// A contributor's attempt to commit an operation during one epoch.
 ///
 /// Persisted until the epoch commits, except for the promises in `phase`.
-/// That includes after yielding. A proposer that forgets its ballot could
-/// start over under the same one, asking for a different operation. Two
-/// operations under one ballot can both win: acceptors accept either,
-/// since each matches their promise.
+/// A proposer that forgets its ballot could start over under an old one,
+/// asking for a different operation. Two operations under one ballot can
+/// both win: acceptors accept either, since each matches their promise.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Proposer<PublicKey> {
     pub epoch: u64,
@@ -32,10 +31,6 @@ pub struct Proposer<PublicKey> {
     /// would prepare again, and a different majority could hand it a
     /// different operation to adopt, under the same ballot.
     pub phase: Phase<PublicKey>,
-
-    /// Whether it lost to a higher ballot. A yielded proposer asks for
-    /// nothing more, but stays around to hold its ballot.
-    pub yielded: bool,
 }
 
 /// Where a proposer is in the protocol. Votes are keyed by the signer of a
@@ -58,9 +53,9 @@ impl<PublicKey: Ord + Clone + AsRef<[u8]>> Proposer<PublicKey> {
     /// Starts proposing `operation` for the ledger's current epoch, as
     /// `proposer`. Send [`prepare`](Self::prepare) to every contributor.
     ///
-    /// Start at most one per epoch, and keep it until the epoch commits,
-    /// even after it yields. Each starts at round 1, so a second would
-    /// reuse the first one's ballot.
+    /// Start at most one per epoch, and keep it until the epoch commits.
+    /// Each starts at round 1, so a second would reuse the first one's
+    /// ballot.
     ///
     /// # Errors
     ///
@@ -80,7 +75,6 @@ impl<PublicKey: Ord + Clone + AsRef<[u8]>> Proposer<PublicKey> {
             phase: Phase::Preparing {
                 promises: BTreeMap::new(),
             },
-            yielded: false,
         })
     }
 
@@ -88,26 +82,22 @@ impl<PublicKey: Ord + Clone + AsRef<[u8]>> Proposer<PublicKey> {
     ///
     /// Keep advertising it until the epoch commits or a contributor rejects
     /// it. Offline, reaching a majority may take weeks, so there's no point
-    /// at which silence means failure. `None` once yielded.
+    /// at which silence means failure.
     #[must_use]
-    pub fn prepare(&self) -> Option<Prepare<PublicKey>> {
-        (!self.yielded).then(|| Prepare {
+    pub fn prepare(&self) -> Prepare<PublicKey> {
+        Prepare {
             epoch: self.epoch,
             ballot: self.ballot.clone(),
-        })
+        }
     }
 
     /// Asks contributors to accept the operation, once a majority promised.
-    /// `None` while still preparing, or once yielded.
+    /// `None` while still preparing.
     ///
     /// Like [`prepare`](Self::prepare), keep advertising it until the epoch
     /// commits or a contributor rejects it.
     #[must_use]
     pub fn accept(&self) -> Option<Accept<PublicKey>> {
-        if self.yielded {
-            return None;
-        }
-
         match self.phase {
             Phase::Preparing { .. } => None,
             Phase::Accepting => Some(Accept {
@@ -128,8 +118,7 @@ impl<PublicKey: Ord + Clone + AsRef<[u8]>> Proposer<PublicKey> {
     /// accepted can't be replaced by a later ballot, only carried forward.
     ///
     /// Returns `None` for promises that change nothing: duplicates, replies
-    /// to an earlier ballot or epoch, promises after the majority, and any
-    /// promise once yielded.
+    /// to an earlier ballot or epoch, and promises after the majority.
     ///
     /// # Errors
     ///
@@ -150,7 +139,7 @@ impl<PublicKey: Ord + Clone + AsRef<[u8]>> Proposer<PublicKey> {
             return Err(Error::StaleProposer);
         }
 
-        if self.yielded || message.epoch < self.epoch || message.ballot != self.ballot {
+        if message.epoch < self.epoch || message.ballot != self.ballot {
             return Ok(None);
         }
 
@@ -178,36 +167,29 @@ impl<PublicKey: Ord + Clone + AsRef<[u8]>> Proposer<PublicKey> {
         Ok(self.accept())
     }
 
-    // TODO: A WINNER THAT NEVER RETURNS STALLS THE EPOCH FOREVER.
-    //
-    // Everyone it outbid has yielded, and nothing raises a round any more,
-    // so nobody takes over. Offline for weeks is fine: it resumes when it's
-    // back. Gone for good (a lost phone, a wiped browser) is not. Taking
-    // over needs a signal that comes from state, not a clock, e.g. the
-    // winner being removed from the contributors. Needs real design work.
-
-    /// Verifies a rejection, and whether it outbid this ballot. If so, the
-    /// proposer yields: it stops asking for anything this epoch. Persist it
-    /// anyway, until the epoch commits. It holds the ballot, so nobody
-    /// starts over under the same one (see [`new`](Self::new)).
+    /// Verifies a rejection, and whether it outbid this ballot. If so,
+    /// starts over in the round above the winner, and returns the
+    /// [`Prepare`] to send. Persist the proposer before sending it, so the
+    /// new ballot is never reused for a different operation.
     ///
-    /// Yielding is how dueling proposers settle without clocks. Retrying
-    /// above the winner would just invite it to retry above us, forever.
-    /// Instead, the higher ballot gets the floor. Our operation isn't lost
-    /// if a majority may have accepted it: the winner adopts it from the
-    /// promises. Otherwise, propose it again next epoch.
+    /// Our operation isn't lost if a majority may have accepted the
+    /// winner's: we adopt it from the promises, same as any other.
     ///
-    /// Proposals as a state-based CRDT could keep both sides' changes:
-    /// instead of yielding, merge the winner's intent into ours and duel
-    /// again above it. The winner would then see a proposal that already
-    /// includes its own changes, and stop competing. In theory, that
-    /// converges.
+    /// Two proposers can outbid each other indefinitely, each rejection
+    /// arriving just before the other's majority does. Safety holds while
+    /// they duel, and it ends as soon as one round gets through. Breaking
+    /// ties without clocks or randomness needs more design work.
+    ///
+    /// Proposals as a state-based CRDT might end duels sooner: merge the
+    /// winner's intent into ours before retrying above it. The winner would
+    /// then see a proposal that already includes its own changes, and stop
+    /// competing.
     ///
     /// One rejection is enough. That contributor will refuse this ballot
     /// for good, and someone with a higher ballot is competing for the
     /// epoch.
     ///
-    /// Returns `false` for rejections that change nothing: replies to an
+    /// Returns `None` for rejections that change nothing: replies to an
     /// earlier ballot or epoch, or one naming a ballot that doesn't beat
     /// this one.
     ///
@@ -219,7 +201,7 @@ impl<PublicKey: Ord + Clone + AsRef<[u8]>> Proposer<PublicKey> {
         &mut self,
         ledger: &Ledger<PublicKey, Signature>,
         rejected: &Envelope<PublicKey, Signature, Rejected<PublicKey>>,
-    ) -> Result<bool, Error>
+    ) -> Result<Option<Prepare<PublicKey>>, Error>
     where
         PublicKey: Verifier<Signature>,
     {
@@ -230,13 +212,21 @@ impl<PublicKey: Ord + Clone + AsRef<[u8]>> Proposer<PublicKey> {
         }
 
         // An honest contributor only rejects for a higher ballot. Anything
-        // else would make the proposer drop out for no reason.
+        // else would make the proposer start over for no reason.
         let outbid = message.epoch == self.epoch
             && message.ballot == self.ballot
             && message.promised > self.ballot;
 
-        self.yielded |= outbid;
-        Ok(outbid)
+        if !outbid {
+            return Ok(None);
+        }
+
+        self.ballot.round = message.promised.round + 1;
+        self.phase = Phase::Preparing {
+            promises: BTreeMap::new(),
+        };
+
+        Ok(Some(self.prepare()))
     }
 }
 
@@ -290,14 +280,15 @@ mod tests {
 
         assert_eq!(
             proposer.prepare(),
-            Some(Prepare {
+            Prepare {
                 epoch: 0,
                 ballot: Ballot {
                     round: 1,
                     proposer: phone().key(),
                 },
-            })
+            }
         );
+
         assert_eq!(proposer.accept(), None);
 
         Ok(())
@@ -431,35 +422,48 @@ mod tests {
     }
 
     #[test]
-    fn yields_to_a_higher_ballot() -> Result<(), Box<dyn std::error::Error>> {
+    fn retries_above_a_higher_ballot() -> Result<(), Box<dyn std::error::Error>> {
         let ledger = quorum(&[&phone(), &laptop(), &nas()]);
         let mut proposer = Proposer::new(&ledger, phone().key(), remove(&nas()))?;
         let winner = Ballot {
             round: 5,
             proposer: laptop().key(),
         };
-        let rejection = rejected(&ledger, &nas(), &proposer.ballot, winner)?;
 
-        assert!(proposer.outbid(&ledger, &rejection)?);
-        assert!(proposer.yielded);
+        let rejection = rejected(&ledger, &nas(), &proposer.ballot, winner)?;
+        let retry = proposer.outbid(&ledger, &rejection)?;
+
+        assert_eq!(
+            retry.map(|prepare| prepare.ballot),
+            Some(Ballot {
+                round: 6,
+                proposer: phone().key(),
+            })
+        );
+
         Ok(())
     }
 
-    // It holds its ballot, so it must not use it again.
+    // Promises for the outbid ballot are worthless now. Counting them
+    // toward the new one would skip asking.
     #[test]
-    fn asks_for_nothing_once_yielded() -> Result<(), Box<dyn std::error::Error>> {
+    fn forgets_promises_when_retrying() -> Result<(), Box<dyn std::error::Error>> {
         let ledger = quorum(&[&phone(), &laptop(), &nas()]);
         let mut proposer = Proposer::new(&ledger, phone().key(), remove(&nas()))?;
-        let ballot = proposer.ballot.clone();
-        proposer.promise(&ledger, &promise(&ledger, &phone(), &ballot, None)?)?;
-        proposer.yielded = true;
+        let old = proposer.ballot.clone();
+        proposer.promise(&ledger, &promise(&ledger, &phone(), &old, None)?)?;
+        let winner = Ballot {
+            round: 5,
+            proposer: laptop().key(),
+        };
+        proposer.outbid(&ledger, &rejected(&ledger, &nas(), &old, winner)?)?;
+        let new = proposer.ballot.clone();
 
-        let late = proposer.promise(&ledger, &promise(&ledger, &laptop(), &ballot, None)?)?;
+        let first = proposer.promise(&ledger, &promise(&ledger, &laptop(), &new, None)?)?;
+        let late = proposer.promise(&ledger, &promise(&ledger, &nas(), &old, None)?)?;
 
+        assert_eq!(first, None);
         assert_eq!(late, None);
-        assert_eq!(proposer.prepare(), None);
-        assert_eq!(proposer.accept(), None);
-
         Ok(())
     }
 
@@ -483,18 +487,18 @@ mod tests {
         let for_another_ballot = rejected(&ledger, &nas(), &other, higher)?;
         let not_outbid = rejected(&ledger, &nas(), &proposer.ballot, lower)?;
 
-        assert!(!proposer.outbid(&ledger, &for_another_ballot)?);
-        assert!(!proposer.outbid(&ledger, &not_outbid)?);
-        assert!(!proposer.yielded);
+        assert_eq!(proposer.outbid(&ledger, &for_another_ballot)?, None);
+        assert_eq!(proposer.outbid(&ledger, &not_outbid)?, None);
+        assert_eq!(proposer.ballot.round, 1);
 
         Ok(())
     }
 
     // Dueling proposers: both start at round 1, so the ballots differ only
-    // by proposer. Whoever every acceptor heard from first wins, and the
-    // other yields instead of fighting back.
+    // by proposer. The loser retries above the winner, and acceptors
+    // follow the higher round.
     #[test]
-    fn duels_end_with_one_proposer() -> Result<(), Box<dyn std::error::Error>> {
+    fn retries_win_over_acceptors() -> Result<(), Box<dyn std::error::Error>> {
         let ledger = quorum(&[&phone(), &laptop(), &nas()]);
         let (winner, loser) = if ballot_of(&phone()) > ballot_of(&laptop()) {
             (phone(), laptop())
@@ -503,13 +507,8 @@ mod tests {
         };
         let winning = Proposer::new(&ledger, winner.key(), remove(&nas()))?;
         let mut losing = Proposer::new(&ledger, loser.key(), remove(&nas()))?;
-        let winning_prepare = Envelope::sign(
-            &winner,
-            &ledger.id(),
-            winning.prepare().ok_or("not yielded")?,
-        )?;
-        let losing_prepare =
-            Envelope::sign(&loser, &ledger.id(), losing.prepare().ok_or("not yielded")?)?;
+        let winning_prepare = Envelope::sign(&winner, &ledger.id(), winning.prepare())?;
+        let losing_prepare = Envelope::sign(&loser, &ledger.id(), losing.prepare())?;
 
         let mut acceptor = Acceptor::new(0);
         acceptor.prepare(&ledger, &winning_prepare)?;
@@ -518,8 +517,11 @@ mod tests {
         };
         let rejection = Envelope::sign(&nas(), &ledger.id(), refused)?;
 
-        assert!(losing.outbid(&ledger, &rejection)?);
-        assert!(acceptor.prepare(&ledger, &winning_prepare).is_ok());
+        let retry = losing.outbid(&ledger, &rejection)?.ok_or("outbid")?;
+        let retry = Envelope::sign(&loser, &ledger.id(), retry)?;
+
+        assert!(acceptor.prepare(&ledger, &retry).is_ok());
+        assert!(acceptor.prepare(&ledger, &winning_prepare).is_err());
 
         Ok(())
     }
@@ -540,11 +542,7 @@ mod tests {
         let mut tally = Tally::new(0);
         let mut proposer = Proposer::new(&ledger, phone().key(), remove(&nas()))?;
 
-        let prepare = Envelope::sign(
-            &phone(),
-            &ledger.id(),
-            proposer.prepare().ok_or("not yielded")?,
-        )?;
+        let prepare = Envelope::sign(&phone(), &ledger.id(), proposer.prepare())?;
         let mut accept = None;
         for (voter, acceptor) in voters.iter().zip(&mut acceptors) {
             let promise = acceptor.prepare(&ledger, &prepare)?;

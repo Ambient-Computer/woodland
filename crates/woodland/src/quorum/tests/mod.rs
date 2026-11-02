@@ -11,7 +11,7 @@
 mod agreement;
 mod liveness;
 mod restarts;
-mod yielding;
+mod retrying;
 
 use ed25519_dalek::Signature;
 use proptest::sample::Index;
@@ -139,12 +139,21 @@ impl Network {
 
     /// Delivers everything still in flight, in order, until the network
     /// goes quiet.
+    ///
+    /// Dueling proposers could keep it busy forever, so it gives up
+    /// eventually.
     fn settle(&mut self) {
-        while !self.in_flight.is_empty() {
+        for _ in 0..10_000 {
+            if self.in_flight.is_empty() {
+                return;
+            }
+
             let packet = self.in_flight.remove(0);
             self.receive(packet);
             self.check();
         }
+
+        panic!("dueling proposers never settled");
     }
 
     /// Lets the network recover: no more losses, and every node keeps
@@ -205,7 +214,7 @@ impl Network {
             return;
         };
 
-        let prepare = sign(node, proposer.prepare().expect("a new proposer asks"));
+        let prepare = sign(node, proposer.prepare());
         node.proposer = Some(proposer);
         self.broadcast(&Message::Prepare(prepare));
     }
@@ -235,8 +244,8 @@ impl Network {
         if let Some(proposer) = &node.proposer {
             if let Some(accept) = proposer.accept() {
                 messages.push(Message::Accept(sign(node, accept)));
-            } else if let Some(prepare) = proposer.prepare() {
-                messages.push(Message::Prepare(sign(node, prepare)));
+            } else {
+                messages.push(Message::Prepare(sign(node, proposer.prepare())));
             }
         }
 
@@ -316,13 +325,18 @@ impl Network {
                 }
             }
 
-            // A yielded proposer stays, holding its ballot until the epoch
-            // commits, so the node can't start another.
             Message::Rejected(rejected) => {
-                if let Some(proposer) = &mut node.proposer {
-                    proposer
-                        .outbid(&node.ledger, &rejected)
-                        .expect("honest nodes send valid rejections");
+                let Some(proposer) = &mut node.proposer else {
+                    return;
+                };
+
+                let retry = proposer
+                    .outbid(&node.ledger, &rejected)
+                    .expect("honest nodes send valid rejections");
+
+                if let Some(retry) = retry {
+                    let retry = sign(node, retry);
+                    self.broadcast(&Message::Prepare(retry));
                 }
             }
 

@@ -37,11 +37,10 @@ proptest! {
     }
 }
 
-// Pins the TODO on `Proposer::outbid`. Everyone yields to the highest
-// ballot, so if its proposer disappears, nobody is left to ask. Once
-// someone can take over, this should commit instead.
+// Nobody waits on the highest ballot. Whoever it outbid retries above
+// it, so the epoch commits without its proposer.
 #[test]
-fn stalls_when_the_winner_never_returns() {
+fn commits_when_the_winner_never_returns() {
     let mut network = Network::new();
 
     let mut order = [0, 1, 2];
@@ -53,34 +52,18 @@ fn stalls_when_the_winner_never_returns() {
         let key = keys[proposer];
         move |peek: &Peek| peek.kind == Kind::Prepare && peek.ballot.proposer == key
     };
-    let rejected = |proposer: usize| {
-        let key = keys[proposer];
-        move |peek: &Peek| peek.kind == Kind::Rejected && peek.ballot.proposer == key
-    };
 
-    // `low` and `mid` promise `high`.
+    // `low` and `mid` promise `high`, then it disappears for good.
     network.propose(high);
     network.deliver_first(low, prepare(high));
     network.deliver_first(mid, prepare(high));
-
-    // Each of them then proposes, gets outbid, and yields.
-    network.propose(low);
-    network.deliver_first(mid, prepare(low));
-    network.deliver_first(low, rejected(low));
-    network.propose(mid);
-    network.deliver_first(low, prepare(mid));
-    network.deliver_first(mid, rejected(mid));
-
     network.vanish(high);
+
+    // `low` proposes, gets outbid, and retries.
+    network.propose(low);
     network.heal();
 
-    assert_eq!(network.commits, []);
     for node in [low, mid] {
-        assert!(
-            network.nodes[node]
-                .proposer
-                .as_ref()
-                .is_some_and(|p| p.yielded)
-        );
+        assert_eq!(network.nodes[node].ledger.epoch(), 1);
     }
 }
