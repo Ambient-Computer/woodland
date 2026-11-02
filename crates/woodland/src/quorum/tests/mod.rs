@@ -9,6 +9,7 @@
 //! failure points at the step that broke them.
 
 mod agreement;
+mod yielding;
 
 use ed25519_dalek::Signature;
 use proptest::sample::Index;
@@ -155,8 +156,8 @@ impl Network {
         (!self.in_flight.is_empty()).then(|| index.index(self.in_flight.len()))
     }
 
-    /// Starts a proposal, unless the node already has one this epoch or
-    /// its proposal no longer fits.
+    /// Starts a proposal, unless the node already started one this epoch
+    /// or its proposal no longer fits.
     fn propose(&mut self, at: usize) {
         let node = &mut self.nodes[at];
         if node.proposer.is_some() || node.ledger.epoch() > 0 {
@@ -168,7 +169,7 @@ impl Network {
             return;
         };
 
-        let prepare = sign(node, proposer.prepare());
+        let prepare = sign(node, proposer.prepare().expect("a new proposer asks"));
         node.proposer = Some(proposer);
         self.broadcast(&Message::Prepare(prepare));
     }
@@ -221,17 +222,13 @@ impl Network {
                 }
             }
 
+            // A yielded proposer stays, holding its ballot until the epoch
+            // commits, so the node can't start another.
             Message::Rejected(rejected) => {
-                let Some(proposer) = &node.proposer else {
-                    return;
-                };
-
-                let outbid = proposer
-                    .outbid(&node.ledger, &rejected)
-                    .expect("honest nodes send valid rejections");
-
-                if outbid {
-                    node.proposer = None;
+                if let Some(proposer) = &mut node.proposer {
+                    proposer
+                        .outbid(&node.ledger, &rejected)
+                        .expect("honest nodes send valid rejections");
                 }
             }
         }
@@ -305,6 +302,21 @@ impl Network {
         }
     }
 
+    /// Delivers the first message in flight to `to` that `matches`, for
+    /// tests that need one exact interleaving.
+    fn deliver_first(&mut self, to: usize, matches: impl Fn(&Peek) -> bool) {
+        let id = self.nodes[to].ledger.id();
+        let index = self
+            .in_flight
+            .iter()
+            .position(|packet| packet.to == to && matches(&Peek::of(&packet.message, &id)))
+            .expect("a matching message is in flight");
+
+        let packet = self.in_flight.remove(index);
+        self.receive(packet);
+        self.check();
+    }
+
     fn broadcast(&mut self, message: &Message) {
         for to in 0..self.nodes.len() {
             self.send(to, message.clone());
@@ -320,6 +332,65 @@ impl Network {
             .iter()
             .position(|node| &node.actor.key() == key)
             .expect("ballots belong to nodes in the network")
+    }
+}
+
+/// What a test needs to tell messages apart.
+#[derive(Debug)]
+struct Peek {
+    kind: Kind,
+    ballot: Ballot<PublicKey>,
+    operation: Option<Operation<PublicKey>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Kind {
+    Prepare,
+    Promise,
+    Accept,
+    Accepted,
+    Rejected,
+}
+
+impl Peek {
+    fn of(message: &Message, quorum: &blake3::Hash) -> Self {
+        let peek =
+            |kind, ballot: &Ballot<PublicKey>, operation: Option<&Operation<PublicKey>>| Self {
+                kind,
+                ballot: ballot.clone(),
+                operation: operation.cloned(),
+            };
+
+        match message {
+            Message::Prepare(m) => {
+                let m = m.verify(quorum).expect("honest messages verify");
+                peek(Kind::Prepare, &m.ballot, None)
+            }
+            Message::Promise(m) => {
+                let m = m.verify(quorum).expect("honest messages verify");
+                peek(Kind::Promise, &m.ballot, None)
+            }
+            Message::Accept(m) => {
+                let m = m.verify(quorum).expect("honest messages verify");
+                peek(
+                    Kind::Accept,
+                    &m.proposal.ballot,
+                    Some(&m.proposal.operation),
+                )
+            }
+            Message::Accepted(m) => {
+                let m = m.verify(quorum).expect("honest messages verify");
+                peek(
+                    Kind::Accepted,
+                    &m.proposal.ballot,
+                    Some(&m.proposal.operation),
+                )
+            }
+            Message::Rejected(m) => {
+                let m = m.verify(quorum).expect("honest messages verify");
+                peek(Kind::Rejected, &m.ballot, None)
+            }
+        }
     }
 }
 
