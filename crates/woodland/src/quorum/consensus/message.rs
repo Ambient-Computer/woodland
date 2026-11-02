@@ -66,6 +66,23 @@ pub struct Accepted<PublicKey> {
     pub proposal: Proposal<PublicKey>,
 }
 
+/// A contributor refused a ballot because it promised a higher one.
+///
+/// Signed by the contributor that refused.
+///
+/// Tells the proposer which ballot it has to beat, so it can retry above
+/// it. Without this, nothing would tell a proposer it lost.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Rejected<PublicKey> {
+    pub epoch: u64,
+
+    /// The ballot that was refused.
+    pub ballot: Ballot<PublicKey>,
+
+    /// The higher ballot the contributor promised instead.
+    pub promised: Ballot<PublicKey>,
+}
+
 /// A Paxos message, as far as checking its sender goes.
 pub trait Message<PublicKey>: Payload {
     /// The epoch it's for. Only that epoch's contributors may send it.
@@ -116,6 +133,16 @@ impl<PublicKey: AsRef<[u8]>> Message<PublicKey> for Accepted<PublicKey> {
     }
 }
 
+impl<PublicKey: AsRef<[u8]>> Message<PublicKey> for Rejected<PublicKey> {
+    fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    fn required_signer(&self) -> Option<&PublicKey> {
+        None
+    }
+}
+
 impl<PublicKey: AsRef<[u8]>> Payload for Prepare<PublicKey> {
     fn digest(&self) -> blake3::Hash {
         let mut hasher = hasher_for(PayloadType::Prepare);
@@ -157,6 +184,16 @@ impl<PublicKey: AsRef<[u8]>> Payload for Accepted<PublicKey> {
         let mut hasher = hasher_for(PayloadType::Accepted);
         hasher.update(&self.epoch.to_le_bytes());
         update_proposal(&mut hasher, &self.proposal);
+        hasher.finalize()
+    }
+}
+
+impl<PublicKey: AsRef<[u8]>> Payload for Rejected<PublicKey> {
+    fn digest(&self) -> blake3::Hash {
+        let mut hasher = hasher_for(PayloadType::Rejected);
+        hasher.update(&self.epoch.to_le_bytes());
+        update_ballot(&mut hasher, &self.ballot);
+        update_ballot(&mut hasher, &self.promised);
         hasher.finalize()
     }
 }
@@ -245,6 +282,33 @@ mod tests {
         assert_ne!(base, accepted(2, proposal(1, &nas())).digest());
         assert_ne!(base, accepted(1, proposal(2, &nas())).digest());
         assert_ne!(base, accepted(1, proposal(1, &laptop())).digest());
+    }
+
+    #[test]
+    fn rejected_digest_covers_every_field() {
+        let rejected = |epoch, ballot, promised| Rejected {
+            epoch,
+            ballot,
+            promised,
+        };
+        let base = rejected(1, ballot(1, &phone()), ballot(2, &laptop())).digest();
+
+        assert_ne!(
+            base,
+            rejected(2, ballot(1, &phone()), ballot(2, &laptop())).digest()
+        );
+        assert_ne!(
+            base,
+            rejected(1, ballot(0, &phone()), ballot(2, &laptop())).digest()
+        );
+        assert_ne!(
+            base,
+            rejected(1, ballot(1, &phone()), ballot(3, &laptop())).digest()
+        );
+        assert_ne!(
+            base,
+            rejected(1, ballot(2, &laptop()), ballot(1, &phone())).digest()
+        );
     }
 
     // `Accept` and `Accepted` have identical fields. Without distinct type

@@ -10,7 +10,7 @@ mod tally;
 
 pub use acceptor::{Acceptor, Refusal};
 pub use certificate::{Certificate, InvalidCertificate};
-pub use message::{Accept, Accepted, Ballot, Message, Prepare, Promise, Proposal};
+pub use message::{Accept, Accepted, Ballot, Message, Prepare, Promise, Proposal, Rejected};
 pub use proposer::{Phase, Proposer};
 pub use sender::Error;
 pub use tally::Tally;

@@ -30,6 +30,7 @@ pub(crate) enum PayloadType {
     Promise = 4,
     Accept = 5,
     Accepted = 6,
+    Rejected = 7,
 }
 
 /// Starts an encoding for a value of the given type.
