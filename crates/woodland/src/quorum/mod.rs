@@ -3,6 +3,8 @@ mod genesis;
 mod ledger;
 mod operation;
 mod state;
+#[cfg(test)]
+mod tests;
 
 pub use genesis::{Genesis, Initialize};
 pub use ledger::Ledger;
