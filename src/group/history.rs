@@ -99,6 +99,10 @@ impl History {
     }
 
     /// Accepts a verified transaction. It waits until it can be integrated.
+    ///
+    /// An author who signs two different transactions with the same `seq`
+    /// (equivocation) splits replicas: each keeps whichever arrived first.
+    /// Like the agreement, this assumes crash faults, not lying authors.
     pub(crate) fn offer(&mut self, transaction: Verified<Transaction>) {
         let key = (transaction.author(), transaction.payload().seq);
         if !self.clock.integrated.contains(key.0, key.1) {

@@ -34,7 +34,7 @@ use crate::model::ModelId;
 /// Processing a batch has three stages:
 ///
 /// 1. **Apply** each event in order. Domains take in changes and queue
-///    storage work in the [`Outbox`]. Nothing is sent yet.
+///    storage work in the `Outbox`. Nothing is sent yet.
 /// 2. **Settle** each group: learn, integrate, report progress, compact.
 /// 3. **Compose** one message per connected peer, and order everything:
 ///    storage first, then scans, then sends.
