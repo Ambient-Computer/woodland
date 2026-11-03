@@ -229,6 +229,7 @@ mod tests {
 
     use super::*;
     use crate::agreement::Genesis;
+    use crate::lattice::Lattice;
     use crate::storage::keys::{self, Record};
     use crate::testing::cluster::{Cluster, FRIEND, LAPTOP, NAS, PHONE};
 
@@ -524,12 +525,25 @@ mod tests {
         #[test]
         fn reconnected_devices_converge(steps in prop::collection::vec(step(), 0..60)) {
             let mut cluster = household();
+            let mut learned = Vec::new();
             for step in steps {
                 run(&mut cluster, step);
+                for device in [PHONE, LAPTOP, NAS, FRIEND] {
+                    learned.push(group(&cluster, device).agreement().learned().clone());
+                }
             }
 
             cluster.connect_everyone();
             cluster.settle();
+
+            // Lattice agreement's promise holds end to end, through real
+            // sync, storage and restarts: no two devices ever learned
+            // decisions that disagree.
+            for left in &learned {
+                for right in &learned {
+                    prop_assert!(left.leq(right) || right.leq(left));
+                }
+            }
 
             let reference = group(&cluster, PHONE);
             for device in [LAPTOP, NAS, FRIEND] {

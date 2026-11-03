@@ -52,6 +52,11 @@
 //!
 //! - **Safety** (never learning incomparable values) holds no matter who is
 //!   offline or how messages are delayed, dropped or reordered.
+//! - **Durable views.** Safety assumes a replica's view never shrinks, so a
+//!   view must be persisted before it's sent. A replica that forgets what
+//!   it sent can witness two incomparable values (see the test
+//!   `a_replica_that_forgets_breaks_agreement`). The node's action ordering,
+//!   storage before network, is what provides this.
 //! - **Liveness** needs a quorum of every configuration in play to be
 //!   reachable, and needs proposals to pause long enough for views to
 //!   converge. A stream of proposals can starve learning.
@@ -422,6 +427,40 @@ mod tests {
         let target = laptop_replica.view().target_configuration();
         assert!(target.has_quorum(&BTreeSet::from([laptop()])));
         assert_eq!(laptop_replica.try_learn(), None);
+    }
+
+    /// Why "storage writes are durable before the next action" is a safety
+    /// requirement, not just a data-loss concern.
+    ///
+    /// Safety rests on each replica's view only ever growing. Here the
+    /// laptop witnesses the phone's proposal, then crashes before its view
+    /// is durable and comes back with an older one. It then witnesses the
+    /// nas's proposal. Each was a majority with the laptop, so the phone
+    /// and the nas learn values that disagree.
+    #[test]
+    fn a_replica_that_forgets_breaks_agreement() {
+        let report = |peer| Progress::report(peer, VersionVector::from_iter([(peer, 1)]));
+        let mut phone_replica = Agreement::new(&genesis(), phone());
+        let mut laptop_replica = Agreement::new(&genesis(), laptop());
+        let mut nas_replica = Agreement::new(&genesis(), nas());
+
+        phone_replica.propose_progress(&report(phone()));
+        laptop_replica.receive(phone(), phone_replica.view());
+        phone_replica.receive(laptop(), laptop_replica.view());
+        let phone_learned = phone_replica.try_learn().cloned();
+
+        let amnesiac = Agreement::new(&genesis(), laptop());
+        laptop_replica = amnesiac;
+
+        nas_replica.propose_progress(&report(nas()));
+        laptop_replica.receive(nas(), nas_replica.view());
+        nas_replica.receive(laptop(), laptop_replica.view());
+        let nas_learned = nas_replica.try_learn().cloned();
+
+        let (Some(phone_learned), Some(nas_learned)) = (phone_learned, nas_learned) else {
+            panic!("both should learn");
+        };
+        assert!(!phone_learned.leq(&nas_learned) && !nas_learned.leq(&phone_learned));
     }
 
     #[test]
