@@ -59,7 +59,9 @@
 //!   storage before network, is what provides this.
 //! - **Liveness** needs a quorum of every configuration in play to be
 //!   reachable, and needs proposals to pause long enough for views to
-//!   converge. A stream of proposals can starve learning.
+//!   converge. A stream of proposals starves learning in practice, not just
+//!   in theory, so the group proposes at most one progress report at a time
+//!   (see `Group::may_report`).
 //! - **Crash faults only.** Senders are authenticated by the transport, but a
 //!   lying member could forge another's progress or claim a quorum.
 //!   Byzantine-tolerant RLA is follow-up work in the literature.

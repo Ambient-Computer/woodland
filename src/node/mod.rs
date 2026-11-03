@@ -360,6 +360,22 @@ mod tests {
     }
 
     #[test]
+    fn steady_writing_still_compacts() {
+        let mut cluster = household();
+        for round in 0..40 {
+            for device in [PHONE, LAPTOP, NAS] {
+                write(&mut cluster, device, "counter", &round.to_string());
+                cluster.deliver(device);
+            }
+        }
+
+        // Never quiet, yet the floor keeps moving.
+        let phone = cluster.key(PHONE).into();
+        let floor = group(&cluster, LAPTOP).history().floor().get(phone);
+        assert!(floor > 20, "floor stuck at {floor}");
+    }
+
+    #[test]
     fn an_offline_contributor_holds_the_floor() {
         let mut cluster = household();
         cluster.disconnect(NAS, PHONE);

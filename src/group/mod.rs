@@ -136,8 +136,7 @@ impl Group {
 
         // Contributors report how far they've gotten. That report is what
         // eventually lets everyone compact.
-        let learned = &self.agreement.learned().configuration;
-        if learned.is_member(self.me) {
+        if self.may_report() {
             let report = Progress::report(self.me, self.history.integrated().clone());
             self.agreement.propose_progress(&report);
         }
@@ -165,6 +164,23 @@ impl Group {
         self.peers
             .get_mut(&peer)?
             .outgoing(view, &self.history, &self.models)
+    }
+
+    /// Whether to propose a new progress report: only as a contributor, and
+    /// only once the previous report has been learned.
+    ///
+    /// Learning needs a quorum to hold the same view at once. Every report
+    /// changes the view, so contributors that report on every batch keep
+    /// moving the target, and with steady writes nothing is ever learned
+    /// (see `steady_writing_still_compacts`). Holding each contributor to
+    /// one report in flight bounds the churn, and the floor trails by about
+    /// one round.
+    fn may_report(&self) -> bool {
+        let learned = self.agreement.learned();
+        let proposed = &self.agreement.view().candidate;
+
+        learned.configuration.is_member(self.me)
+            && learned.progress.of(self.me) == proposed.of(self.me)
     }
 
     fn integrate(&mut self, outbox: &mut Outbox) {
