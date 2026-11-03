@@ -1,7 +1,3 @@
-# Structure
-
-- `crates/` workspace.
-
 # Tools
 
 - `cargo nextest`
