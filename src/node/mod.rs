@@ -4,7 +4,7 @@ mod network;
 pub use batch::Batch;
 use network::Network;
 
-use crate::io::{Event, NetworkEvent};
+use crate::io::{Action, Event, NetworkEvent};
 
 /// Represents this device. Applications should only create one.
 ///
@@ -27,7 +27,7 @@ impl Node {
         Batch::new(self)
     }
 
-    fn process(&mut self, events: Vec<Event>) {
+    fn process(&mut self, events: Vec<Event>) -> Vec<Action> {
         for event in events {
             match event {
                 Event::Network(NetworkEvent::Connected { peer }) => {
@@ -41,6 +41,8 @@ impl Node {
                 Event::Network(NetworkEvent::Message { .. }) => {}
             }
         }
+
+        Vec::new()
     }
 }
 
@@ -57,7 +59,8 @@ mod tests {
     #[test]
     fn tracks_connected_peers() {
         let mut node = Node::new();
-        node.batch().connected(key(1)).connected(key(2)).process();
+        let actions = node.batch().connected(key(1)).connected(key(2)).process();
+        assert_eq!(actions, []);
 
         assert!(node.network.is_connected(&key(1).into()));
         assert!(node.network.is_connected(&key(2).into()));
@@ -66,10 +69,12 @@ mod tests {
     #[test]
     fn forgets_disconnected_peers() {
         let mut node = Node::new();
-        node.batch()
+        let actions = node
+            .batch()
             .connected(key(1))
             .disconnected(key(1))
             .process();
+        assert_eq!(actions, []);
 
         assert!(!node.network.is_connected(&key(1).into()));
     }
@@ -77,10 +82,12 @@ mod tests {
     #[test]
     fn ignores_disconnects_from_unknown_peers() {
         let mut node = Node::new();
-        node.batch()
+        let actions = node
+            .batch()
             .connected(key(1))
             .disconnected(key(2))
             .process();
+        assert_eq!(actions, []);
 
         assert!(node.network.is_connected(&key(1).into()));
     }

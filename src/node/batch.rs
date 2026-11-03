@@ -1,7 +1,7 @@
 use ed25519_dalek::VerifyingKey;
 
 use super::Node;
-use crate::io::{Event, NetworkEvent};
+use crate::io::{Action, Event, NetworkEvent};
 
 /// Events to process together. Start one with [`Node::batch`].
 #[derive(Debug)]
@@ -34,9 +34,11 @@ impl<'a> Batch<'a> {
         self.network(NetworkEvent::Message { peer: peer.into() })
     }
 
-    /// Processes every event, in the order they were added.
-    pub fn process(self) {
-        self.node.process(self.events);
+    /// Processes every event, in the order they were added. Returns what
+    /// the caller should do next.
+    #[must_use = "actions must be performed"]
+    pub fn process(self) -> Vec<Action> {
+        self.node.process(self.events)
     }
 
     fn network(mut self, event: NetworkEvent) -> Self {
