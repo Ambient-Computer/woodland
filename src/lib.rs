@@ -8,11 +8,7 @@
 mod actor;
 #[expect(dead_code, reason = "scaffolding until wired into Node")]
 mod agreement;
-#[expect(
-    dead_code,
-    unused_imports,
-    reason = "scaffolding until wired into Node"
-)]
+#[expect(dead_code, reason = "scaffolding until wired into Node")]
 mod clock;
 mod encoding;
 mod io;
@@ -21,6 +17,12 @@ mod io;
     expect(dead_code, reason = "scaffolding until wired into Node")
 )]
 mod lattice;
+#[expect(
+    dead_code,
+    unused_imports,
+    reason = "scaffolding until wired into Node"
+)]
+mod model;
 mod node;
 #[cfg(test)]
 mod testing;
@@ -28,4 +30,5 @@ mod testing;
 pub use actor::Identity;
 pub use agreement::{AgreementId, Genesis};
 pub use io::{Action, NetworkAction};
+pub use model::ModelId;
 pub use node::{Batch, Node};
