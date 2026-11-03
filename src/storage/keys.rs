@@ -1,22 +1,29 @@
-//! The key layout. Structure lives in the keys, so a range scan is the only
-//! query the library ever needs.
+//! The key layout. Structure lives in the keys, so range scans and point
+//! reads are the only queries the library ever needs.
 //!
 //! ```text
-//! [GENESIS][agreement]                         → Genesis
-//! [AGREEMENT][agreement][VIEW]                 → agreement View
-//! [AGREEMENT][agreement][ATTESTATION]          → our latest Signed<Attestation>
-//! [AGREEMENT][agreement][CLOCK]                → integrated clock, floor
-//! [AGREEMENT][agreement][LOG][author][seq]     → Signed<Transaction>
-//! [AGREEMENT][agreement][ENTRY][model][key…]   → KV Entry
+//! [GENESIS][agreement]                                → Genesis
+//! [AGREEMENT][agreement][PROTOCOL][VIEW]              → agreement View
+//! [AGREEMENT][agreement][PROTOCOL][ATTESTATION]       → our latest Signed<Attestation>
+//! [AGREEMENT][agreement][PROTOCOL][CLOCK]             → integrated clock, floor
+//! [AGREEMENT][agreement][PROTOCOL][LOG][author][seq]  → Signed<Transaction>
+//! [AGREEMENT][agreement][DATA][model][key…]           → KV Entry
 //! ```
 //!
 //! Identifiers are fixed width and sequence numbers are big-endian, so byte
 //! order matches logical order. The application's key bytes come last,
-//! which keeps them unambiguous without any escaping.
+//! which keeps them unambiguous without any escaping, and keeps prefix
+//! queries over them a single range.
 //!
-//! The payoff: everything an agreement owns shares one prefix, so loading or
-//! dropping an agreement is one range. An author's log is a sub-range, so
-//! compacting it is one range delete.
+//! The payoff:
+//!
+//! - Everything an agreement owns shares one prefix, so dropping an
+//!   agreement is one range.
+//! - **Protocol** state (what replication needs) and **data** (what models
+//!   hold) are separate ranges. Hydration loads the protocol range, which
+//!   stays small because compaction trims the log. Data is loaded a key at a
+//!   time, when something needs it.
+//! - An author's log is a sub-range, so compacting it is one range delete.
 
 use crate::actor::Peer;
 use crate::agreement::AgreementId;
@@ -25,11 +32,13 @@ use crate::model::ModelId;
 const GENESIS: u8 = 1;
 const AGREEMENT: u8 = 2;
 
+const PROTOCOL: u8 = 1;
+const DATA: u8 = 2;
+
 const VIEW: u8 = 1;
-const CLOCK: u8 = 2;
-const LOG: u8 = 3;
-const ENTRY: u8 = 4;
-const ATTESTATION: u8 = 5;
+const ATTESTATION: u8 = 2;
+const CLOCK: u8 = 3;
+const LOG: u8 = 4;
 
 /// A stored key, parsed back into what it names.
 #[derive(Debug, PartialEq, Eq)]
@@ -64,16 +73,31 @@ pub(crate) fn agreement(agreement: AgreementId) -> Vec<u8> {
     [&[AGREEMENT][..], agreement.as_bytes()].concat()
 }
 
+/// Everything replication needs to resume: what hydration loads.
+pub(crate) fn protocol(id: AgreementId) -> Vec<u8> {
+    [agreement(id), vec![PROTOCOL]].concat()
+}
+
+/// Every model's entries.
+pub(crate) fn data(id: AgreementId) -> Vec<u8> {
+    [agreement(id), vec![DATA]].concat()
+}
+
+/// One model's entries.
+pub(crate) fn model(id: AgreementId, model: ModelId) -> Vec<u8> {
+    [data(id), model.as_bytes().to_vec()].concat()
+}
+
 pub(crate) fn view(id: AgreementId) -> Vec<u8> {
-    [agreement(id), vec![VIEW]].concat()
+    [protocol(id), vec![VIEW]].concat()
 }
 
 pub(crate) fn attestation(id: AgreementId) -> Vec<u8> {
-    [agreement(id), vec![ATTESTATION]].concat()
+    [protocol(id), vec![ATTESTATION]].concat()
 }
 
 pub(crate) fn clock(id: AgreementId) -> Vec<u8> {
-    [agreement(id), vec![CLOCK]].concat()
+    [protocol(id), vec![CLOCK]].concat()
 }
 
 pub(crate) fn log(id: AgreementId, author: Peer, seq: u64) -> Vec<u8> {
@@ -85,18 +109,12 @@ pub(crate) fn log_through(id: AgreementId, author: Peer, through: u64) -> (Vec<u
     (log(id, author, 0), log(id, author, through + 1))
 }
 
-pub(crate) fn entry(id: AgreementId, model: ModelId, key: &[u8]) -> Vec<u8> {
-    [
-        agreement(id),
-        vec![ENTRY],
-        model.as_bytes().to_vec(),
-        key.to_vec(),
-    ]
-    .concat()
+pub(crate) fn entry(id: AgreementId, model_id: ModelId, key: &[u8]) -> Vec<u8> {
+    [model(id, model_id), key.to_vec()].concat()
 }
 
 fn log_of(id: AgreementId, author: Peer) -> Vec<u8> {
-    [agreement(id), vec![LOG], author.as_bytes().to_vec()].concat()
+    [protocol(id), vec![LOG], author.as_bytes().to_vec()].concat()
 }
 
 /// Reads a key written by this module. `None` means it isn't one of ours.
@@ -107,17 +125,21 @@ pub(crate) fn parse(key: &[u8]) -> Option<Record> {
 
     match space {
         GENESIS if rest.is_empty() => Some(Record::Genesis(agreement)),
-        AGREEMENT => parse_owned(agreement, rest),
+        AGREEMENT => match rest.split_first()? {
+            (&PROTOCOL, rest) => parse_protocol(agreement, rest),
+            (&DATA, rest) => parse_data(agreement, rest),
+            _ => None,
+        },
         _ => None,
     }
 }
 
-fn parse_owned(agreement: AgreementId, key: &[u8]) -> Option<Record> {
-    let (&collection, rest) = key.split_first()?;
-    match collection {
+fn parse_protocol(agreement: AgreementId, key: &[u8]) -> Option<Record> {
+    let (&record, rest) = key.split_first()?;
+    match record {
         VIEW if rest.is_empty() => Some(Record::View(agreement)),
-        CLOCK if rest.is_empty() => Some(Record::Clock(agreement)),
         ATTESTATION if rest.is_empty() => Some(Record::Attestation(agreement)),
+        CLOCK if rest.is_empty() => Some(Record::Clock(agreement)),
         LOG => {
             let (author, rest) = take_id(rest)?;
             let seq = u64::from_be_bytes(rest.try_into().ok()?);
@@ -128,17 +150,18 @@ fn parse_owned(agreement: AgreementId, key: &[u8]) -> Option<Record> {
                 seq,
             })
         }
-        ENTRY => {
-            let (model, key) = take_id(rest)?;
-
-            Some(Record::Entry {
-                agreement,
-                model: ModelId::from_bytes(model),
-                key: key.to_vec(),
-            })
-        }
         _ => None,
     }
+}
+
+fn parse_data(agreement: AgreementId, key: &[u8]) -> Option<Record> {
+    let (model, key) = take_id(key)?;
+
+    Some(Record::Entry {
+        agreement,
+        model: ModelId::from_bytes(model),
+        key: key.to_vec(),
+    })
 }
 
 fn take_id(bytes: &[u8]) -> Option<([u8; 32], &[u8])> {
@@ -184,13 +207,22 @@ mod tests {
     }
 
     #[test]
-    fn everything_an_agreement_owns_shares_its_prefix() {
-        let prefix = agreement(id());
+    fn protocol_state_and_data_are_separate_ranges() {
         let model = ModelId::new(id(), [2; 32]);
 
-        assert!(view(id()).starts_with(&prefix));
-        assert!(log(id(), phone(), 1).starts_with(&prefix));
-        assert!(entry(id(), model, b"").starts_with(&prefix));
+        for key in [
+            view(id()),
+            attestation(id()),
+            clock(id()),
+            log(id(), phone(), 1),
+        ] {
+            assert!(key.starts_with(&protocol(id())));
+        }
+
+        assert!(entry(id(), model, b"").starts_with(&data(id())));
+        assert!(!entry(id(), model, b"").starts_with(&protocol(id())));
+        assert!(protocol(id()).starts_with(&agreement(id())));
+        assert!(data(id()).starts_with(&agreement(id())));
     }
 
     #[test]
