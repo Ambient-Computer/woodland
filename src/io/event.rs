@@ -1,3 +1,5 @@
+use crate::actor::Peer;
+
 /// Something that happened, locally or remotely.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Event {
@@ -7,7 +9,7 @@ pub(crate) enum Event {
 /// Something that happened to a peer's connection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NetworkEvent {
-    Connected,
-    Disconnected,
-    Message,
+    Connected { peer: Peer },
+    Disconnected { peer: Peer },
+    Message { peer: Peer },
 }

@@ -6,3 +6,9 @@ use ed25519_dalek::VerifyingKey;
 /// A peer may be an observer, not only a contributor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Peer(VerifyingKey);
+
+impl From<VerifyingKey> for Peer {
+    fn from(key: VerifyingKey) -> Self {
+        Self(key)
+    }
+}

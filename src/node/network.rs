@@ -6,6 +6,20 @@ use crate::actor::Peer;
 #[derive(Debug, Default)]
 pub(crate) struct Network {
     /// Peers with an open connection to this device.
-    #[expect(dead_code, reason = "used once `Node` processes events")]
     connected: HashSet<Peer>,
+}
+
+impl Network {
+    pub(crate) fn connect(&mut self, peer: Peer) {
+        self.connected.insert(peer);
+    }
+
+    pub(crate) fn disconnect(&mut self, peer: &Peer) {
+        self.connected.remove(peer);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_connected(&self, peer: &Peer) -> bool {
+        self.connected.contains(peer)
+    }
 }
