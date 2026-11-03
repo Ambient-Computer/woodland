@@ -7,7 +7,11 @@ publish = false
 repository = "https://github.com/Ambient-Computer/woodland"
 
 [dependencies]
-ed25519-dalek = "3.0.0"
+blake3 = "1.8.7"
+ed25519-dalek = { version = "3.0.0", features = ["batch", "serde"] }
+postcard = { version = "1.1.3", default-features = false, features = ["alloc"] }
+serde = { version = "1.0.229", features = ["derive"] }
+tracing = "0.1.44"
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -48,3 +52,6 @@ strip = "symbols"
 
 [profile.dev.package."*"]
 opt-level = 3
+
+[dev-dependencies]
+proptest = "1.12.0"

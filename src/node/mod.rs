@@ -6,6 +6,7 @@ pub use batch::Batch;
 use network::Network;
 use outbox::Outbox;
 
+use crate::actor::Identity;
 use crate::io::{Action, Event, NetworkEvent};
 
 /// Represents this device. Applications should only create one.
@@ -17,15 +18,20 @@ use crate::io::{Action, Event, NetworkEvent};
 /// that state reaches the outside world. Performing them eventually
 /// produces new events (a reply arrives, a peer drops), which go into the
 /// next batch.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Node {
+    /// Who this device is. Every local change is signed with it.
+    #[expect(dead_code, reason = "used once local changes are signed")]
+    identity: Identity,
     network: Network,
 }
 
 impl Node {
+    /// Starts a node for this device, holding nothing yet.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(identity: Identity) -> Self {
         Self {
+            identity,
             network: Network::default(),
         }
     }
@@ -68,7 +74,7 @@ mod tests {
 
     #[test]
     fn tracks_connected_peers() {
-        let mut node = Node::new();
+        let mut node = Node::new(Identity::from_secret_key([0; 32]));
         let actions = node.batch().connected(key(1)).connected(key(2)).process();
         assert_eq!(actions, []);
 
@@ -78,7 +84,7 @@ mod tests {
 
     #[test]
     fn forgets_disconnected_peers() {
-        let mut node = Node::new();
+        let mut node = Node::new(Identity::from_secret_key([0; 32]));
         let actions = node
             .batch()
             .connected(key(1))
@@ -91,7 +97,7 @@ mod tests {
 
     #[test]
     fn ignores_disconnects_from_unknown_peers() {
-        let mut node = Node::new();
+        let mut node = Node::new(Identity::from_secret_key([0; 32]));
         let actions = node
             .batch()
             .connected(key(1))
