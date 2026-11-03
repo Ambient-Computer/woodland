@@ -6,13 +6,14 @@
     reason = "scaffolding until wired into Node"
 )]
 mod actor;
+#[expect(dead_code, reason = "scaffolding until wired into Node")]
+mod agreement;
 #[expect(
     dead_code,
     unused_imports,
     reason = "scaffolding until wired into Node"
 )]
 mod clock;
-#[expect(dead_code, reason = "scaffolding until wired into Node")]
 mod encoding;
 mod io;
 #[cfg_attr(
@@ -25,5 +26,6 @@ mod node;
 mod testing;
 
 pub use actor::Identity;
+pub use agreement::{AgreementId, Genesis};
 pub use io::{Action, NetworkAction};
 pub use node::{Batch, Node};

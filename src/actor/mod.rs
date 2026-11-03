@@ -5,6 +5,7 @@ mod identity;
 mod signed;
 
 use std::cmp::Ordering;
+use std::fmt;
 
 use ed25519_dalek::VerifyingKey;
 pub use identity::Identity;
@@ -16,8 +17,25 @@ pub(crate) use signed::{Signable, Signed, Verified};
 ///
 /// A peer may be an observer, not only a contributor. Whether it may write is
 /// decided by an agreement's configuration, not by this type.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) struct Peer(VerifyingKey);
+
+/// A short key prefix, or the device's name in tests. Full keys make
+/// protocol traces and proptest counterexamples unreadable.
+impl fmt::Debug for Peer {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        #[cfg(test)]
+        if let Some(name) = crate::testing::peers::name(*self) {
+            return formatter.write_str(name);
+        }
+
+        for byte in &self.as_bytes()[..4] {
+            write!(formatter, "{byte:02x}")?;
+        }
+
+        Ok(())
+    }
+}
 
 impl From<VerifyingKey> for Peer {
     fn from(key: VerifyingKey) -> Self {
