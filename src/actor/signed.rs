@@ -122,6 +122,7 @@ fn signed_bytes<T: Signable>(payload: &T) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::peers::{laptop, laptop_identity, phone_identity};
 
     #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
     struct Note(String);
@@ -130,31 +131,26 @@ mod tests {
         const CONTEXT: &'static [u8] = b"woodland/test/note";
     }
 
-    fn phone() -> Identity {
-        Identity::from_secret_key([1; 32])
-    }
-
-    fn laptop() -> Identity {
-        Identity::from_secret_key([2; 32])
-    }
-
     fn note(identity: &Identity, text: &str) -> Signed<Note> {
         Signed::sign(identity, Note(text.into())).signed().clone()
     }
 
     #[test]
     fn accepts_honest_signatures() {
-        let batch = vec![note(&phone(), "hi"), note(&laptop(), "hello")];
+        let batch = vec![
+            note(&phone_identity(), "hi"),
+            note(&laptop_identity(), "hello"),
+        ];
 
         assert_eq!(verify_all(batch).len(), 2);
     }
 
     #[test]
     fn drops_only_the_forgery() {
-        let mut forged = note(&phone(), "hi");
-        forged.author = laptop().peer();
+        let mut forged = note(&phone_identity(), "hi");
+        forged.author = laptop();
 
-        let verified = verify_all(vec![forged, note(&laptop(), "hello")]);
+        let verified = verify_all(vec![forged, note(&laptop_identity(), "hello")]);
 
         assert_eq!(verified.len(), 1);
         assert_eq!(verified[0].payload(), &Note("hello".into()));
@@ -162,7 +158,7 @@ mod tests {
 
     #[test]
     fn detects_tampered_payloads() {
-        let mut tampered = note(&phone(), "hi");
+        let mut tampered = note(&phone_identity(), "hi");
         tampered.payload = Note("bye".into());
 
         assert_eq!(verify_all(vec![tampered]), []);

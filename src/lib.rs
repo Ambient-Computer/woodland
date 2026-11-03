@@ -6,10 +6,23 @@
     reason = "scaffolding until wired into Node"
 )]
 mod actor;
+#[expect(
+    dead_code,
+    unused_imports,
+    reason = "scaffolding until wired into Node"
+)]
+mod clock;
 #[expect(dead_code, reason = "scaffolding until wired into Node")]
 mod encoding;
 mod io;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "scaffolding until wired into Node")
+)]
+mod lattice;
 mod node;
+#[cfg(test)]
+mod testing;
 
 pub use actor::Identity;
 pub use io::{Action, NetworkAction};
