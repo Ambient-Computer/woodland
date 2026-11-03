@@ -62,6 +62,13 @@
 //!   converge. A stream of proposals starves learning in practice, not just
 //!   in theory, so the group proposes at most one progress report at a time
 //!   (see `Group::may_report`).
+//! - **Someone must hear a quorum directly.** Views spread hop by hop, and
+//!   so do learned decisions, but a witness only counts when its view is
+//!   heard from it directly. In a chain of devices, learning works as long
+//!   as some device is directly connected to a quorum, and everyone else
+//!   learns from it. Seven contributors in a line would never learn. The fix
+//!   is to sign views: then "the laptop holds digest D" can be relayed like
+//!   a transaction.
 //! - **Crash faults only.** Senders are authenticated by the transport, but a
 //!   lying member could forge another's progress or claim a quorum.
 //!   Byzantine-tolerant RLA is follow-up work in the literature.

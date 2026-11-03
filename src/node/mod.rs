@@ -359,6 +359,30 @@ mod tests {
         }
     }
 
+    /// Peers don't form a full mesh. Transactions are signed by their
+    /// authors, so any device can relay them, and views merge, so they
+    /// spread hop by hop.
+    #[test]
+    fn a_chain_of_connections_is_enough() {
+        let mut cluster = household();
+        cluster.disconnect_everyone();
+        cluster.connect(PHONE, NAS);
+        cluster.connect(NAS, LAPTOP);
+        cluster.connect(LAPTOP, FRIEND);
+        cluster.settle();
+
+        write(&mut cluster, PHONE, "color", "blue");
+        write(&mut cluster, FRIEND, "gift", "book");
+        let (agreement, friend) = (genesis(&cluster).id(), cluster.key(FRIEND));
+        cluster.run(PHONE, |batch| batch.add_contributor(agreement, friend));
+        cluster.settle();
+
+        for device in [PHONE, LAPTOP, NAS, FRIEND] {
+            assert_eq!(read(&cluster, device, "color").as_deref(), Some("blue"));
+            assert_eq!(read(&cluster, device, "gift").as_deref(), Some("book"));
+        }
+    }
+
     #[test]
     fn steady_writing_still_compacts() {
         let mut cluster = household();
