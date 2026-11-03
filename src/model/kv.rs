@@ -31,6 +31,9 @@ pub(crate) struct Entry {
 }
 
 impl KvModel {
+    /// The current value of `key`. Applications read from storage instead
+    /// (see [`Query`](super::Query)).
+    #[cfg(test)]
     pub(crate) fn get(&self, key: &[u8]) -> Option<&[u8]> {
         self.entries.get(key)?.value.as_deref()
     }

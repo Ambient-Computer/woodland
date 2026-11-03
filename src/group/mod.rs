@@ -65,10 +65,6 @@ impl Group {
         &self.agreement
     }
 
-    pub(crate) fn model(&self, model: ModelId) -> Option<&KvModel> {
-        self.models.get(&model)
-    }
-
     #[cfg(test)]
     pub(crate) fn models(&self) -> &BTreeMap<ModelId, KvModel> {
         &self.models

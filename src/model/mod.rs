@@ -20,11 +20,13 @@
 //! [`Stamp`]: crate::clock::Stamp
 
 mod kv;
+mod query;
 mod transaction;
 
 use serde::{Deserialize, Serialize};
 
 pub(crate) use kv::{Entry, KvModel, Operation};
+pub use query::Query;
 pub(crate) use transaction::Transaction;
 
 use crate::agreement::AgreementId;

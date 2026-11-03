@@ -19,7 +19,6 @@ use crate::agreement::AgreementId;
 use crate::encoding;
 use crate::group::{Group, VerifiedParts};
 use crate::io::{Action, Event, LocalEvent, NetworkEvent, StorageEvent};
-use crate::model::ModelId;
 
 /// Represents this device. Applications should only create one.
 ///
@@ -64,12 +63,6 @@ impl Node {
     /// Starts a batch of events to process together.
     pub fn batch(&mut self) -> Batch<'_> {
         Batch::new(self)
-    }
-
-    /// The current value of `key` in a model, if it's set.
-    #[must_use]
-    pub fn get(&self, agreement: AgreementId, model: ModelId, key: &[u8]) -> Option<&[u8]> {
-        self.groups.get(&agreement)?.model(model)?.get(key)
     }
 
     /// The contributors in the latest configuration this device has learned.
@@ -239,6 +232,7 @@ mod tests {
     use super::*;
     use crate::agreement::Genesis;
     use crate::lattice::Lattice;
+    use crate::model::{ModelId, Query};
     use crate::storage::keys::{self, Record};
     use crate::testing::cluster::{Cluster, FRIEND, LAPTOP, NAS, PHONE};
 
@@ -273,11 +267,13 @@ mod tests {
         });
     }
 
+    /// Reads straight from the device's storage, as an application would.
     fn read(cluster: &Cluster, device: usize, key: &str) -> Option<String> {
-        let node = &cluster.devices[device].node;
-        let value = node.get(genesis(cluster).id(), notes(cluster), key.as_bytes())?;
+        let query = Query::key(genesis(cluster).id(), notes(cluster), key.as_bytes());
+        let scanned = cluster.devices[device].store.scan(query.storage_prefix());
+        let (_, value) = query.results(&scanned).pop()?;
 
-        Some(String::from_utf8_lossy(value).into_owned())
+        Some(String::from_utf8_lossy(&value).into_owned())
     }
 
     fn group(cluster: &Cluster, device: usize) -> &Group {
