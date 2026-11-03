@@ -39,13 +39,18 @@
         system: pkgs: {
           default = pkgs.mkShell {
             packages = [
-              (pkgs.fenix.stable.withComponents [
-                "cargo"
-                "clippy"
-                "rust-analyzer"
-                "rust-src"
-                "rustc"
-                "rustfmt"
+              (pkgs.fenix.combine [
+                (pkgs.fenix.stable.withComponents [
+                  "cargo"
+                  "clippy"
+                  "rust-analyzer"
+                  "rust-src"
+                  "rustc"
+                  "rustfmt"
+                ])
+
+                # Woodland targets browsers as well as native devices.
+                pkgs.fenix.targets.wasm32-unknown-unknown.stable.rust-std
               ])
               pkgs.cargo-nextest
               pkgs.nixfmt
