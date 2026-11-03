@@ -34,8 +34,7 @@ impl<'a> Batch<'a> {
         self.network(NetworkEvent::Message { peer: peer.into() })
     }
 
-    /// Processes every event, in the order they were added. Returns what
-    /// the caller should do next.
+    /// Process the events, returning a sequence of actions to perform.
     #[must_use = "actions must be performed"]
     pub fn process(self) -> Vec<Action> {
         self.node.process(self.events)

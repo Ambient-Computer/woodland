@@ -9,6 +9,12 @@ use crate::io::{Action, Event, NetworkEvent};
 /// Represents this device. Applications should only create one.
 ///
 /// Manages current state, updates, and subscriptions.
+///
+/// A state machine that never performs I/O itself. Each [`Batch`] of
+/// events moves it to a new state, and the [`Action`]s it returns are how
+/// that state reaches the outside world. Performing them eventually
+/// produces new events (a reply arrives, a peer drops), which go into the
+/// next batch.
 #[derive(Debug, Default)]
 pub struct Node {
     network: Network,
