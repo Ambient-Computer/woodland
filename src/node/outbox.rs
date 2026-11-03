@@ -1,91 +1,89 @@
-use super::Network;
-use crate::io::{Action, NetworkAction};
+use serde::Serialize;
 
-/// Collects what domains produce while processing a batch, then turns it
-/// into actions once the whole batch is done.
+use crate::actor::Peer;
+use crate::encoding;
+use crate::io::{Action, NetworkAction};
+use crate::storage::{StorageAction, StorageWrite};
+
+/// Collects the storage work domains produce while processing a batch, then
+/// turns it and the batch's messages into ordered actions.
 ///
-/// Domains say what changed, not who needs it. Deciding who receives what
-/// happens here, so each peer gets at most one message per batch.
+/// Domains add work here as they go. They never produce actions directly,
+/// because only the end of the batch knows the full picture: every write
+/// becomes one atomic storage action, and it always precedes the sends that
+/// might advertise what it stored.
 #[derive(Debug, Default)]
 pub(crate) struct Outbox {
-    updates: Vec<Update>,
+    writes: Vec<StorageWrite>,
+    scans: Vec<Vec<u8>>,
 }
 
-/// Something to share with interested peers. Contents come later.
-#[derive(Debug)]
-pub(crate) struct Update;
-
 impl Outbox {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "used once domains share updates")
-    )]
-    pub(crate) fn share(&mut self, update: Update) {
-        self.updates.push(update);
+    pub(crate) fn put(&mut self, key: Vec<u8>, value: &impl Serialize) {
+        let value = encoding::encode(value);
+        self.writes.push(StorageWrite::Put { key, value });
     }
 
-    /// Sends every connected peer one message, if there's anything to share.
-    pub(crate) fn into_actions(self, network: &Network) -> Vec<Action> {
-        if self.updates.is_empty() {
-            return Vec::new();
-        }
+    pub(crate) fn delete_range(&mut self, start: Vec<u8>, end: Vec<u8>) {
+        self.writes.push(StorageWrite::DeleteRange { start, end });
+    }
 
-        network
-            .connected()
-            .map(|peer| Action::Network(NetworkAction::Send { peer: peer.id() }))
+    pub(crate) fn scan(&mut self, prefix: Vec<u8>) {
+        self.scans.push(prefix);
+    }
+
+    /// Storage first, then scans, then sends. Never advertise before it's
+    /// durable.
+    pub(crate) fn into_actions(self, messages: Vec<(Peer, Vec<u8>)>) -> Vec<Action> {
+        let write = (!self.writes.is_empty()).then_some(StorageAction::Write(self.writes));
+        let scans = self
+            .scans
+            .into_iter()
+            .map(|prefix| StorageAction::Scan { prefix });
+        let sends = messages.into_iter().map(|(peer, message)| {
+            Action::Network(NetworkAction::Send {
+                peer: peer.id(),
+                message,
+            })
+        });
+
+        write
+            .into_iter()
+            .chain(scans)
+            .map(Action::Storage)
+            .chain(sends)
             .collect()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use ed25519_dalek::{SigningKey, VerifyingKey};
-
     use super::*;
+    use crate::testing::peers::{laptop, phone};
 
-    fn key(seed: u8) -> VerifyingKey {
-        SigningKey::from_bytes(&[seed; 32]).verifying_key()
-    }
-
-    fn network(peers: &[u8]) -> Network {
-        let mut network = Network::default();
-        for &seed in peers {
-            network.connect(key(seed).into());
-        }
-
-        network
-    }
-
-    fn send(seed: u8) -> Action {
-        Action::Network(NetworkAction::Send { peer: key(seed) })
+    #[test]
+    fn does_nothing_without_work() {
+        assert_eq!(Outbox::default().into_actions(Vec::new()), []);
     }
 
     #[test]
-    fn sends_nothing_without_updates() {
-        let actions = Outbox::default().into_actions(&network(&[1, 2]));
-
-        assert_eq!(actions, []);
-    }
-
-    #[test]
-    fn sends_nothing_without_peers() {
+    fn writes_once_before_scanning_and_sending() {
         let mut outbox = Outbox::default();
-        outbox.share(Update);
+        outbox.put(b"a".to_vec(), &1u8);
+        outbox.scan(b"p".to_vec());
+        outbox.put(b"b".to_vec(), &2u8);
 
-        assert_eq!(outbox.into_actions(&network(&[])), []);
-    }
+        let actions = outbox.into_actions(vec![(phone(), vec![1]), (laptop(), vec![2])]);
 
-    #[test]
-    fn sends_one_message_per_peer() {
-        let mut outbox = Outbox::default();
-        outbox.share(Update);
-        outbox.share(Update);
-        outbox.share(Update);
-
-        let actions = outbox.into_actions(&network(&[1, 2]));
-
-        assert_eq!(actions.len(), 2);
-        assert!(actions.contains(&send(1)));
-        assert!(actions.contains(&send(2)));
+        assert!(
+            matches!(&actions[0], Action::Storage(StorageAction::Write(writes)) if writes.len() == 2)
+        );
+        assert!(matches!(
+            &actions[1],
+            Action::Storage(StorageAction::Scan { .. })
+        ));
+        assert!(matches!(&actions[2], Action::Network(_)));
+        assert!(matches!(&actions[3], Action::Network(_)));
+        assert_eq!(actions.len(), 4);
     }
 }

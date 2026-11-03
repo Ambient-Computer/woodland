@@ -10,7 +10,7 @@ use std::fmt;
 use ed25519_dalek::VerifyingKey;
 pub use identity::Identity;
 use serde::{Deserialize, Serialize};
-pub(crate) use signed::{Signable, Signed, Verified};
+pub(crate) use signed::{Signable, Signed, Verified, verify_all};
 
 /// A device, identified by its Ed25519 public key (the same as an Iroh node
 /// ID).
