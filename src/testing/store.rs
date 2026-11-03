@@ -45,6 +45,15 @@ impl MemoryStore {
             .collect()
     }
 
+    pub(crate) fn get(&self, keys: Vec<Vec<u8>>) -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
+        keys.into_iter()
+            .map(|key| {
+                let value = self.entries.get(&key).cloned();
+                (key, value)
+            })
+            .collect()
+    }
+
     pub(crate) fn keys(&self) -> impl Iterator<Item = &Vec<u8>> {
         self.entries.keys()
     }

@@ -16,6 +16,8 @@ use crate::storage::{StorageAction, StorageWrite};
 pub(crate) struct Outbox {
     writes: Vec<StorageWrite>,
     scans: Vec<Vec<u8>>,
+    /// Keys to read, all in one get.
+    gets: Vec<Vec<u8>>,
 }
 
 impl Outbox {
@@ -32,14 +34,19 @@ impl Outbox {
         self.scans.push(prefix);
     }
 
-    /// Storage first, then scans, then sends. Never advertise before it's
-    /// durable.
+    pub(crate) fn get(&mut self, key: Vec<u8>) {
+        self.gets.push(key);
+    }
+
+    /// Writes first, then reads, then sends. Never advertise before it's
+    /// durable, and never read around a pending write.
     pub(crate) fn into_actions(self, messages: Vec<(Peer, Vec<u8>)>) -> Vec<Action> {
         let write = (!self.writes.is_empty()).then_some(StorageAction::Write(self.writes));
         let scans = self
             .scans
             .into_iter()
             .map(|prefix| StorageAction::Scan { prefix });
+        let get = (!self.gets.is_empty()).then_some(StorageAction::Get { keys: self.gets });
         let sends = messages.into_iter().map(|(peer, message)| {
             Action::Network(NetworkAction::Send {
                 peer: peer.id(),
@@ -50,6 +57,7 @@ impl Outbox {
         write
             .into_iter()
             .chain(scans)
+            .chain(get)
             .map(Action::Storage)
             .chain(sends)
             .collect()

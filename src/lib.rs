@@ -56,8 +56,23 @@
 //! - Signed transactions and attestations can be relayed by anyone, so sync
 //!   and agreement both work over chains of devices, not just a full mesh.
 //!   Both go through the same batch verification before a group sees them.
+//! - Reads bypass the state machine. Every integrated change is written in
+//!   the batch that integrates it, and writes precede every other action,
+//!   so storage is current once a batch's actions are performed. A
+//!   [`Query`] is just a key range and a decoder.
+//! - Compaction bounds hydration. Only protocol state loads at startup, and
+//!   the log in it holds only what isn't compacted yet (`storage/keys.rs`).
 //!
 //! **What fights**
+//!
+//! - Last-writer-wins and sans-IO. LWW can't apply a write blind: it needs
+//!   the current entry's stamp, so integrating is read-modify-write, and
+//!   every read is a round trip through the application. Transactions and
+//!   snapshots wait across batches for their keys to load (`group/models.rs`,
+//!   `an_older_write_still_loses_after_a_restart`). Sending a snapshot is a
+//!   storage scan too. A model whose writes commute blindly in storage
+//!   (multi-version keys, resolved at read time) would avoid all of this,
+//!   and move the cost to reads.
 //!
 //! - Removal and revocation. RLA gives comparable decisions, not a "first
 //!   decision that included this change". There's no deterministic point at

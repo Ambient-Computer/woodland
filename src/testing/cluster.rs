@@ -35,6 +35,7 @@ enum Incoming {
     Disconnected(VerifyingKey),
     Message(VerifyingKey, Vec<u8>),
     Scanned(Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>),
+    Got(Vec<(Vec<u8>, Option<Vec<u8>>)>),
 }
 
 pub(crate) struct Cluster {
@@ -146,6 +147,7 @@ impl Cluster {
                     Incoming::Disconnected(peer) => batch.disconnected(peer),
                     Incoming::Message(peer, bytes) => batch.message(peer, bytes),
                     Incoming::Scanned(prefix, entries) => batch.scanned(prefix, entries),
+                    Incoming::Got(entries) => batch.got(entries),
                 };
             }
 
@@ -179,6 +181,11 @@ impl Cluster {
                     let entries = self.devices[device].store.scan(&prefix);
                     let scanned = Incoming::Scanned(prefix, entries);
                     self.devices[device].inbox.push_back(scanned);
+                }
+
+                Action::Storage(StorageAction::Get { keys }) => {
+                    let entries = self.devices[device].store.get(keys);
+                    self.devices[device].inbox.push_back(Incoming::Got(entries));
                 }
 
                 Action::Network(NetworkAction::Send { peer, message }) => {

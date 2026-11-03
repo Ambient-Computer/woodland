@@ -13,18 +13,21 @@
 //! What isn't: remote transactions still waiting, and everything about
 //! peers. Peers re-send whatever we report missing when they reconnect.
 //!
-//! Hydration loads the whole prefix. That's the simple version: the
-//! eventual design should load the agreement and clock eagerly, and model
-//! entries and the log on demand.
+//! Hydration loads everything except model entries: the protocol range of
+//! the key layout. Its size is bounded by what hasn't been compacted yet,
+//! not by how much data the models hold. Entries load on demand (see
+//! `models`).
 
 use std::collections::BTreeMap;
 
 use super::Group;
 use super::history::{Clock, History};
+use super::models::Models;
+use super::snapshot::Snapshots;
 use crate::actor::{Peer, Signed, Verified};
 use crate::agreement::{Agreement, AgreementId, Attestation, Genesis, View};
 use crate::encoding;
-use crate::model::{Entry, KvModel, ModelId, Transaction};
+use crate::model::{ModelId, Transaction};
 use crate::node::Outbox;
 use crate::storage::keys::{self, Record};
 
@@ -37,7 +40,6 @@ pub(crate) struct Restored {
     attested: Option<Verified<Attestation>>,
     clock: Clock,
     transactions: Vec<Verified<Transaction>>,
-    models: BTreeMap<ModelId, KvModel>,
 }
 
 /// The last view, attestation and clock written, so unchanged ones aren't
@@ -59,12 +61,12 @@ impl Restored {
             attested: None,
             clock: Clock::default(),
             transactions: Vec::new(),
-            models: BTreeMap::new(),
         }
     }
 
-    /// Reads a scan of the agreement's prefix. Entries that don't decode are
-    /// skipped: they can only come from a bug or a corrupted store.
+    /// Reads a scan of the agreement's protocol range. Entries that don't
+    /// decode are skipped: they can only come from a bug or a corrupted
+    /// store.
     pub(crate) fn from_entries(
         genesis: &Genesis,
         me: Peer,
@@ -88,16 +90,7 @@ impl Restored {
                         restored.transactions.push(Verified::trust_stored(signed));
                     }
                 }
-                Some(Record::Entry { model, key, .. }) => {
-                    if let Some(entry) = encoding::decode::<Entry>(value) {
-                        restored
-                            .models
-                            .entry(model)
-                            .or_default()
-                            .restore(key, entry);
-                    }
-                }
-                Some(Record::Genesis(_)) | None => {}
+                Some(Record::Genesis(_) | Record::Entry { .. }) | None => {}
             }
         }
 
@@ -119,7 +112,8 @@ impl From<Restored> for Group {
             me: restored.me,
             agreement,
             history: History::restore(restored.clock.clone(), restored.transactions, restored.me),
-            models: restored.models,
+            models: Models::default(),
+            snapshots: Snapshots::default(),
             peers: BTreeMap::new(),
             persisted: Persisted {
                 view: restored.view,
@@ -170,14 +164,14 @@ pub(super) fn save_transaction(id: AgreementId, signed: &Signed<Transaction>, ou
 
 pub(super) fn save_entries(
     id: AgreementId,
-    model_id: ModelId,
-    model: &KvModel,
+    model: ModelId,
+    models: &Models,
     changed: &[Vec<u8>],
     outbox: &mut Outbox,
 ) {
     for key in changed {
-        if let Some(entry) = model.entry(key) {
-            outbox.put(keys::entry(id, model_id, key), entry);
+        if let Some(entry) = models.entry(model, key) {
+            outbox.put(keys::entry(id, model, key), entry);
         }
     }
 }

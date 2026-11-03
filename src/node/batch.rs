@@ -36,7 +36,8 @@ impl<'a> Batch<'a> {
         }
     }
 
-    /// Loads everything in storage. Do this once, before reporting any
+    /// Loads what replication needs from storage: every agreement's
+    /// protocol state, but no model data. Do this once, before reporting any
     /// connections. The node answers with scans; report each result with
     /// [`Batch::scanned`].
     pub fn hydrate(self) -> Self {
@@ -46,6 +47,12 @@ impl<'a> Batch<'a> {
     /// A scan the node asked for finished.
     pub fn scanned(self, prefix: Vec<u8>, entries: Vec<(Vec<u8>, Vec<u8>)>) -> Self {
         self.push(Event::Storage(StorageEvent::Scanned { prefix, entries }))
+    }
+
+    /// A get the node asked for finished. Report every key it asked for,
+    /// with `None` for keys that aren't stored.
+    pub fn got(self, entries: Vec<(Vec<u8>, Option<Vec<u8>>)>) -> Self {
+        self.push(Event::Storage(StorageEvent::Got { entries }))
     }
 
     /// A connection to `peer` opened.

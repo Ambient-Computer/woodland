@@ -5,8 +5,9 @@ use crate::storage::StorageAction;
 /// Something for the caller to do. **Perform them in order.**
 ///
 /// Order is part of the contract. A batch's actions always come out as
-/// storage writes first, then scans, then sends, so nothing is ever
-/// advertised to a peer before it's durable here.
+/// storage writes first, then reads, then sends, so nothing is ever
+/// advertised to a peer before it's durable here, and every read sees the
+/// batch's writes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
     Storage(StorageAction),

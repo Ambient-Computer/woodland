@@ -1,7 +1,8 @@
 //! Rebuilding a node from storage, as a conversation of scans.
 //!
 //! 1. [`start`]: scan the genesis records to find which agreements exist.
-//! 2. [`scanned`] with the genesis list: scan each agreement's prefix.
+//! 2. [`scanned`] with the genesis list: scan each agreement's protocol
+//!    state. Model entries aren't loaded: they load on demand.
 //! 3. [`scanned`] with an agreement's entries: rebuild that group.
 //!
 //! The node never waits. Each step returns scans as actions, and the
@@ -40,7 +41,7 @@ pub(super) fn scanned(
                 (keys::parse(key), encoding::decode::<Genesis>(value))
                 && genesis.id() == id
             {
-                outbox.scan(keys::agreement(id));
+                outbox.scan(keys::protocol(id));
                 hydration.found.insert(id, genesis);
             }
         }
@@ -51,7 +52,7 @@ pub(super) fn scanned(
     let id = *hydration
         .found
         .keys()
-        .find(|&&id| keys::agreement(id) == prefix)?;
+        .find(|&&id| keys::protocol(id) == prefix)?;
     let genesis = hydration.found.remove(&id)?;
 
     Some(Group::from(Restored::from_entries(&genesis, me, entries)))

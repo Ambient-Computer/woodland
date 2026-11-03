@@ -10,7 +10,8 @@
 //!    exactly which transactions it has.
 //! 2. Knowing a peer's clock, send the **transactions** it lacks. If it's
 //!    behind our floor, the transactions it needs are gone, so send a
-//!    **snapshot** (our model state) first.
+//!    **snapshot** (our model state) first, and nothing else until it's
+//!    caught up to the floor.
 //! 3. Send our agreement **view** whenever it changes, and every
 //!    **attestation** newer than what we last sent, whoever signed it.
 //!    That's all the agreement protocol needs: views merge, and matching
@@ -24,11 +25,12 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::history::History;
+use super::snapshot::Snapshot;
 use crate::actor::{Peer, Signed, Verified};
 use crate::agreement::{Agreement, Attestation, View};
 use crate::clock::VersionVector;
 use crate::lattice::Lattice;
-use crate::model::{KvModel, ModelId, Transaction};
+use crate::model::Transaction;
 
 /// One agreement's part of a message to a peer.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,18 +49,6 @@ pub(crate) struct GroupMessage {
 pub(crate) struct VerifiedParts {
     pub(crate) attestations: Vec<Verified<Attestation>>,
     pub(crate) transactions: Vec<Verified<Transaction>>,
-}
-
-/// The state of every model, for a peer that has fallen behind our floor.
-///
-/// It reflects every transaction we've integrated, not just those below the
-/// floor. That's fine: the transactions above the floor travel with it, and
-/// applying a last-writer-wins write twice changes nothing.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Snapshot {
-    pub(crate) floor: VersionVector,
-    pub(crate) lamport: u64,
-    pub(crate) models: BTreeMap<ModelId, KvModel>,
 }
 
 /// What we know about one subscribed peer.
@@ -80,13 +70,20 @@ impl PeerSync {
         self.has.get_or_insert_default().join(clock);
     }
 
-    /// Builds what `peer` needs, and assumes it will arrive.
+    /// Whether the peer lacks transactions we've already compacted, so only
+    /// a snapshot can catch it up.
+    pub(crate) fn is_behind(&self, floor: &VersionVector) -> bool {
+        self.has.as_ref().is_some_and(|has| !floor.leq(has))
+    }
+
+    /// Builds what `peer` needs, and assumes it will arrive. `snapshot` is
+    /// our latest, if one is prepared.
     pub(crate) fn outgoing(
         &mut self,
         peer: Peer,
         agreement: &Agreement,
         history: &History,
-        models: &BTreeMap<ModelId, KvModel>,
+        snapshot: Option<&Snapshot>,
     ) -> Option<GroupMessage> {
         let mut message = GroupMessage::default();
 
@@ -112,17 +109,23 @@ impl PeerSync {
         }
 
         if let Some(has) = &mut self.has {
-            if !history.floor().leq(has) {
-                message.snapshot = Some(Snapshot {
-                    floor: history.floor().clone(),
-                    lamport: history.clock().lamport,
-                    models: models.clone(),
-                });
-                has.join(history.floor());
+            // Our snapshot may trail our floor while a newer one is being
+            // prepared. It's still worth sending if it gets the peer closer.
+            if let Some(snapshot) = snapshot
+                && !history.floor().leq(has)
+                && !snapshot.floor.leq(has)
+            {
+                message.snapshot = Some(snapshot.clone());
+                has.join(&snapshot.floor);
             }
 
-            message.transactions = history.missing_from(has);
-            has.join(history.integrated());
+            // Not while the peer is still behind: counting what we send as
+            // had would hide the gap below the floor, and no snapshot would
+            // ever be sent to fill it.
+            if history.floor().leq(has) {
+                message.transactions = history.missing_from(has);
+                has.join(history.integrated());
+            }
         }
 
         (message != GroupMessage::default()).then_some(message)

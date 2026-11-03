@@ -22,6 +22,14 @@ pub(crate) enum Operation {
     Remove { key: Vec<u8> },
 }
 
+impl Operation {
+    pub(crate) fn key(&self) -> &[u8] {
+        match self {
+            Self::Set { key, .. } | Self::Remove { key } => key,
+        }
+    }
+}
+
 /// The current state of one key: its value (or none, if removed), and the
 /// stamp of the write that put it there.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,6 +85,11 @@ impl KvModel {
 
     pub(crate) fn entry(&self, key: &[u8]) -> Option<&Entry> {
         self.entries.get(key)
+    }
+
+    /// Every key with an entry, tombstones included.
+    pub(crate) fn keys(&self) -> impl Iterator<Item = &[u8]> {
+        self.entries.keys().map(Vec::as_slice)
     }
 
     /// Restores one entry from storage.

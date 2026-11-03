@@ -19,6 +19,7 @@ use crate::agreement::AgreementId;
 use crate::encoding;
 use crate::group::{Group, VerifiedParts};
 use crate::io::{Action, Event, LocalEvent, NetworkEvent, StorageEvent};
+use crate::storage::keys::{self, Record};
 
 /// Represents this device. Applications should only create one.
 ///
@@ -90,7 +91,7 @@ impl Node {
             group.settle(&self.identity, &mut outbox);
         }
 
-        let messages = self.compose();
+        let messages = self.compose(&mut outbox);
         outbox.into_actions(messages)
     }
 
@@ -112,6 +113,14 @@ impl Node {
             Event::Storage(StorageEvent::Hydrate) => hydration::start(outbox),
 
             Event::Storage(StorageEvent::Scanned { prefix, entries }) => {
+                // A group scans its own data for snapshots. Every other scan
+                // is part of hydration.
+                let mut groups = self.groups.values_mut();
+                if let Some(group) = groups.find(|it| keys::data(it.id()) == prefix) {
+                    group.scanned(&entries);
+                    return;
+                }
+
                 let me = self.me();
                 let restored =
                     hydration::scanned(&mut self.hydration, me, &prefix, &entries, outbox);
@@ -120,6 +129,8 @@ impl Node {
                     self.resubscribe();
                 }
             }
+
+            Event::Storage(StorageEvent::Got { entries }) => self.got(entries),
 
             Event::Local(LocalEvent::Join { genesis }) => {
                 let me = self.me();
@@ -189,6 +200,22 @@ impl Node {
         }
     }
 
+    /// Hands each loaded model entry to the group that asked for it.
+    fn got(&mut self, entries: Vec<(Vec<u8>, Option<Vec<u8>>)>) {
+        for (key, value) in entries {
+            if let Some(Record::Entry {
+                agreement,
+                model,
+                key,
+            }) = keys::parse(&key)
+                && let Some(group) = self.groups.get_mut(&agreement)
+            {
+                let entry = value.and_then(|bytes| encoding::decode(&bytes));
+                group.loaded(model, key, entry);
+            }
+        }
+    }
+
     /// Keeps each group's peer list equal to the connected peers that
     /// replicate it.
     fn resubscribe(&mut self) {
@@ -198,8 +225,9 @@ impl Node {
     }
 
     /// One message per connected peer: a hello if our agreements changed,
-    /// plus whatever each agreement says the peer is missing.
-    fn compose(&mut self) -> Vec<(Peer, Vec<u8>)> {
+    /// plus whatever each agreement says the peer is missing. Composing may
+    /// ask storage for a snapshot, for next time.
+    fn compose(&mut self, outbox: &mut Outbox) -> Vec<(Peer, Vec<u8>)> {
         let ours: BTreeSet<AgreementId> = self.groups.keys().copied().collect();
         let peers: Vec<Peer> = self.network.connected().collect();
 
@@ -211,7 +239,7 @@ impl Node {
             };
 
             for (&id, group) in &mut self.groups {
-                if let Some(part) = group.outgoing(peer) {
+                if let Some(part) = group.outgoing(peer, outbox) {
                     message.groups.insert(id, part);
                 }
             }
@@ -233,7 +261,7 @@ mod tests {
     use crate::agreement::Genesis;
     use crate::lattice::Lattice;
     use crate::model::{ModelId, Query};
-    use crate::storage::keys::{self, Record};
+
     use crate::testing::cluster::{Cluster, FRIEND, LAPTOP, NAS, PHONE};
 
     /// The household's shared agreement. The friend can be invited to it.
@@ -278,6 +306,12 @@ mod tests {
 
     fn group(cluster: &Cluster, device: usize) -> &Group {
         &cluster.devices[device].node.groups[&genesis(cluster).id()]
+    }
+
+    /// Every model entry in a device's storage, as stored.
+    fn stored_data(cluster: &Cluster, device: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let store = &cluster.devices[device].store;
+        store.scan(&keys::data(genesis(cluster).id()))
     }
 
     /// Transactions still kept individually in a device's storage.
@@ -491,13 +525,16 @@ mod tests {
         let mut cluster = household();
         write(&mut cluster, PHONE, "color", "blue");
         cluster.settle();
-        let before = group(&cluster, PHONE).models().clone();
+        let clock = group(&cluster, PHONE).history().clock().clone();
         let learned = group(&cluster, PHONE).agreement().learned().clone();
         let attested = group(&cluster, PHONE).agreement().attested().cloned();
 
         cluster.restart(PHONE);
 
-        assert_eq!(group(&cluster, PHONE).models(), &before);
+        // Protocol state comes back. Model data stays in storage until
+        // something needs it.
+        assert_eq!(group(&cluster, PHONE).history().clock(), &clock);
+        assert_eq!(group(&cluster, PHONE).models().cached().count(), 0);
         assert_eq!(group(&cluster, PHONE).agreement().learned(), &learned);
         assert_eq!(
             group(&cluster, PHONE).agreement().attested(),
@@ -508,6 +545,25 @@ mod tests {
         write(&mut cluster, PHONE, "size", "small");
         cluster.settle();
         assert_eq!(read(&cluster, LAPTOP, "size").as_deref(), Some("small"));
+    }
+
+    /// Why integrating has to load first. After a restart nothing is in
+    /// memory, and an older write arrives for a key that already has a
+    /// newer value in storage. Applied blind, it would win.
+    #[test]
+    fn an_older_write_still_loses_after_a_restart() {
+        let mut cluster = household();
+        cluster.disconnect_everyone();
+        write(&mut cluster, NAS, "color", "old");
+        write(&mut cluster, PHONE, "color", "draft");
+        write(&mut cluster, PHONE, "color", "new");
+        cluster.restart(PHONE);
+
+        cluster.connect(PHONE, NAS);
+        cluster.settle();
+
+        assert_eq!(read(&cluster, PHONE, "color").as_deref(), Some("new"));
+        assert_eq!(read(&cluster, NAS, "color").as_deref(), Some("new"));
     }
 
     #[test]
@@ -624,7 +680,11 @@ mod tests {
             let reference = group(&cluster, PHONE);
             for device in [LAPTOP, NAS, FRIEND] {
                 let other = group(&cluster, device);
-                prop_assert_eq!(other.models(), reference.models(), "device {}", device);
+                prop_assert_eq!(
+                    stored_data(&cluster, device),
+                    stored_data(&cluster, PHONE),
+                    "device {}", device,
+                );
                 prop_assert_eq!(
                     other.agreement().learned(),
                     reference.agreement().learned(),
@@ -644,11 +704,15 @@ mod tests {
                 }
             }
 
-            // Storage holds exactly what memory does.
+            // Whatever is loaded matches storage. A stale cache would apply
+            // later writes against the wrong current value.
+            let agreement = genesis(&cluster).id();
             for device in [PHONE, LAPTOP, NAS, FRIEND] {
-                let models = group(&cluster, device).models().clone();
-                cluster.restart(device);
-                prop_assert_eq!(group(&cluster, device).models(), &models, "device {}", device);
+                let store = &cluster.devices[device].store;
+                for (model, key, entry) in group(&cluster, device).models().cached() {
+                    let stored = store.get(vec![keys::entry(agreement, model, key)]);
+                    prop_assert_eq!(&stored[0].1, &Some(encoding::encode(entry)));
+                }
             }
         }
     }

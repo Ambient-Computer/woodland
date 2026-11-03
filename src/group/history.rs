@@ -110,8 +110,20 @@ impl History {
         }
     }
 
-    /// Integrates every waiting transaction that's now in order and whose
-    /// author may write. Returns them in integration order, for the models.
+    /// Waiting transactions whose author may write, whether or not they're
+    /// in order yet.
+    pub(crate) fn waiting_for<'a>(
+        &'a self,
+        writers: &'a Configuration,
+    ) -> impl Iterator<Item = &'a Transaction> {
+        (self.waiting.values())
+            .filter(|transaction| writers.was_ever_member(transaction.author()))
+            .map(Verified::payload)
+    }
+
+    /// Integrates every waiting transaction that's now in order, whose
+    /// author may write, and that `loaded` says the models can apply now.
+    /// Returns them in integration order, for the models.
     ///
     /// Write access is "ever a member of the learned configuration". Removal
     /// can't revoke past writes: replicas learn about a removal at different
@@ -120,9 +132,10 @@ impl History {
     pub(crate) fn integrate_ready(
         &mut self,
         writers: &Configuration,
+        loaded: impl Fn(&Transaction) -> bool,
     ) -> Vec<Verified<Transaction>> {
         let mut integrated = Vec::new();
-        while let Some(key) = self.next_ready(writers) {
+        while let Some(key) = self.next_ready(writers, &loaded) {
             if let Some(transaction) = self.waiting.remove(&key) {
                 self.clock.integrated.advance(key.0, key.1);
                 self.clock.lamport = self.clock.lamport.max(transaction.payload().lamport);
@@ -177,9 +190,18 @@ impl History {
         self.compact(floor)
     }
 
-    fn next_ready(&self, writers: &Configuration) -> Option<(Peer, u64)> {
-        self.waiting.keys().copied().find(|&(author, seq)| {
-            seq == self.clock.integrated.next(author) && writers.was_ever_member(author)
-        })
+    fn next_ready(
+        &self,
+        writers: &Configuration,
+        loaded: impl Fn(&Transaction) -> bool,
+    ) -> Option<(Peer, u64)> {
+        let mut waiting = self.waiting.iter();
+        let (&key, _) = waiting.find(|&(&(author, seq), transaction)| {
+            seq == self.clock.integrated.next(author)
+                && writers.was_ever_member(author)
+                && loaded(transaction.payload())
+        })?;
+
+        Some(key)
     }
 }
