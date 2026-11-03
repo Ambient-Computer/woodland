@@ -12,3 +12,10 @@ impl From<VerifyingKey> for Peer {
         Self(key)
     }
 }
+
+impl Peer {
+    /// Peers are identified by their public signing key.
+    pub(crate) fn id(&self) -> VerifyingKey {
+        self.0
+    }
+}

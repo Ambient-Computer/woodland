@@ -18,6 +18,10 @@ impl Network {
         self.connected.remove(peer);
     }
 
+    pub(crate) fn connected(&self) -> impl Iterator<Item = &Peer> {
+        self.connected.iter()
+    }
+
     #[cfg(test)]
     pub(crate) fn is_connected(&self, peer: &Peer) -> bool {
         self.connected.contains(peer)

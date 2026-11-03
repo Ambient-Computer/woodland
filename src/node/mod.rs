@@ -1,8 +1,10 @@
 mod batch;
 mod network;
+mod outbox;
 
 pub use batch::Batch;
 use network::Network;
+use outbox::Outbox;
 
 use crate::io::{Action, Event, NetworkEvent};
 
@@ -34,6 +36,8 @@ impl Node {
     }
 
     fn process(&mut self, events: Vec<Event>) -> Vec<Action> {
+        let outbox = Outbox::default();
+
         for event in events {
             match event {
                 Event::Network(NetworkEvent::Connected { peer }) => {
@@ -48,7 +52,7 @@ impl Node {
             }
         }
 
-        Vec::new()
+        outbox.into_actions(&self.network)
     }
 }
 
