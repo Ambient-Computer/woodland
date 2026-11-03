@@ -383,6 +383,32 @@ mod tests {
         }
     }
 
+    /// The household's devices never meet. They only ever connect to the
+    /// friend, who isn't a contributor. No contributor hears another
+    /// directly, yet they all learn.
+    ///
+    /// Learning takes a quorum of contributors holding the learner's view,
+    /// but the learner can be anyone. The friend hears all three, learns,
+    /// and the decision spreads back out like the rest of the view. With a
+    /// handful of devices, some device nearly always hears a quorum
+    /// directly.
+    #[test]
+    fn a_hub_that_isnt_a_contributor_learns_for_everyone() {
+        let mut cluster = household();
+        cluster.disconnect_everyone();
+        for device in [PHONE, LAPTOP, NAS] {
+            cluster.connect(device, FRIEND);
+        }
+
+        write(&mut cluster, PHONE, "color", "blue");
+        cluster.settle();
+
+        // Learned and compacted, which takes a quorum of contributors.
+        for device in [PHONE, LAPTOP, NAS] {
+            assert_eq!(stored_log_len(&cluster, device), 0, "device {device}");
+        }
+    }
+
     #[test]
     fn steady_writing_still_compacts() {
         let mut cluster = household();
