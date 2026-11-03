@@ -35,6 +35,19 @@ pub(crate) fn friend() -> Peer {
     friend_identity().peer()
 }
 
+/// The identity behind a cast member's peer.
+pub(crate) fn identity_of(peer: Peer) -> Identity {
+    [
+        phone_identity(),
+        laptop_identity(),
+        nas_identity(),
+        friend_identity(),
+    ]
+    .into_iter()
+    .find(|identity| identity.peer() == peer)
+    .expect("not in the cast")
+}
+
 /// The cast member's name, for readable debug output.
 pub(crate) fn name(peer: Peer) -> Option<&'static str> {
     [

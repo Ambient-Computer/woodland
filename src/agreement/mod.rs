@@ -23,9 +23,12 @@
 //! 1. **Propose** by joining into your own view.
 //! 2. **Gossip** your view whenever it changes. Whoever receives it merges.
 //!    Merging is the only thing a replica ever does with a view.
-//! 3. **Witness.** When a peer's view hashes the same as yours, that peer is
+//! 3. **Attest** whenever your view changes: sign "I hold the view with this
+//!    digest". Pass on every [`Attestation`] you hear, so a claim reaches
+//!    devices its author never meets.
+//! 4. **Witness.** A peer whose latest attestation matches your digest is
 //!    holding exactly what you hold.
-//! 4. **Learn** your candidate once a quorum of _every configuration in play_
+//! 5. **Learn** your candidate once a quorum of _every configuration in play_
 //!    witnesses it. Learning joins the candidate into `learned`, which then
 //!    spreads by gossip like everything else.
 //!
@@ -44,9 +47,9 @@
 //!
 //! The paper runs request/response rounds and checks that responses didn't
 //! change anything. Here, a replica instead witnesses by holding an equal
-//! view, so there are no rounds or sequence numbers. Any view a peer sends
-//! counts, whenever it sends it. That makes the protocol pure state-based
-//! gossip, which suits devices that are offline for weeks.
+//! view, so there are no rounds. Any attestation counts, however old it is
+//! and whoever relayed it. That makes the protocol pure state-based gossip,
+//! which suits devices that are offline for weeks and peers that never meet.
 //!
 //! # What it needs
 //!
@@ -56,65 +59,91 @@
 //!   view must be persisted before it's sent. A replica that forgets what
 //!   it sent can witness two incomparable values (see the test
 //!   `a_replica_that_forgets_breaks_agreement`). The node's action ordering,
-//!   storage before network, is what provides this.
+//!   storage before network, is what provides this. A replica's own latest
+//!   attestation is persisted with its view for a liveness reason: relays
+//!   keep the highest revision they've seen, so a replica that restarted
+//!   counting from 1 would be ignored by all of them.
 //! - **Liveness** needs a quorum of every configuration in play to be
 //!   reachable, and needs proposals to pause long enough for views to
 //!   converge. A stream of proposals starves learning in practice, not just
 //!   in theory, so the group proposes at most one progress report at a time
 //!   (see `Group::may_report`).
-//! - **Someone must hear a quorum directly.** Views spread hop by hop, and
-//!   so do learned decisions, but a witness only counts when its view is
-//!   heard from it directly. In a chain of devices, learning works as long
-//!   as some device is directly connected to a quorum, and everyone else
-//!   learns from it. Seven contributors in a line would never learn. The fix
-//!   is to sign views: then "the laptop holds digest D" can be relayed like
-//!   a transaction.
-//! - **Crash faults only.** Senders are authenticated by the transport, but a
-//!   lying member could forge another's progress or claim a quorum.
-//!   Byzantine-tolerant RLA is follow-up work in the literature.
+//! - **Connectivity, not adjacency.** Views, decisions and attestations all
+//!   spread hop by hop, so learning only needs the devices to be connected
+//!   over time, in any shape. Attestations are what make that true. When
+//!   witnesses had to be heard directly, some device had to be adjacent to a
+//!   quorum. That holds for almost any handful of devices (see
+//!   `a_hub_that_isnt_a_contributor_learns_for_everyone`), but not for six
+//!   contributors in a line.
+//! - **Crash faults only.** Nobody can forge another replica's attestation,
+//!   but a lying member could attest to a view it doesn't hold, or forge
+//!   another's progress inside a view. Byzantine-tolerant RLA is follow-up
+//!   work in the literature.
 
+mod attestation;
 mod configuration;
 mod genesis;
 mod view;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+pub(crate) use attestation::Attestation;
 pub(crate) use configuration::{Change, Configuration};
 pub use genesis::{AgreementId, Genesis};
 pub(crate) use view::{Decision, Digest, View};
 
-use crate::actor::Peer;
+use crate::actor::{Identity, Peer, Signed, Verified};
 use crate::clock::Progress;
 use crate::lattice::Lattice;
 
 /// One replica of one agreement, as seen from this device.
 #[derive(Debug)]
 pub(crate) struct Agreement {
+    id: AgreementId,
     /// This device. It witnesses its own view when it's a member.
     me: Peer,
     view: View,
-    /// The digest of the latest view heard from each peer. A peer witnesses
-    /// our view when its digest matches ours.
-    heard: BTreeMap<Peer, Digest>,
+    /// The latest attestation from each replica, this one included, however
+    /// it arrived. A replica witnesses our view when its digest matches ours.
+    heard: BTreeMap<Peer, Verified<Attestation>>,
 }
 
 impl Agreement {
     pub(crate) fn new(genesis: &Genesis, me: Peer) -> Self {
-        Self::resume(View::new(genesis.configuration()), me)
+        Self::resume(genesis.id(), View::new(genesis.configuration()), None, me)
     }
 
-    /// Picks up from a view saved earlier. Nothing heard is remembered, so
-    /// peers must witness again before anything new is learned.
-    pub(crate) fn resume(view: View, me: Peer) -> Self {
+    /// Picks up from a view and attestation saved earlier. Nothing else
+    /// heard is remembered, so peers must attest again before anything new
+    /// is learned.
+    pub(crate) fn resume(
+        id: AgreementId,
+        view: View,
+        attested: Option<Verified<Attestation>>,
+        me: Peer,
+    ) -> Self {
+        let heard = attested.map(|it| (me, it)).into_iter().collect();
+
         Self {
+            id,
             me,
             view,
-            heard: BTreeMap::new(),
+            heard,
         }
     }
 
     pub(crate) fn view(&self) -> &View {
         &self.view
+    }
+
+    /// This replica's latest attestation, if it has made one.
+    pub(crate) fn attested(&self) -> Option<&Verified<Attestation>> {
+        self.heard.get(&self.me)
+    }
+
+    /// Every attestation worth passing on.
+    pub(crate) fn attestations(&self) -> impl Iterator<Item = &Verified<Attestation>> {
+        self.heard.values()
     }
 
     /// The greatest value known to be learned.
@@ -135,11 +164,50 @@ impl Agreement {
         self.view != before
     }
 
-    /// Merges a peer's view and remembers what it holds.
-    pub(crate) fn receive(&mut self, from: Peer, view: &View) -> bool {
-        self.heard.insert(from, view.digest());
-
+    /// Merges a peer's view. What it holds is the business of its
+    /// attestation, which may arrive separately or through someone else.
+    pub(crate) fn receive(&mut self, view: &View) -> bool {
         self.view.merge(view)
+    }
+
+    /// Keeps an attestation if it's the latest from its author. Ones for
+    /// other agreements are ignored.
+    pub(crate) fn hear(&mut self, attestation: Verified<Attestation>) -> bool {
+        let claim = attestation.payload();
+        let newer = self
+            .heard
+            .get(&attestation.author())
+            .is_none_or(|held| held.payload().revision < claim.revision);
+
+        if claim.agreement != self.id || !newer {
+            return false;
+        }
+
+        self.heard.insert(attestation.author(), attestation);
+        true
+    }
+
+    /// Signs what this replica holds, if that changed since it last said.
+    /// `identity` must be this replica's own.
+    ///
+    /// Call it after the view settles and before it's sent. The attestation
+    /// must be persisted along with the view (see the module docs).
+    pub(crate) fn attest(&mut self, identity: &Identity) -> bool {
+        let digest = self.view.digest();
+        let previous = self.attested().map(Verified::payload);
+        if previous.is_some_and(|it| it.digest == digest) {
+            return false;
+        }
+
+        let attestation = Attestation {
+            agreement: self.id,
+            revision: previous.map_or(1, |it| it.revision + 1),
+            digest,
+        };
+
+        self.heard
+            .insert(self.me, Signed::sign(identity, attestation));
+        true
     }
 
     /// Learns the candidate if a quorum of every configuration in play
@@ -165,13 +233,14 @@ impl Agreement {
         Some(&self.view.learned)
     }
 
-    /// Peers holding exactly our view, ourselves included.
+    /// Replicas known to have held exactly our view, ourselves included.
+    /// Our own attestation may lag the view, but we hold it regardless.
     fn witnesses(&self) -> BTreeSet<Peer> {
         let ours = self.view.digest();
         let peers = self
             .heard
             .iter()
-            .filter(|&(_, digest)| *digest == ours)
+            .filter(|&(_, attestation)| attestation.payload().digest == ours)
             .map(|(&peer, _)| peer);
 
         peers.chain([self.me]).collect()
@@ -183,8 +252,9 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use crate::actor::verify_all;
     use crate::clock::VersionVector;
-    use crate::testing::peers::{friend, laptop, nas, phone};
+    use crate::testing::peers::{friend, identity_of, laptop, nas, phone};
 
     /// The household founds the agreement. The friend holds the genesis but
     /// isn't a member until someone adds them.
@@ -196,18 +266,48 @@ mod tests {
         [phone(), laptop(), nas(), friend()]
     }
 
+    /// What one replica sends another: its view, and every attestation it
+    /// holds, its own refreshed first. This is what the group sends too.
+    #[derive(Clone, Debug)]
+    struct Gossip {
+        view: View,
+        attestations: Vec<Signed<Attestation>>,
+    }
+
+    fn gossip(from: &mut Agreement) -> Gossip {
+        from.attest(&identity_of(from.me));
+        let attestations = from.attestations().map(|it| it.signed().clone());
+
+        Gossip {
+            view: from.view().clone(),
+            attestations: attestations.collect(),
+        }
+    }
+
+    fn deliver(to: &mut Agreement, gossip: Gossip) {
+        to.receive(&gossip.view);
+        for attestation in verify_all(gossip.attestations) {
+            to.hear(attestation);
+        }
+    }
+
+    fn send(from: &mut Agreement, to: &mut Agreement) {
+        deliver(to, gossip(from));
+    }
+
     #[derive(Clone, Copy, Debug)]
     enum Step {
         /// A replica reports more of its own progress.
         Report { replica: usize, by: u64 },
         /// A replica proposes a membership change.
         Reconfigure { replica: usize, change: usize },
-        /// A replica sends its current view. It may arrive much later.
+        /// A replica sends its current view and the attestations it holds.
+        /// They may arrive much later.
         Send { from: usize, to: usize },
-        /// An in-flight view arrives, and maybe stays in flight to arrive
+        /// An in-flight message arrives, and maybe stays in flight to arrive
         /// again (duplication).
         Deliver { message: usize, duplicate: bool },
-        /// An in-flight view is lost.
+        /// An in-flight message is lost.
         Drop { message: usize },
     }
 
@@ -238,9 +338,13 @@ mod tests {
 
     /// Four replicas, an unreliable network, and a record of everything
     /// proposed and learned.
+    ///
+    /// Every message relays attestations, so replicas often count witnesses
+    /// they never heard from directly.
     struct Simulation {
         replicas: Vec<Agreement>,
-        in_flight: Vec<(Peer, usize, View)>,
+        /// Each message, with the replica it's addressed to.
+        in_flight: Vec<(usize, Gossip)>,
         reported: Vec<u64>,
         proposed: Decision,
         learned: Vec<Decision>,
@@ -283,8 +387,8 @@ mod tests {
                 }
 
                 Step::Send { from, to } => {
-                    let view = self.replicas[from].view().clone();
-                    self.in_flight.push((cast()[from], to, view));
+                    let message = gossip(&mut self.replicas[from]);
+                    self.in_flight.push((to, message));
                 }
 
                 Step::Deliver { message, duplicate } => {
@@ -293,13 +397,13 @@ mod tests {
                     }
 
                     let index = message % self.in_flight.len();
-                    let (from, to, view) = if duplicate {
+                    let (to, message) = if duplicate {
                         self.in_flight[index].clone()
                     } else {
                         self.in_flight.swap_remove(index)
                     };
 
-                    self.replicas[to].receive(from, &view);
+                    deliver(&mut self.replicas[to], message);
                     self.learn(to);
                 }
 
@@ -321,14 +425,16 @@ mod tests {
         /// Everyone reconnects and exchanges views until nothing changes.
         fn heal(&mut self) {
             for _ in 0..20 {
-                let views: Vec<View> = self.replicas.iter().map(|it| it.view().clone()).collect();
+                let messages: Vec<Gossip> = self.replicas.iter_mut().map(gossip).collect();
                 for (to, replica) in self.replicas.iter_mut().enumerate() {
-                    for (from, view) in views.iter().enumerate() {
+                    for (from, message) in messages.iter().enumerate() {
                         if from != to {
-                            replica.receive(cast()[from], view);
+                            deliver(replica, message.clone());
                         }
                     }
                 }
+
+                let views: Vec<&View> = messages.iter().map(|it| &it.view).collect();
 
                 for replica in 0..self.replicas.len() {
                     self.learn(replica);
@@ -337,7 +443,7 @@ mod tests {
                 let settled = self
                     .replicas
                     .iter()
-                    .all(|it| it.view() == &views[0] && it.learned() == &self.proposed);
+                    .all(|it| it.view() == views[0] && it.learned() == &self.proposed);
                 if settled {
                     return;
                 }
@@ -412,8 +518,8 @@ mod tests {
         let report = Progress::report(phone(), VersionVector::from_iter([(phone(), 1)]));
         phone_replica.propose_progress(&report);
 
-        laptop_replica.receive(phone(), phone_replica.view());
-        phone_replica.receive(laptop(), laptop_replica.view());
+        send(&mut phone_replica, &mut laptop_replica);
+        send(&mut laptop_replica, &mut phone_replica);
 
         let learned = phone_replica.try_learn().cloned();
         assert_eq!(learned.map(|it| it.progress), Some(report));
@@ -454,16 +560,16 @@ mod tests {
         let mut nas_replica = Agreement::new(&genesis(), nas());
 
         phone_replica.propose_progress(&report(phone()));
-        laptop_replica.receive(phone(), phone_replica.view());
-        phone_replica.receive(laptop(), laptop_replica.view());
+        send(&mut phone_replica, &mut laptop_replica);
+        send(&mut laptop_replica, &mut phone_replica);
         let phone_learned = phone_replica.try_learn().cloned();
 
         let amnesiac = Agreement::new(&genesis(), laptop());
         laptop_replica = amnesiac;
 
         nas_replica.propose_progress(&report(nas()));
-        laptop_replica.receive(nas(), nas_replica.view());
-        nas_replica.receive(laptop(), laptop_replica.view());
+        send(&mut nas_replica, &mut laptop_replica);
+        send(&mut laptop_replica, &mut nas_replica);
         let nas_learned = nas_replica.try_learn().cloned();
 
         let (Some(phone_learned), Some(nas_learned)) = (phone_learned, nas_learned) else {
@@ -477,18 +583,60 @@ mod tests {
         let mut phone_replica = Agreement::new(&genesis(), phone());
         let mut laptop_replica = Agreement::new(&genesis(), laptop());
         phone_replica.propose_change(Change::Add(friend()));
-        laptop_replica.receive(phone(), phone_replica.view());
-        phone_replica.receive(laptop(), laptop_replica.view());
+        send(&mut phone_replica, &mut laptop_replica);
+        send(&mut laptop_replica, &mut phone_replica);
 
         // Two of three household members agree, but the configuration with
         // the friend has four members, so it needs three.
         assert_eq!(phone_replica.try_learn(), None);
 
         let mut friend_replica = Agreement::new(&genesis(), friend());
-        friend_replica.receive(phone(), phone_replica.view());
-        phone_replica.receive(friend(), friend_replica.view());
+        send(&mut phone_replica, &mut friend_replica);
+        send(&mut friend_replica, &mut phone_replica);
 
         let learned = phone_replica.try_learn().cloned();
         assert!(learned.is_some_and(|it| it.configuration.is_member(friend())));
+    }
+
+    /// The phone and the nas never meet. The friend, who isn't a member and
+    /// never tries to learn, carries their views and attestations between
+    /// them. The phone learns by counting the nas's attestation, which it
+    /// only ever got secondhand.
+    #[test]
+    fn a_relayed_attestation_counts() {
+        let mut phone_replica = Agreement::new(&genesis(), phone());
+        let mut nas_replica = Agreement::new(&genesis(), nas());
+        let mut friend_replica = Agreement::new(&genesis(), friend());
+        let report = Progress::report(phone(), VersionVector::from_iter([(phone(), 1)]));
+        phone_replica.propose_progress(&report);
+
+        send(&mut phone_replica, &mut friend_replica);
+        send(&mut friend_replica, &mut nas_replica);
+        send(&mut nas_replica, &mut friend_replica);
+        send(&mut friend_replica, &mut phone_replica);
+
+        let learned = phone_replica.try_learn().cloned();
+        assert_eq!(learned.map(|it| it.progress), Some(report));
+    }
+
+    /// Two agreements founded by the same devices start from the same view,
+    /// so their digests match. The attestation names its agreement, so it
+    /// can't be replayed from one into the other.
+    #[test]
+    fn attestations_only_count_in_their_own_agreement() {
+        let elsewhere = Genesis::new([8; 32], [phone().id(), laptop().id(), nas().id()]);
+        let mut phone_replica = Agreement::new(&genesis(), phone());
+        let mut laptop_elsewhere = Agreement::new(&elsewhere, laptop());
+        let report = Progress::report(phone(), VersionVector::from_iter([(phone(), 1)]));
+        phone_replica.propose_progress(&report);
+        laptop_elsewhere.propose_progress(&report);
+        assert_eq!(
+            phone_replica.view().digest(),
+            laptop_elsewhere.view().digest()
+        );
+
+        send(&mut laptop_elsewhere, &mut phone_replica);
+
+        assert_eq!(phone_replica.try_learn(), None);
     }
 }

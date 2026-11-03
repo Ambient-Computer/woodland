@@ -28,12 +28,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use history::History;
 pub(crate) use persistence::Restored;
 use sync::PeerSync;
-pub(crate) use sync::{GroupMessage, Snapshot};
+pub(crate) use sync::{GroupMessage, Snapshot, VerifiedParts};
 
-use crate::actor::{Identity, Peer, Signed, Verified};
-use crate::agreement::{Agreement, AgreementId, Change, Genesis, View};
+use crate::actor::{Identity, Peer, Signed};
+use crate::agreement::{Agreement, AgreementId, Change, Genesis};
 use crate::clock::Progress;
-use crate::model::{KvModel, ModelId, Operation, Transaction};
+use crate::model::{KvModel, ModelId, Operation};
 use crate::node::Outbox;
 
 #[derive(Debug)]
@@ -100,16 +100,20 @@ impl Group {
         self.agreement.propose_change(change);
     }
 
-    /// Takes in what a peer sent. Transactions arrive already verified.
+    /// Takes in what a peer sent. Its signed parts arrive already verified.
     pub(crate) fn receive(
         &mut self,
         from: Peer,
         message: &GroupMessage,
-        transactions: Vec<Verified<Transaction>>,
+        signed: VerifiedParts,
         outbox: &mut Outbox,
     ) {
         if let Some(view) = &message.view {
-            self.agreement.receive(from, view);
+            self.agreement.receive(view);
+        }
+
+        for attestation in signed.attestations {
+            self.agreement.hear(attestation);
         }
 
         if let Some(clock) = &message.clock
@@ -122,13 +126,14 @@ impl Group {
             self.absorb(snapshot, outbox);
         }
 
-        for transaction in transactions {
+        for transaction in signed.transactions {
             self.history.offer(transaction);
         }
     }
 
-    /// Runs after every event in the batch is in.
-    pub(crate) fn settle(&mut self, outbox: &mut Outbox) {
+    /// Runs after every event in the batch is in. `identity` must be this
+    /// device's, for attesting to the settled view.
+    pub(crate) fn settle(&mut self, identity: &Identity, outbox: &mut Outbox) {
         // Learning first: a decision may grant write access to transactions
         // that are already waiting.
         self.agreement.try_learn();
@@ -146,6 +151,9 @@ impl Group {
             persistence::forget_transactions(self.id, author, through, outbox);
         }
 
+        // Last, so it covers everything above. It's saved in the same write
+        // as the view, before anything is sent.
+        self.agreement.attest(identity);
         self.persisted
             .save(self.id, &self.agreement, &self.history, outbox);
     }
@@ -159,11 +167,9 @@ impl Group {
     }
 
     pub(crate) fn outgoing(&mut self, peer: Peer) -> Option<GroupMessage> {
-        let view: &View = self.agreement.view();
-
         self.peers
             .get_mut(&peer)?
-            .outgoing(view, &self.history, &self.models)
+            .outgoing(peer, &self.agreement, &self.history, &self.models)
     }
 
     /// Whether to propose a new progress report: only as a contributor, and

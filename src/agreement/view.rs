@@ -41,7 +41,7 @@ pub(crate) struct Decision {
 ///
 /// Two replicas with the same digest hold the same candidate and the same
 /// configurations, which is exactly what learning needs to count.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) struct Digest([u8; 32]);
 
 impl View {

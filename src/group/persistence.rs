@@ -3,7 +3,8 @@
 //! What's stored, under the agreement's prefix (see [`keys`]):
 //!
 //! - the **genesis**, so the agreement ID can always be re-derived;
-//! - the agreement **view**, so learned decisions survive restarts;
+//! - the agreement **view**, so learned decisions survive restarts, and
+//!   this device's latest **attestation** of it, so revisions keep rising;
 //! - the **clock** (integrated version vector, Lamport counter, floor);
 //! - the **log** of signed transactions above the floor, plus this device's
 //!   own transactions still waiting for write access;
@@ -21,7 +22,7 @@ use std::collections::BTreeMap;
 use super::Group;
 use super::history::{Clock, History};
 use crate::actor::{Peer, Signed, Verified};
-use crate::agreement::{Agreement, AgreementId, Genesis, View};
+use crate::agreement::{Agreement, AgreementId, Attestation, Genesis, View};
 use crate::encoding;
 use crate::model::{Entry, KvModel, ModelId, Transaction};
 use crate::node::Outbox;
@@ -33,15 +34,19 @@ pub(crate) struct Restored {
     genesis: Genesis,
     me: Peer,
     view: Option<View>,
+    attested: Option<Verified<Attestation>>,
     clock: Clock,
     transactions: Vec<Verified<Transaction>>,
     models: BTreeMap<ModelId, KvModel>,
 }
 
-/// The last view and clock written, so unchanged ones aren't rewritten.
+/// The last view, attestation and clock written, so unchanged ones aren't
+/// rewritten.
 #[derive(Debug, Default)]
 pub(super) struct Persisted {
     view: Option<View>,
+    /// The revision of the attestation written.
+    attested: Option<u64>,
     clock: Option<Clock>,
 }
 
@@ -51,6 +56,7 @@ impl Restored {
             genesis: genesis.clone(),
             me,
             view: None,
+            attested: None,
             clock: Clock::default(),
             transactions: Vec::new(),
             models: BTreeMap::new(),
@@ -68,6 +74,11 @@ impl Restored {
         for (key, value) in entries {
             match keys::parse(key) {
                 Some(Record::View(_)) => restored.view = encoding::decode(value),
+                Some(Record::Attestation(_)) => {
+                    // Only this device wrote it, and it signed it.
+                    let signed = encoding::decode::<Signed<Attestation>>(value);
+                    restored.attested = signed.map(Verified::trust_stored);
+                }
                 Some(Record::Clock(_)) => {
                     restored.clock = encoding::decode(value).unwrap_or_default();
                 }
@@ -97,8 +108,9 @@ impl Restored {
 impl From<Restored> for Group {
     fn from(restored: Restored) -> Self {
         let id = restored.genesis.id();
+        let attested = restored.attested.as_ref().map(|it| it.payload().revision);
         let agreement = match restored.view.clone() {
-            Some(view) => Agreement::resume(view, restored.me),
+            Some(view) => Agreement::resume(id, view, restored.attested, restored.me),
             None => Agreement::new(&restored.genesis, restored.me),
         };
 
@@ -111,6 +123,7 @@ impl From<Restored> for Group {
             peers: BTreeMap::new(),
             persisted: Persisted {
                 view: restored.view,
+                attested,
                 clock: Some(restored.clock),
             },
         }
@@ -118,7 +131,8 @@ impl From<Restored> for Group {
 }
 
 impl Persisted {
-    /// Writes the view and clock, if they changed since the last write.
+    /// Writes the view, attestation and clock, if they changed since the
+    /// last write.
     pub(super) fn save(
         &mut self,
         id: AgreementId,
@@ -129,6 +143,13 @@ impl Persisted {
         if self.view.as_ref() != Some(agreement.view()) {
             outbox.put(keys::view(id), agreement.view());
             self.view = Some(agreement.view().clone());
+        }
+
+        if let Some(attested) = agreement.attested()
+            && self.attested != Some(attested.payload().revision)
+        {
+            outbox.put(keys::attestation(id), attested.signed());
+            self.attested = Some(attested.payload().revision);
         }
 
         if self.clock.as_ref() != Some(history.clock()) {

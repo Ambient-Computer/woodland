@@ -11,8 +11,10 @@
 //! 2. Knowing a peer's clock, send the **transactions** it lacks. If it's
 //!    behind our floor, the transactions it needs are gone, so send a
 //!    **snapshot** (our model state) first.
-//! 3. Send our agreement **view** whenever it changes. That's all the
-//!    agreement protocol needs: views merge, and equal views are witnesses.
+//! 3. Send our agreement **view** whenever it changes, and every
+//!    **attestation** newer than what we last sent, whoever signed it.
+//!    That's all the agreement protocol needs: views merge, and matching
+//!    attestations are witnesses.
 //!
 //! Sends are best-effort. Everything here resets when the peer disconnects,
 //! so reconnecting re-sends whatever might have been lost.
@@ -22,8 +24,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::history::History;
-use crate::actor::Signed;
-use crate::agreement::View;
+use crate::actor::{Peer, Signed, Verified};
+use crate::agreement::{Agreement, Attestation, View};
 use crate::clock::VersionVector;
 use crate::lattice::Lattice;
 use crate::model::{KvModel, ModelId, Transaction};
@@ -32,9 +34,19 @@ use crate::model::{KvModel, ModelId, Transaction};
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct GroupMessage {
     pub(crate) view: Option<View>,
+    pub(crate) attestations: Vec<Signed<Attestation>>,
     pub(crate) clock: Option<VersionVector>,
     pub(crate) snapshot: Option<Snapshot>,
     pub(crate) transactions: Vec<Signed<Transaction>>,
+}
+
+/// The signed parts of a [`GroupMessage`], once their signatures have been
+/// checked. The node checks every signature in a message before any group
+/// sees it.
+#[derive(Debug, Default)]
+pub(crate) struct VerifiedParts {
+    pub(crate) attestations: Vec<Verified<Attestation>>,
+    pub(crate) transactions: Vec<Verified<Transaction>>,
 }
 
 /// The state of every model, for a peer that has fallen behind our floor.
@@ -58,6 +70,8 @@ pub(crate) struct PeerSync {
     /// The last view and clock we sent, so we only send changes.
     sent_view: Option<View>,
     sent_clock: Option<VersionVector>,
+    /// The latest revision sent from each attesting replica.
+    sent_attestations: BTreeMap<Peer, u64>,
 }
 
 impl PeerSync {
@@ -66,18 +80,30 @@ impl PeerSync {
         self.has.get_or_insert_default().join(clock);
     }
 
-    /// Builds what this peer needs, and assumes it will arrive.
+    /// Builds what `peer` needs, and assumes it will arrive.
     pub(crate) fn outgoing(
         &mut self,
-        view: &View,
+        peer: Peer,
+        agreement: &Agreement,
         history: &History,
         models: &BTreeMap<ModelId, KvModel>,
     ) -> Option<GroupMessage> {
         let mut message = GroupMessage::default();
 
+        let view = agreement.view();
         if self.sent_view.as_ref() != Some(view) {
             self.sent_view = Some(view.clone());
             message.view = Some(view.clone());
+        }
+
+        // The peer's own attestations would only come back to it.
+        for attestation in agreement.attestations() {
+            let (author, revision) = (attestation.author(), attestation.payload().revision);
+            let sent = self.sent_attestations.entry(author).or_default();
+            if author != peer && *sent < revision {
+                *sent = revision;
+                message.attestations.push(attestation.signed().clone());
+            }
         }
 
         if self.sent_clock.as_ref() != Some(history.integrated()) {

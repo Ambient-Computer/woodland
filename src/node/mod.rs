@@ -17,7 +17,7 @@ use wire::Message;
 use crate::actor::{self, Identity, Peer};
 use crate::agreement::AgreementId;
 use crate::encoding;
-use crate::group::Group;
+use crate::group::{Group, VerifiedParts};
 use crate::io::{Action, Event, LocalEvent, NetworkEvent, StorageEvent};
 use crate::model::ModelId;
 
@@ -94,7 +94,7 @@ impl Node {
         }
 
         for group in self.groups.values_mut() {
-            group.settle(&mut outbox);
+            group.settle(&self.identity, &mut outbox);
         }
 
         let messages = self.compose();
@@ -167,22 +167,31 @@ impl Node {
             self.resubscribe();
         }
 
-        let signed = message
-            .groups
-            .values_mut()
-            .flat_map(|part| std::mem::take(&mut part.transactions))
-            .collect();
+        // One batch per payload type. Sharing a single batch would need one
+        // signed type for both, which isn't worth it for one fewer call.
+        let (mut attestations, mut transactions) = (Vec::new(), Vec::new());
+        for part in message.groups.values_mut() {
+            attestations.append(&mut part.attestations);
+            transactions.append(&mut part.transactions);
+        }
 
-        let mut verified: BTreeMap<AgreementId, Vec<_>> = BTreeMap::new();
-        for transaction in actor::verify_all(signed) {
+        let mut verified: BTreeMap<AgreementId, VerifiedParts> = BTreeMap::new();
+        for attestation in actor::verify_all(attestations) {
+            let agreement = attestation.payload().agreement;
+            let part = verified.entry(agreement).or_default();
+            part.attestations.push(attestation);
+        }
+
+        for transaction in actor::verify_all(transactions) {
             let agreement = transaction.payload().agreement;
-            verified.entry(agreement).or_default().push(transaction);
+            let part = verified.entry(agreement).or_default();
+            part.transactions.push(transaction);
         }
 
         for (id, part) in message.groups {
             if let Some(group) = self.groups.get_mut(&id) {
-                let transactions = verified.remove(&id).unwrap_or_default();
-                group.receive(from, &part, transactions, outbox);
+                let signed = verified.remove(&id).unwrap_or_default();
+                group.receive(from, &part, signed, outbox);
             }
         }
     }
@@ -488,11 +497,16 @@ mod tests {
         cluster.settle();
         let before = group(&cluster, PHONE).models().clone();
         let learned = group(&cluster, PHONE).agreement().learned().clone();
+        let attested = group(&cluster, PHONE).agreement().attested().cloned();
 
         cluster.restart(PHONE);
 
         assert_eq!(group(&cluster, PHONE).models(), &before);
         assert_eq!(group(&cluster, PHONE).agreement().learned(), &learned);
+        assert_eq!(
+            group(&cluster, PHONE).agreement().attested(),
+            attested.as_ref()
+        );
 
         cluster.connect_everyone();
         write(&mut cluster, PHONE, "size", "small");

@@ -34,6 +34,12 @@
 //! - Continuous proposals starve learning, in practice as well as in
 //!   theory. One progress report in flight per contributor fixes it
 //!   (`Group::may_report`).
+//! - Witnesses don't need to be heard directly. A signed "I hold digest D"
+//!   stays true forever, because views are durable and only grow, so it can
+//!   be relayed like a transaction (`agreement/attestation.rs`). Direct
+//!   witnessing was rarely the bottleneck, though: the learner needn't be a
+//!   contributor, so any hub that hears a quorum learns for everyone
+//!   (`a_hub_that_isnt_a_contributor_learns_for_everyone`).
 //! - Writing never needs a quorum. Only membership changes and compaction
 //!   do, so a device offline for months can keep writing.
 //!
@@ -47,8 +53,9 @@
 //!   both (`group/compaction.rs`).
 //! - Many models per agreement: one clock spans them all, and a model is
 //!   just a namespace in that history.
-//! - Signed transactions can be relayed by anyone, so sync works over
-//!   chains of devices, not just a full mesh.
+//! - Signed transactions and attestations can be relayed by anyone, so sync
+//!   and agreement both work over chains of devices, not just a full mesh.
+//!   Both go through the same batch verification before a group sees them.
 //!
 //! **What fights**
 //!
@@ -59,8 +66,6 @@
 //! - Tombstone collection. The floor is enough to drop the log, but not
 //!   enough to drop tombstones, for the same reason plus concurrent
 //!   admission of new members (`group/compaction.rs`).
-//! - Witnessing is direct only. Learning needs some device that hears a
-//!   quorum directly. Signed views would fix it.
 //! - Crash faults only. A lying member can forge progress or equivocate,
 //!   and Byzantine RLA is a separate line of research.
 

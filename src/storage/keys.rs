@@ -4,6 +4,7 @@
 //! ```text
 //! [GENESIS][agreement]                         → Genesis
 //! [AGREEMENT][agreement][VIEW]                 → agreement View
+//! [AGREEMENT][agreement][ATTESTATION]          → our latest Signed<Attestation>
 //! [AGREEMENT][agreement][CLOCK]                → integrated clock, floor
 //! [AGREEMENT][agreement][LOG][author][seq]     → Signed<Transaction>
 //! [AGREEMENT][agreement][ENTRY][model][key…]   → KV Entry
@@ -28,12 +29,14 @@ const VIEW: u8 = 1;
 const CLOCK: u8 = 2;
 const LOG: u8 = 3;
 const ENTRY: u8 = 4;
+const ATTESTATION: u8 = 5;
 
 /// A stored key, parsed back into what it names.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Record {
     Genesis(AgreementId),
     View(AgreementId),
+    Attestation(AgreementId),
     Clock(AgreementId),
     Log {
         agreement: AgreementId,
@@ -63,6 +66,10 @@ pub(crate) fn agreement(agreement: AgreementId) -> Vec<u8> {
 
 pub(crate) fn view(id: AgreementId) -> Vec<u8> {
     [agreement(id), vec![VIEW]].concat()
+}
+
+pub(crate) fn attestation(id: AgreementId) -> Vec<u8> {
+    [agreement(id), vec![ATTESTATION]].concat()
 }
 
 pub(crate) fn clock(id: AgreementId) -> Vec<u8> {
@@ -110,6 +117,7 @@ fn parse_owned(agreement: AgreementId, key: &[u8]) -> Option<Record> {
     match collection {
         VIEW if rest.is_empty() => Some(Record::View(agreement)),
         CLOCK if rest.is_empty() => Some(Record::Clock(agreement)),
+        ATTESTATION if rest.is_empty() => Some(Record::Attestation(agreement)),
         LOG => {
             let (author, rest) = take_id(rest)?;
             let seq = u64::from_be_bytes(rest.try_into().ok()?);
@@ -156,6 +164,7 @@ mod tests {
         assert_eq!(parse(&genesis(id())), Some(Record::Genesis(id())));
         assert_eq!(parse(&view(id())), Some(Record::View(id())));
         assert_eq!(parse(&clock(id())), Some(Record::Clock(id())));
+        assert_eq!(parse(&attestation(id())), Some(Record::Attestation(id())));
         assert_eq!(
             parse(&log(id(), phone(), 9)),
             Some(Record::Log {
