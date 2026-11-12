@@ -15,14 +15,16 @@
 //! The floor is just a function of a decision, and a gossiped progress map
 //! would give one too. What agreement adds is **who counts**. The
 //! contributor set is part of the same decision as the reports, so the floor
-//! is always taken over a membership everyone eventually agrees on. Floors
-//! taken from learned decisions are comparable too, so every device's
-//! compaction windows nest the same way.
+//! is always taken over a membership everyone eventually agrees on. Each
+//! report also says which configuration its author knew of, and the floor
+//! waits until every contributor has acknowledged the one it's taken over
+//! (see [`Decision::floor`]).
 //!
 //! # Where it stops being monotone
 //!
 //! Adding a member who hasn't reported yet pulls the floor of the next
-//! decision back to zero (see [`Progress::floor`]). The floor here is a high
+//! decision back to zero (see [`Progress::floor`]), and so does any change
+//! that someone hasn't acknowledged yet. The floor here is a high
 //! watermark: it never goes back down, because the transactions are
 //! already gone. That's safe for the log. The newcomer gets a snapshot
 //! instead of the transactions, and merging a snapshot is just a union of
@@ -60,7 +62,7 @@ use crate::log::Log;
 /// An observer that's behind can learn a floor it hasn't reached yet, and
 /// it must never claim to hold transactions it doesn't have.
 pub(super) fn compact(log: &mut Log, learned: &Decision) -> Vec<(Peer, u64)> {
-    let agreed = learned.progress.floor(&learned.configuration.members());
+    let agreed = learned.floor();
     let reachable = agreed.meet(log.integrated());
 
     log.compact(&reachable)

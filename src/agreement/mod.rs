@@ -156,6 +156,17 @@ impl Agreement {
         self.view.candidate.join(progress)
     }
 
+    /// Proposes that this replica has learned the configuration it has.
+    /// Goes with a progress report: it's what lets the report count toward
+    /// the floor of that configuration (see [`Decision::floor`]).
+    pub(crate) fn acknowledge(&mut self) -> bool {
+        let learned = self.learned().configuration.clone();
+
+        self.view
+            .acknowledged
+            .join(&BTreeMap::from([(self.me, learned)]))
+    }
+
     /// Proposes a membership change on top of what's been learned.
     pub(crate) fn propose_change(&mut self, change: Change) -> bool {
         let before = self.view.clone();
@@ -222,6 +233,7 @@ impl Agreement {
 
         let decision = Decision {
             progress: self.view.candidate.clone(),
+            acknowledged: self.view.acknowledged.clone(),
             configuration: self.view.target_configuration(),
         };
 

@@ -143,11 +143,13 @@ impl Group {
         self.integrate(outbox);
         self.admit(identity, outbox);
 
-        // Contributors report how far they've gotten. That report is what
-        // eventually lets everyone compact.
+        // Contributors report how far they've gotten, and which
+        // configuration they knew of. That report is what eventually lets
+        // everyone compact.
         if self.may_report() {
             let report = Progress::report(self.me, self.log.integrated().clone());
             self.agreement.propose_progress(&report);
+            self.agreement.acknowledge();
         }
 
         self.agreement.try_learn();
@@ -198,11 +200,12 @@ impl Group {
     /// one round.
     fn may_report(&self) -> bool {
         let learned = self.agreement.learned();
-        let proposed = &self.agreement.view().candidate;
+        let view = self.agreement.view();
 
         learned.configuration.is_member(self.me)
             && self.log.admitted()
-            && learned.progress.of(self.me) == proposed.of(self.me)
+            && learned.progress.of(self.me) == view.candidate.of(self.me)
+            && learned.acknowledged.get(&self.me) == view.acknowledged.get(&self.me)
     }
 
     /// Admits this device once it has learned it's a contributor and caught

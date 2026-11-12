@@ -122,6 +122,7 @@ mod tests {
             progress,
             configuration: Configuration::founded_by([phone(), laptop()])
                 .with(Change::Add(friend())),
+            ..Decision::default()
         }
     }
 
