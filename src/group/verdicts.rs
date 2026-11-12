@@ -10,6 +10,9 @@
 //! stays in the log, because others were written on top of it, but none
 //! of its operations happen, in any model.
 //!
+//! Every operation also requires its model to be alive: a transaction
+//! that names a model after it was dropped is pruned.
+//!
 //! Nothing here knows what a model is. Operations declare what they
 //! write and what they require, and that's all that's read.
 //!
@@ -87,6 +90,10 @@ struct Written {
     holds: BTreeMap<Place, bool>,
     /// Places a pending transaction wrote to. Nobody knows what they hold.
     unsure: BTreeSet<Place>,
+    /// Models dropped so far, settled drops included.
+    dropped: BTreeSet<ModelId>,
+    /// Models a pending transaction dropped. Nobody knows if they're alive.
+    unsure_models: BTreeSet<ModelId>,
 }
 
 impl Verdicts {
@@ -115,10 +122,14 @@ impl Verdicts {
     pub(super) fn judge(
         &mut self,
         id: AgreementId,
+        dropped: &BTreeSet<ModelId>,
         frontier: &[&Verified<Transaction>],
         outbox: &mut Outbox,
     ) -> Vec<(Verified<Transaction>, Verdict)> {
-        let mut written = Written::default();
+        let mut written = Written {
+            dropped: dropped.clone(),
+            ..Written::default()
+        };
         let mut changed = Vec::new();
         let stored = std::mem::take(&mut self.stored);
         self.reached.clear();
@@ -126,14 +137,10 @@ impl Verdicts {
 
         for &transaction in frontier {
             let verdict = self.weigh(id, transaction, &written, outbox);
-            let writes = transaction
-                .payload()
-                .operations
-                .iter()
-                .map(Operation::write);
+            let operations = &transaction.payload().operations;
             match verdict {
-                Verdict::Live => written.apply(writes),
-                Verdict::Pending => written.doubt(writes),
+                Verdict::Live => written.apply(operations),
+                Verdict::Pending => written.doubt(operations),
                 Verdict::Pruned => {}
             }
 
@@ -216,9 +223,20 @@ impl Verdicts {
         }
 
         let mut own: BTreeMap<Place, bool> = BTreeMap::new();
+        let mut own_drops = BTreeSet::new();
         let mut pending = false;
         for operation in operations {
-            let write = operation.write();
+            let model = operation.model;
+            if written.dropped.contains(&model) || own_drops.contains(&model) {
+                return Verdict::Pruned;
+            }
+
+            pending |= written.unsure_models.contains(&model);
+            let Some(write) = operation.write() else {
+                own_drops.insert(model);
+                continue;
+            };
+
             let place = (write.model, write.key);
             if let Some(Requirement::Vacant) = operation.requires() {
                 let holds = match own.get(&place) {
@@ -275,17 +293,25 @@ impl Verdicts {
 }
 
 impl Written {
-    fn apply(&mut self, writes: impl Iterator<Item = Write>) {
-        for write in writes {
+    fn apply(&mut self, operations: &[Operation]) {
+        for operation in operations {
+            let Some(write) = operation.write() else {
+                self.dropped.insert(operation.model);
+                continue;
+            };
+
             let place = (write.model, write.key);
             self.unsure.remove(&place);
             self.holds.insert(place, write.value.is_some());
         }
     }
 
-    fn doubt(&mut self, writes: impl Iterator<Item = Write>) {
-        for write in writes {
-            self.unsure.insert((write.model, write.key));
+    fn doubt(&mut self, operations: &[Operation]) {
+        for operation in operations {
+            match operation.write() {
+                Some(write) => self.unsure.insert((write.model, write.key)),
+                None => self.unsure_models.insert(operation.model),
+            };
         }
     }
 }
@@ -335,12 +361,12 @@ mod tests {
     /// there". Returns each transaction's verdict, in timeline order.
     fn judge(verdicts: &mut Verdicts, frontier: &[&Verified<Transaction>]) -> Vec<Verdict> {
         let mut outbox = Outbox::default();
-        verdicts.judge(agreement(), frontier, &mut outbox);
+        verdicts.judge(agreement(), &BTreeSet::new(), frontier, &mut outbox);
         for place in verdicts.reading.clone().into_keys() {
             verdicts.got(place.0, place.1, false);
         }
 
-        verdicts.judge(agreement(), frontier, &mut outbox);
+        verdicts.judge(agreement(), &BTreeSet::new(), frontier, &mut outbox);
         frontier
             .iter()
             .map(|it| verdicts.reached[&key(it)])
@@ -385,7 +411,7 @@ mod tests {
 
         let mut outbox = Outbox::default();
         let frontier = [&late, &second, &third];
-        let changed = verdicts.judge(agreement(), &frontier, &mut outbox);
+        let changed = verdicts.judge(agreement(), &BTreeSet::new(), &frontier, &mut outbox);
 
         assert_eq!(
             changed,
@@ -406,14 +432,24 @@ mod tests {
 
         // Nobody knows who has "ada" until storage answers, so nobody
         // knows what either transaction's verdict is.
-        let changed = verdicts.judge(agreement(), &[&wants, &after], &mut outbox);
+        let changed = verdicts.judge(
+            agreement(),
+            &BTreeSet::new(),
+            &[&wants, &after],
+            &mut outbox,
+        );
         assert_eq!(changed, []);
         assert!(verdicts.is_pending(&wants));
         assert!(verdicts.is_pending(&after));
 
         // Taken, long ago.
         verdicts.got(names(), b"ada".to_vec(), true);
-        let changed = verdicts.judge(agreement(), &[&wants, &after], &mut outbox);
+        let changed = verdicts.judge(
+            agreement(),
+            &BTreeSet::new(),
+            &[&wants, &after],
+            &mut outbox,
+        );
         assert_eq!(
             changed,
             [(wants, Verdict::Pruned), (after, Verdict::Pruned)]
@@ -427,7 +463,12 @@ mod tests {
         let second = transaction(laptop(), 2, &[claim("ada")]);
         judge(&mut verdicts, &[&first, &second]);
 
-        for write in first.payload().operations.iter().map(Operation::write) {
+        for write in first
+            .payload()
+            .operations
+            .iter()
+            .filter_map(Operation::write)
+        {
             verdicts.folded(&write);
         }
 
@@ -442,11 +483,11 @@ mod tests {
         let mut verdicts = Verdicts::default();
         let mut outbox = Outbox::default();
         let second = transaction(laptop(), 2, &[claim("ada")]);
-        verdicts.judge(agreement(), &[&second], &mut outbox);
+        verdicts.judge(agreement(), &BTreeSet::new(), &[&second], &mut outbox);
 
         verdicts.absorbed();
         verdicts.got(names(), b"ada".to_vec(), false);
-        verdicts.judge(agreement(), &[&second], &mut outbox);
+        verdicts.judge(agreement(), &BTreeSet::new(), &[&second], &mut outbox);
 
         assert!(verdicts.is_pending(&second));
         assert_eq!(
@@ -469,6 +510,26 @@ mod tests {
     }
 
     #[test]
+    fn a_dropped_model_takes_nothing_more() {
+        let mut verdicts = Verdicts::default();
+        let profile = Operation::set(profiles(), b"ada".to_vec(), b"hello".to_vec());
+        let before = transaction(phone(), 1, std::slice::from_ref(&profile));
+        let drops = transaction(laptop(), 2, &[Operation::drop(profiles())]);
+        let after = transaction(nas(), 3, &[claim("ada"), profile.clone()]);
+        assert_eq!(
+            judge(&mut verdicts, &[&before, &drops, &after]),
+            [Verdict::Live, Verdict::Live, Verdict::Pruned],
+        );
+
+        // Still dead once the drop has settled and left the frontier.
+        let mut outbox = Outbox::default();
+        let dropped = BTreeSet::from([profiles()]);
+        verdicts.judge(agreement(), &dropped, &[&after], &mut outbox);
+        assert!(!verdicts.is_live(&after));
+        assert!(!verdicts.is_pending(&after));
+    }
+
+    #[test]
     fn transactions_that_require_nothing_are_live_after_a_restart() {
         let profile = Operation::set(profiles(), b"ada".to_vec(), b"hello".to_vec());
         let plain = transaction(phone(), 1, &[profile]);
@@ -480,9 +541,19 @@ mod tests {
 
         // Only the claim is written again.
         let mut outbox = Outbox::default();
-        verdicts.judge(agreement(), &[&plain, &claims], &mut outbox);
+        verdicts.judge(
+            agreement(),
+            &BTreeSet::new(),
+            &[&plain, &claims],
+            &mut outbox,
+        );
         verdicts.got(names(), b"ada".to_vec(), false);
-        let changed = verdicts.judge(agreement(), &[&plain, &claims], &mut outbox);
+        let changed = verdicts.judge(
+            agreement(),
+            &BTreeSet::new(),
+            &[&plain, &claims],
+            &mut outbox,
+        );
         assert_eq!(changed, [(claims, Verdict::Live)]);
     }
 }

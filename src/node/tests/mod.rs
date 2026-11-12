@@ -418,6 +418,55 @@ fn a_committed_read_waits_for_every_contributor() {
     }
 }
 
+/// A dropped model is empty and stays that way. A transaction that
+/// writes to it afterwards doesn't happen, in any model.
+#[test]
+fn a_dropped_model_is_dead_for_good() {
+    let mut cluster = household();
+    let agreement = genesis(&cluster).id();
+    let (notes, tags) = (notes(&cluster), ModelId::kv(agreement, [2; 32]));
+    write(&mut cluster, PHONE, "color", "blue");
+    cluster.settle();
+
+    // Dropped, but the nas hasn't heard, so it hasn't settled.
+    for other in [PHONE, LAPTOP, FRIEND] {
+        cluster.disconnect(NAS, other);
+    }
+    cluster.run(LAPTOP, |batch| {
+        batch.transaction(agreement).drop_model(notes).commit()
+    });
+    cluster.settle();
+    assert_eq!(read(&cluster, PHONE, "color"), None);
+    assert_eq!(
+        read_committed(&cluster, PHONE, "color").as_deref(),
+        Some("blue")
+    );
+    assert_eq!(read(&cluster, NAS, "color").as_deref(), Some("blue"));
+
+    // The nas writes to it, not knowing. Its write comes later in the
+    // timeline than the drop, and takes the tag down with it.
+    write(&mut cluster, NAS, "color", "red");
+    cluster.run(NAS, |batch| {
+        let transaction = batch.transaction(agreement);
+
+        transaction
+            .set(notes, "size", "large")
+            .set(tags, "size", "big")
+            .commit()
+    });
+    cluster.connect_everyone();
+    cluster.settle();
+
+    let tag = Query::key(agreement, tags, b"size");
+    for device in [PHONE, LAPTOP, NAS, FRIEND] {
+        assert_eq!(read(&cluster, device, "color"), None, "device {device}");
+        assert_eq!(read_committed(&cluster, device, "color"), None);
+        assert_eq!(run_query(&cluster, device, &tag), None);
+        assert_eq!(stored_frontier(&cluster, device), [], "device {device}");
+        assert_eq!(stored_settled(&cluster, device).len(), 1, "only the cut");
+    }
+}
+
 /// What a device reports as changed is enough to keep a query's results
 /// current: run it again whenever a change affects it, and it never
 /// misses anything.

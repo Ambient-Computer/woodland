@@ -34,7 +34,7 @@
 
 mod transaction;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -42,7 +42,7 @@ use crate::actor::{Peer, Signed, Verified};
 use crate::agreement::AgreementId;
 use crate::clock::VersionVector;
 use crate::lattice::Lattice;
-use crate::model::Operation;
+use crate::model::{ModelId, Operation};
 pub(crate) use transaction::Transaction;
 
 /// One log on this device.
@@ -89,6 +89,9 @@ pub(crate) struct Cut {
     /// prefix from a snapshot never sees them, and still has to write
     /// above them.
     pub(crate) lamport: u64,
+    /// The models they dropped. A dropped model is dead for good, so this
+    /// only grows.
+    pub(crate) dropped: BTreeSet<ModelId>,
 }
 
 impl Log {
@@ -241,6 +244,12 @@ impl Log {
         }
 
         settled
+    }
+
+    /// A transaction that settled dropped `model`. The log doesn't read
+    /// operations, so it has to be told.
+    pub(crate) fn dropped(&mut self, model: ModelId) {
+        self.clock.cut.dropped.insert(model);
     }
 
     /// Takes on a peer's cut, which must be ahead of ours: everything in
@@ -439,6 +448,7 @@ mod tests {
         let cut = Cut {
             settled: [(phone(), 2)].into_iter().collect(),
             lamport: second.payload().lamport,
+            dropped: BTreeSet::new(),
         };
         let absorbed = laptop_device.log.absorb(&cut);
 

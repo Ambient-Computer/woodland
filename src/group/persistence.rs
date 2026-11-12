@@ -109,7 +109,8 @@ impl Restored {
                     Record::Genesis(_)
                     | Record::Cut(_)
                     | Record::Settled { .. }
-                    | Record::Version { .. },
+                    | Record::Version { .. }
+                    | Record::Dropped { .. },
                 )
                 | None => {}
             }
@@ -198,9 +199,10 @@ pub(super) fn save_transaction(id: AgreementId, signed: &Signed<Transaction>, ou
 }
 
 /// Writes what a live transaction's operations leave behind, as versions
-/// in the frontier. Not for models that only show what has settled:
-/// their writes wait in the log. In order, so a later operation on the same key replaces
-/// an earlier one.
+/// in the frontier, in order, so a later operation on the same key
+/// replaces an earlier one. Not for models that only show what has
+/// settled: their writes wait in the log. A drop leaves a mark for
+/// readers, and nothing else changes until it settles.
 pub(super) fn save_operations(
     id: AgreementId,
     stamp: Stamp,
@@ -208,16 +210,28 @@ pub(super) fn save_operations(
     outbox: &mut Outbox,
 ) {
     let shown = |write: &Write| write.model.kind().is_some_and(Kind::shows_unsettled);
-    for write in operations.iter().map(Operation::write).filter(shown) {
+    for write in operations.iter().filter_map(Operation::write).filter(shown) {
         let key = keys::version(id, write.model, &write.key, stamp);
         outbox.put(key, &write.value);
     }
+
+    for dropped in operations.iter().filter(|it| it.drops()) {
+        outbox.put_bytes(keys::drop(id, dropped.model, stamp), Vec::new());
+    }
 }
 
-/// Makes a live transaction's writes the settled values of their keys.
-/// Transactions must be folded in timeline order.
+/// Makes a live transaction's writes the settled values of their keys,
+/// and deletes every settled value of a model it drops. Transactions
+/// must be folded in timeline order.
 pub(super) fn fold_operations(id: AgreementId, operations: &[Operation], outbox: &mut Outbox) {
-    for write in operations.iter().map(Operation::write) {
+    for operation in operations {
+        let Some(write) = operation.write() else {
+            let model = keys::settled_value(id, operation.model, b"");
+            let (start, end) = keys::range(model);
+            outbox.delete_range(start, end);
+            continue;
+        };
+
         let settled = keys::settled_value(id, write.model, &write.key);
         match write.value {
             Some(value) => outbox.put_bytes(settled, value),
@@ -245,8 +259,12 @@ pub(super) fn forget_operations(
     operations: &[Operation],
     outbox: &mut Outbox,
 ) {
-    for write in operations.iter().map(Operation::write) {
+    for write in operations.iter().filter_map(Operation::write) {
         outbox.delete(keys::version(id, write.model, &write.key, stamp));
+    }
+
+    for dropped in operations.iter().filter(|it| it.drops()) {
+        outbox.delete(keys::drop(id, dropped.model, stamp));
     }
 }
 
@@ -263,7 +281,7 @@ pub(super) fn save_snapshot(id: AgreementId, snapshot: &Snapshot, outbox: &mut O
 
 /// Deletes everything that hasn't settled, for a rewind.
 pub(super) fn forget_frontier(id: AgreementId, outbox: &mut Outbox) {
-    for prefix in [keys::logs(id), keys::frontier(id)] {
+    for prefix in [keys::logs(id), keys::frontier(id), keys::dropped(id)] {
         let (start, end) = keys::range(prefix);
         outbox.delete_range(start, end);
     }

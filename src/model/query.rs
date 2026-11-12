@@ -49,6 +49,9 @@ pub struct Query {
     settled: Vec<u8>,
     /// Where the versions that haven't settled are, if they're wanted.
     frontier: Option<Vec<u8>>,
+    /// Where it says whether the model was dropped, if that hasn't
+    /// settled. Read along with the frontier.
+    drops: Vec<u8>,
     /// A single-key query also scans keys that extend it, and drops them.
     exact: Option<Vec<u8>>,
 }
@@ -75,12 +78,15 @@ impl Query {
         self
     }
 
-    /// The storage prefixes to scan: one for a committed read, two for an
-    /// optimistic one.
+    /// The storage prefixes to scan: one for a committed read, three for
+    /// an optimistic one.
     pub fn storage_prefixes(&self) -> impl Iterator<Item = &[u8]> {
         let frontier = self.frontier.as_deref();
+        let drops = frontier.map(|_| self.drops.as_slice());
 
-        std::iter::once(self.settled.as_slice()).chain(frontier)
+        std::iter::once(self.settled.as_slice())
+            .chain(frontier)
+            .chain(drops)
     }
 
     /// Whether `change` could alter what this query returns. If so, scan
@@ -110,6 +116,12 @@ impl Query {
     /// the results of every scan, in any order.
     #[must_use]
     pub fn results(&self, scanned: &[(Vec<u8>, Vec<u8>)]) -> Vec<(Vec<u8>, Vec<u8>)> {
+        // A dropped model is empty, whatever it still holds in storage.
+        let dropped = |(stored, _): &(Vec<u8>, Vec<u8>)| stored.starts_with(&self.drops);
+        if self.frontier.is_some() && scanned.iter().any(dropped) {
+            return Vec::new();
+        }
+
         let wanted = |key: &Vec<u8>| self.exact.as_ref().is_none_or(|exact| exact == key);
         let mut settled = Vec::new();
         let mut versions = Vec::new();
@@ -143,6 +155,7 @@ impl Query {
         Self {
             settled: keys::settled_value(agreement, model, key),
             frontier,
+            drops: keys::drops(agreement, model),
             exact: exact.then(|| key.to_vec()),
         }
     }
@@ -237,6 +250,27 @@ mod tests {
 
         assert_eq!(query.storage_prefixes().count(), 1);
         assert_eq!(query.results(&scanned), [result("color", "red")]);
+    }
+
+    #[test]
+    fn a_dropped_model_reads_as_empty_before_the_drop_settles() {
+        let stamp = Stamp {
+            lamport: 2,
+            author: phone(),
+        };
+        let dropped = (keys::drop(agreement(), model(), stamp), Vec::new());
+        let scanned = [
+            settled("color", "red"),
+            version(1, "size", Some("large")),
+            dropped,
+        ];
+        let query = Query::prefix(agreement(), model(), b"");
+
+        assert_eq!(query.results(&scanned), []);
+        assert_eq!(
+            query.committed().results(&scanned),
+            [result("color", "red")]
+        );
     }
 
     #[test]

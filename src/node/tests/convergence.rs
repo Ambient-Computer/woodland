@@ -19,6 +19,14 @@ enum Step {
         device: usize,
         name: u8,
     },
+    /// Writes to a model that anyone might drop.
+    Scratch {
+        device: usize,
+        value: u8,
+    },
+    DropScratch {
+        device: usize,
+    },
     Connect {
         left: usize,
         right: usize,
@@ -42,12 +50,19 @@ enum Step {
     },
 }
 
+fn scratch(cluster: &Cluster) -> ModelId {
+    ModelId::kv(genesis(cluster).id(), [5; 32])
+}
+
 fn step() -> impl Strategy<Value = Step> {
     let device = 0..4usize;
     prop_oneof![
         4 => (device.clone(), 0..3u8, any::<u8>())
             .prop_map(|(device, key, value)| Step::Write { device, key, value }),
         3 => (device.clone(), 0..3u8).prop_map(|(device, name)| Step::Claim { device, name }),
+        2 => (device.clone(), any::<u8>())
+            .prop_map(|(device, value)| Step::Scratch { device, value }),
+        1 => device.clone().prop_map(|device| Step::DropScratch { device }),
         2 => (device.clone(), device.clone())
             .prop_map(|(left, right)| Step::Connect { left, right }),
         2 => (device.clone(), device.clone())
@@ -67,6 +82,23 @@ fn run(cluster: &mut Cluster, step: Step) {
         }
         Step::Claim { device, name } => {
             claim(cluster, device, &name.to_string(), &device.to_string());
+        }
+        Step::Scratch { device, value } => {
+            let (scratch, notes) = (scratch(cluster), notes(cluster));
+            cluster.run(device, |batch| {
+                let transaction = batch.transaction(agreement);
+
+                transaction
+                    .set(scratch, "value", value.to_string())
+                    .set(notes, "scratched", value.to_string())
+                    .commit()
+            });
+        }
+        Step::DropScratch { device } => {
+            let scratch = scratch(cluster);
+            cluster.run(device, |batch| {
+                batch.transaction(agreement).drop_model(scratch).commit()
+            });
         }
         Step::Connect { left, right } => cluster.connect(left, right),
         Step::Disconnect { left, right } => cluster.disconnect(left, right),

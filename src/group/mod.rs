@@ -310,7 +310,8 @@ impl Group {
     /// reading what's there.
     fn judge(&mut self, outbox: &mut Outbox) {
         let frontier = self.log.frontier();
-        for (transaction, verdict) in self.verdicts.judge(self.id, &frontier, outbox) {
+        let dropped = &self.log.cut().dropped;
+        for (transaction, verdict) in self.verdicts.judge(self.id, dropped, &frontier, outbox) {
             let payload = transaction.payload();
             let (stamp, operations) = (payload.stamp(transaction.author()), &payload.operations);
             match verdict {
@@ -328,24 +329,30 @@ impl Group {
                 kind.is_some_and(Kind::shows_unsettled)
             };
             for operation in operations.iter().filter(shown) {
-                self.notify(operation, false, outbox);
+                Self::notify(self.id, operation, false, outbox);
             }
         }
     }
 
-    /// Tells whoever is watching that an operation's key changed.
-    fn notify(&self, operation: &Operation, committed: bool, outbox: &mut Outbox) {
-        let write = operation.write();
-        outbox.changed(Changed::Key {
-            agreement: self.id,
-            model: write.model,
-            key: write.key,
-            committed,
-        });
+    /// Tells whoever is watching that an operation's key changed, or its
+    /// whole model, if it dropped one.
+    fn notify(agreement: AgreementId, operation: &Operation, committed: bool, outbox: &mut Outbox) {
+        let change = match operation.write() {
+            Some(write) => Changed::Key {
+                agreement,
+                model: write.model,
+                key: write.key,
+                committed,
+            },
+            None => Changed::Everything { agreement },
+        };
+
+        outbox.changed(change);
     }
 
     /// Settles what agreement proves is final. A live transaction's
-    /// writes become settled values. A pruned one just leaves.
+    /// writes become settled values, and a model it drops is emptied. A
+    /// pruned one just leaves.
     fn settle(&mut self, outbox: &mut Outbox) {
         let verdicts = &self.verdicts;
         let ready = |transaction: &_| !verdicts.is_pending(transaction);
@@ -355,8 +362,12 @@ impl Group {
             if self.verdicts.is_live(&transaction) {
                 persistence::fold_operations(self.id, operations, outbox);
                 for operation in operations {
-                    self.verdicts.folded(&operation.write());
-                    self.notify(operation, true, outbox);
+                    match operation.write() {
+                        Some(write) => self.verdicts.folded(&write),
+                        None => self.log.dropped(operation.model),
+                    }
+
+                    Self::notify(self.id, operation, true, outbox);
                 }
             }
 

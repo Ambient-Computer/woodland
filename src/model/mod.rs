@@ -58,6 +58,11 @@
 //! and the first operation that names it brings it into existence
 //! everywhere. Two models never see each other's keys.
 //!
+//! Dropping a model is an operation too, at a place in the timeline like
+//! any other. Before it, the model's operations happen, and the drop
+//! then takes what they wrote. After it, the model is dead for good, and
+//! a transaction that names it is pruned.
+//!
 //! [`Stamp`]: crate::clock::Stamp
 
 mod claims;
@@ -83,6 +88,11 @@ pub(crate) struct Operation {
 pub(crate) enum Change {
     Kv(kv::Operation),
     Claims(claims::Operation),
+    /// Drops the model, whatever its kind: everything in it is gone, and
+    /// it's dead for good. Every operation requires its model to be
+    /// alive, so a transaction that names it later in the timeline is
+    /// pruned.
+    Drop,
 }
 
 /// What an operation needs to be true of its key, at its transaction's
@@ -128,33 +138,47 @@ impl Operation {
         Self { model, change }
     }
 
+    pub(crate) fn drop(model: ModelId) -> Self {
+        let change = Change::Drop;
+
+        Self { model, change }
+    }
+
     /// Whether the change is one its model takes.
     pub(crate) fn belongs(&self) -> bool {
         match (&self.change, self.model.kind()) {
             (Change::Kv(_), Some(Kind::Kv | Kind::Threshold))
-            | (Change::Claims(_), Some(Kind::Claims)) => true,
-            (Change::Kv(_) | Change::Claims(_), _) => false,
+            | (Change::Claims(_), Some(Kind::Claims))
+            | (Change::Drop, Some(_)) => true,
+            (Change::Kv(_) | Change::Claims(_) | Change::Drop, _) => false,
         }
     }
 
-    pub(crate) fn write(&self) -> Write {
+    /// What the operation leaves under a key, if it writes to one.
+    pub(crate) fn write(&self) -> Option<Write> {
         let (key, value) = match &self.change {
             Change::Kv(operation) => operation.write(),
             Change::Claims(operation) => operation.write(),
+            Change::Drop => return None,
         };
 
-        Write {
+        Some(Write {
             model: self.model,
             key,
             value,
-        }
+        })
+    }
+
+    /// Whether the operation drops its model.
+    pub(crate) fn drops(&self) -> bool {
+        matches!(self.change, Change::Drop)
     }
 
     /// What must hold of the operation's key for its transaction to
     /// happen.
     pub(crate) fn requires(&self) -> Option<Requirement> {
         match &self.change {
-            Change::Kv(_) => None,
+            Change::Kv(_) | Change::Drop => None,
             Change::Claims(operation) => Some(operation.requires()),
         }
     }

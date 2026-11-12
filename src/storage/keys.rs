@@ -11,6 +11,7 @@
 //! [AGREEMENT][agreement][SETTLED][CUT]                → which transactions are settled
 //! [AGREEMENT][agreement][SETTLED][DATA][model][key…]  → the key's settled value
 //! [AGREEMENT][agreement][FRONTIER][model][key…][stamp] → a version: a value, or none
+//! [AGREEMENT][agreement][DROPPED][model][stamp]        → the model was dropped, unsettled
 //! ```
 //!
 //! Identifiers are fixed width and counters are big-endian, so byte order
@@ -31,6 +32,9 @@
 //!   range holds one value per key and the cut it reflects, so one scan of
 //!   it is a consistent snapshot, whenever the scan happens to run. The
 //!   **frontier** holds what transactions above the cut wrote.
+//! - A model that's dropped has to read as empty before the drop
+//!   settles, without touching what it holds, in case the drop is pruned.
+//!   The **dropped** range says so, and a reader checks it.
 //! - A key's frontier versions are a sub-range in timeline order, because a
 //!   stamp's bytes sort the way stamps do. Writing a version never needs to
 //!   read the others, and the last one in the range is the current one.
@@ -46,6 +50,7 @@ const AGREEMENT: u8 = 2;
 const PROTOCOL: u8 = 1;
 const SETTLED: u8 = 2;
 const FRONTIER: u8 = 3;
+const DROPPED: u8 = 4;
 
 const CUT: u8 = 1;
 const DATA: u8 = 2;
@@ -84,6 +89,10 @@ pub(crate) enum Record {
         key: Vec<u8>,
         /// Boxed because a stamp holds its author's whole public key.
         stamp: Box<Stamp>,
+    },
+    Dropped {
+        agreement: AgreementId,
+        model: ModelId,
     },
 }
 
@@ -145,6 +154,25 @@ pub(crate) fn frontier(id: AgreementId) -> Vec<u8> {
     [agreement(id), vec![FRONTIER]].concat()
 }
 
+/// Every model dropped by a transaction that hasn't settled.
+pub(crate) fn dropped(id: AgreementId) -> Vec<u8> {
+    [agreement(id), vec![DROPPED]].concat()
+}
+
+/// Whether `model` was dropped by a transaction that hasn't settled: one
+/// entry for each that did.
+pub(crate) fn drops(id: AgreementId, model: ModelId) -> Vec<u8> {
+    [dropped(id), model.as_bytes().to_vec()].concat()
+}
+
+/// The transaction stamped `stamp` dropped `model`.
+pub(crate) fn drop(id: AgreementId, model: ModelId, stamp: Stamp) -> Vec<u8> {
+    let lamport = stamp.lamport.to_be_bytes();
+    let author = stamp.author.as_bytes();
+
+    [drops(id, model), lamport.to_vec(), author.to_vec()].concat()
+}
+
 pub(crate) fn view(id: AgreementId) -> Vec<u8> {
     [protocol(id), vec![VIEW]].concat()
 }
@@ -199,6 +227,12 @@ pub(crate) fn parse(key: &[u8]) -> Option<Record> {
             (&PROTOCOL, rest) => parse_protocol(agreement, rest),
             (&SETTLED, rest) => parse_settled(agreement, rest),
             (&FRONTIER, rest) => parse_version(agreement, rest),
+            (&DROPPED, rest) => {
+                let (model, _) = take_id(rest)?;
+                let model = ModelId::from_bytes(model);
+
+                Some(Record::Dropped { agreement, model })
+            }
             _ => None,
         },
         _ => None,
@@ -345,7 +379,9 @@ mod tests {
         }
 
         assert!(versions(id(), model, b"").starts_with(&frontier(id())));
-        let ranges = [protocol(id()), settled(id()), frontier(id())];
+        let ranges = [protocol(id()), settled(id()), frontier(id()), dropped(id())];
+        assert!(drop(id(), model, stamp(1, phone())).starts_with(&drops(id(), model)));
+        assert!(drops(id(), model).starts_with(&dropped(id())));
         for range in &ranges {
             assert!(range.starts_with(&agreement(id())));
             let overlapping = ranges.iter().filter(|other| other.starts_with(range));

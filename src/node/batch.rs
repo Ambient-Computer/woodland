@@ -152,6 +152,14 @@ impl<'a> TransactionBuilder<'a> {
         self
     }
 
+    /// Drops `model`: everything in it is gone, and it's dead for good.
+    /// Transactions that name it later in the timeline are dropped whole,
+    /// on every device.
+    pub fn drop_model(mut self, model: ModelId) -> Self {
+        self.operations.push(Operation::drop(model));
+        self
+    }
+
     /// Adds the transaction to the batch. Empty transactions are dropped.
     pub fn commit(self) -> Batch<'a> {
         if self.operations.is_empty() {
