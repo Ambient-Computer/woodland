@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::actor::{Peer, Signed, Verified};
 use crate::agreement::{AgreementId, Configuration};
 use crate::clock::VersionVector;
+use crate::lattice::Lattice;
 use crate::model::{ModelId, Operation, Transaction};
 
 /// The agreement's clock and transaction log on this device.
@@ -21,8 +22,9 @@ pub(crate) struct History {
     authored: u64,
     log: BTreeMap<(Peer, u64), Verified<Transaction>>,
     /// Verified transactions that can't be integrated yet: there's a gap
-    /// before them in their author's history, or their author doesn't have
-    /// write access yet. They're re-checked whenever either might change.
+    /// before them in their author's history, something they were written
+    /// on top of is missing, or their author doesn't have write access yet.
+    /// They're re-checked whenever any of those might change.
     waiting: BTreeMap<(Peer, u64), Verified<Transaction>>,
 }
 
@@ -77,9 +79,10 @@ impl History {
         &self.clock.floor
     }
 
-    /// The next transaction this device will author. It takes the next
-    /// sequence number and a Lamport counter above everything seen, so it
-    /// wins over every write this device knows about.
+    /// The next transaction this device will author. It's written on top of
+    /// everything integrated here, and takes the next sequence number and a
+    /// Lamport counter above everything seen, so it wins over every write
+    /// this device knows about.
     pub(crate) fn author(
         &mut self,
         agreement: AgreementId,
@@ -93,6 +96,7 @@ impl History {
             agreement,
             model,
             seq: self.authored,
+            after: self.clock.integrated.clone(),
             lamport: self.clock.lamport,
             operations,
         }
@@ -121,9 +125,10 @@ impl History {
             .map(Verified::payload)
     }
 
-    /// Integrates every waiting transaction that's now in order, whose
-    /// author may write, and that `loaded` says the models can apply now.
-    /// Returns them in integration order, for the models.
+    /// Integrates every waiting transaction that's now in order, follows
+    /// only what's integrated, whose author may write, and that `loaded`
+    /// says the models can apply now. Returns them in integration order,
+    /// for the models.
     ///
     /// Write access is "ever a member of the learned configuration". Removal
     /// can't revoke past writes: replicas learn about a removal at different
@@ -198,10 +203,101 @@ impl History {
         let mut waiting = self.waiting.iter();
         let (&key, _) = waiting.find(|&(&(author, seq), transaction)| {
             seq == self.clock.integrated.next(author)
+                && transaction.payload().after.leq(&self.clock.integrated)
                 && writers.was_ever_member(author)
                 && loaded(transaction.payload())
         })?;
 
         Some(key)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::actor::Signed;
+    use crate::agreement::Genesis;
+    use crate::testing::peers::{identity_of, laptop, nas, phone};
+
+    fn genesis() -> Genesis {
+        Genesis::new([7; 32], [phone().id(), laptop().id(), nas().id()])
+    }
+
+    /// One device's history, and the transactions it has signed.
+    struct Device {
+        me: Peer,
+        history: History,
+    }
+
+    impl Device {
+        fn new(me: Peer) -> Self {
+            let history = History::restore(Clock::default(), Vec::new(), me);
+
+            Self { me, history }
+        }
+
+        /// Writes a transaction and integrates it locally.
+        fn write(&mut self) -> Verified<Transaction> {
+            let model = ModelId::new(genesis().id(), [1; 32]);
+            let transaction = self.history.author(genesis().id(), model, Vec::new());
+            let signed = Signed::sign(&identity_of(self.me), transaction);
+            self.receive(&signed);
+
+            signed
+        }
+
+        /// Takes in a transaction. Returns what could be integrated, as
+        /// `(author, seq)`.
+        fn receive(&mut self, transaction: &Verified<Transaction>) -> Vec<(Peer, u64)> {
+            self.history.offer(transaction.clone());
+            let integrated = self
+                .history
+                .integrate_ready(&genesis().configuration(), |_| true);
+
+            integrated
+                .iter()
+                .map(|it| (it.author(), it.payload().seq))
+                .collect()
+        }
+    }
+
+    #[test]
+    fn a_transaction_names_what_it_was_written_on_top_of() {
+        let (mut phone_device, mut laptop_device) = (Device::new(phone()), Device::new(laptop()));
+
+        let first = phone_device.write();
+        laptop_device.receive(&first);
+        let reply = laptop_device.write();
+
+        assert_eq!(first.payload().after, VersionVector::default());
+        assert_eq!(reply.payload().after, [(phone(), 1)].into_iter().collect());
+        assert!(reply.payload().lamport > first.payload().lamport);
+    }
+
+    #[test]
+    fn a_transaction_waits_for_what_it_was_written_on_top_of() {
+        let (mut phone_device, mut laptop_device) = (Device::new(phone()), Device::new(laptop()));
+        let mut nas_device = Device::new(nas());
+
+        let first = phone_device.write();
+        laptop_device.receive(&first);
+        let reply = laptop_device.write();
+
+        // The reply arrives first. Nothing is missing from the laptop's own
+        // history, but the NAS hasn't seen what the laptop was replying to.
+        assert_eq!(nas_device.receive(&reply), []);
+        assert_eq!(nas_device.receive(&first), [(phone(), 1), (laptop(), 1)]);
+    }
+
+    #[test]
+    fn concurrent_transactions_dont_wait_for_each_other() {
+        let (mut phone_device, mut laptop_device) = (Device::new(phone()), Device::new(laptop()));
+        let mut nas_device = Device::new(nas());
+
+        let ours = phone_device.write();
+        let theirs = laptop_device.write();
+
+        assert_eq!(nas_device.receive(&theirs), [(laptop(), 1)]);
+        assert_eq!(nas_device.receive(&ours), [(phone(), 1)]);
     }
 }
