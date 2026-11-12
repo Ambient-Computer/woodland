@@ -15,7 +15,7 @@
 //!    timeline they sort into.
 //! 5. `model/`: the KV model, derived from the timeline.
 //! 6. `clock/`: version vectors, the stamps that order the timeline, and
-//!    the greatest lower bound that drives compaction.
+//!    the greatest lower bound that settling starts from.
 //! 7. `storage/`: the key-value contract and the key layout.
 //! 8. `actor/`: identities, peers and signatures.
 //!
@@ -42,7 +42,7 @@
 //!   witnessing was rarely the bottleneck, though: the learner needn't be a
 //!   contributor, so any hub that hears a quorum learns for everyone
 //!   (`a_hub_that_isnt_a_contributor_learns_for_everyone`).
-//! - Writing never needs a quorum. Only membership changes and compaction
+//! - Writing never needs a quorum. Only membership changes and settling
 //!   do, so a device offline for months can keep writing.
 //!
 //! **What composes**
@@ -50,9 +50,23 @@
 //! - Lattices everywhere: the agreement's value, its configuration, version
 //!   vectors and the KV model's versions all merge by join, so one "merge
 //!   whatever you hear" rule covers sync, gossip and snapshot catch-up.
-//! - The agreement carries clock progress as its value, so the compaction
-//!   floor is a GLB over an agreed membership, and models stay ignorant of
-//!   both (`group/compaction.rs`).
+//! - The agreement carries clock progress as its value, so the floor is a
+//!   GLB over an agreed membership, and models stay ignorant of both.
+//! - The floor isn't what's final, though. Concurrent transactions sort
+//!   on either side of it, and floors from different memberships aren't
+//!   even comparable. What's final is the longest prefix of the timeline
+//!   inside the floor, and those prefixes form a chain across devices
+//!   whatever decisions each one happened to learn
+//!   (`group/settling.rs`). It takes three promises to make that true:
+//!   contributors acknowledge each configuration before their reports
+//!   count toward it (`Decision::floor`), newcomers catch up before
+//!   their first write (`group/admission.rs`), and a removed device's
+//!   writes count only if a contributor vouches for them
+//!   (`group/removal.rs`).
+//! - Two reads fall out of that split. Settled state is the same on every
+//!   device and only moves forward. The frontier on top of it is the
+//!   latest this device knows, and may still be reordered
+//!   ([`Query::committed`]).
 //! - Many models per agreement: one clock spans them all, and a model is
 //!   just a namespace in that history.
 //! - Signed transactions and attestations can be relayed by anyone, so sync
@@ -62,8 +76,8 @@
 //!   the batch that integrates it, and writes precede every other action,
 //!   so storage is current once a batch's actions are performed. A
 //!   [`Query`] is just a key range and a decoder.
-//! - Compaction bounds hydration. Only protocol state loads at startup, and
-//!   the log in it holds only what isn't compacted yet (`storage/keys.rs`).
+//! - Settling bounds hydration. Only protocol state loads at startup, and
+//!   the log in it holds only what hasn't settled yet (`storage/keys.rs`).
 //! - The timeline and sans-IO. A write is stored as a version of its key
 //!   under its transaction's stamp, so storage's key order is the timeline
 //!   and integrating never reads (`model/kv.rs`,
@@ -71,17 +85,23 @@
 //!   one entry per key and compared stamps in memory, which made every
 //!   change a read-modify-write, and every read a round trip through the
 //!   application. The cost moved to reads, which skip a key's older
-//!   versions, and to storage, which keeps them. Nothing drops them yet.
+//!   versions, and to storage, which keeps them until they settle into
+//!   one value per key. A settled removal leaves nothing, so there are no
+//!   tombstones to collect.
 //!
 //! **What fights**
 //!
-//! - Removal and revocation. RLA gives comparable decisions, not a "first
-//!   decision that included this change". There's no deterministic point at
-//!   which a removed device's writes stop counting, so removal can't revoke
-//!   past or backdated writes (`Log::integrate_ready`).
-//! - Tombstone collection. The floor is enough to drop the log, but not
-//!   enough to drop tombstones, for the same reason plus concurrent
-//!   admission of new members (`group/compaction.rs`).
+//! - Removal and finality. RLA gives comparable decisions, not a "first
+//!   decision that included this change", so there's no moment at which a
+//!   removed device's writes stop counting. Asking who vouched for them
+//!   is deterministic, but it costs data: writes nobody took before
+//!   hearing of the removal are discarded, and a device that isn't a
+//!   contributor and took them anyway has to go back to what's settled
+//!   and sync again (`group/removal.rs`).
+//! - Reconfiguration and settling. Every membership change holds
+//!   settling back until every contributor has acknowledged it, so one
+//!   offline contributor stalls committed reads for everyone. Removing
+//!   it is the only way out.
 //! - Crash faults only. A lying member can forge progress or equivocate,
 //!   and Byzantine RLA is a separate line of research.
 

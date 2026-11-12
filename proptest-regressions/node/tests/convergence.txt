@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 6d001b19df6396be7ea251d93ca897cd7ade9a62100a049e6c90cb24fcc67636 # shrinks to steps = [Restart { device: 2 }, AddFriend { device: 2 }, Disconnect { left: 3, right: 1 }, RemoveNas { device: 0 }, Disconnect { left: 3, right: 0 }, Write { device: 0, key: 0, value: 0 }, Write { device: 2, key: 0, value: 0 }]

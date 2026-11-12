@@ -7,8 +7,8 @@
 //! - [`Stamp`]: a Lamport timestamp plus author, giving every transaction a
 //!   total order for last-writer-wins.
 //! - [`Progress`]: every contributor's self-reported version vector, and the
-//!   greatest lower bound across them: the point every contributor has
-//!   reached, below which history can be compacted.
+//!   greatest lower bound across them: the transactions every
+//!   contributor has integrated.
 //!
 //! None of this knows about agreements or models. The agreement carries
 //! [`Progress`] as the value it agrees on, and models stamp their

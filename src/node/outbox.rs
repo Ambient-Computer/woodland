@@ -29,6 +29,10 @@ impl Outbox {
         self.writes.push(StorageWrite::Put { key, value });
     }
 
+    pub(crate) fn delete(&mut self, key: Vec<u8>) {
+        self.writes.push(StorageWrite::Delete { key });
+    }
+
     pub(crate) fn delete_range(&mut self, start: Vec<u8>, end: Vec<u8>) {
         self.writes.push(StorageWrite::DeleteRange { start, end });
     }

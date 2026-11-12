@@ -1,43 +1,39 @@
-//! Snapshots: model state for a peer that has fallen behind our floor. The
-//! transactions it needs are gone, so it gets their result instead.
+//! Snapshots: settled state for a peer that has fallen behind our settled
+//! cut. The transactions it needs are gone, so it gets their result
+//! instead.
 //!
-//! Model data is never in memory, so sending goes through storage. A
-//! snapshot is a scan of the agreement's data range. Its floor and Lamport
-//! counter are taken when the scan is asked for. Writes come before reads,
-//! so the scan reflects at least that floor. Until the scan is back, the
-//! peer gets the previous snapshot, or nothing.
+//! A snapshot is everything in the settled range of storage: the cut, and
+//! one value per key. They're written together, so a scan of that range
+//! always holds a consistent state and the cut it belongs to, whenever the
+//! scan happens to run. Until the scan is back, the peer gets the previous
+//! snapshot, or nothing.
 //!
-//! Receiving doesn't read anything. Versions merge by union, so a
-//! snapshot's versions are written like a transaction's are.
+//! Receiving doesn't read anything. Settled states are prefixes of one
+//! timeline, so a snapshot that's ahead of ours replaces ours wholesale
+//! (see `settling`). What we hold above its cut stays in the frontier.
 
 use serde::{Deserialize, Serialize};
 
 use crate::agreement::AgreementId;
-use crate::clock::{Stamp, VersionVector};
-use crate::log::Log;
+use crate::encoding;
+use crate::log::{Cut, Log};
 use crate::model::ModelId;
 use crate::node::Outbox;
 use crate::storage::keys::{self, Record};
 
-/// The state of every model, for a peer that has fallen behind our floor.
-///
-/// It reflects every transaction we'd integrated when it was taken, not
-/// just those below the floor. That's fine: the transactions above the
-/// floor travel with it, and writing a version twice changes nothing.
+/// The settled state of every model, and the cut it reflects.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Snapshot {
-    pub(crate) floor: VersionVector,
-    pub(crate) lamport: u64,
-    pub(crate) versions: Vec<Versioned>,
+    pub(crate) cut: Cut,
+    pub(crate) values: Vec<SettledValue>,
 }
 
-/// One version of one key, as a snapshot carries it: exactly what the
+/// One key's settled value, as a snapshot carries it: exactly what the
 /// model stored.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Versioned {
+pub(crate) struct SettledValue {
     pub(crate) model: ModelId,
     pub(crate) key: Vec<u8>,
-    pub(crate) stamp: Stamp,
     pub(crate) value: Vec<u8>,
 }
 
@@ -45,53 +41,50 @@ pub(crate) struct Versioned {
 pub(crate) struct Snapshots {
     /// Our latest snapshot, ready to send.
     prepared: Option<Snapshot>,
-    /// The floor and Lamport counter of the scan in progress, if any.
-    scanning: Option<(VersionVector, u64)>,
+    /// Whether a scan is in progress.
+    scanning: bool,
 }
 
 impl Snapshots {
-    /// Makes sure a snapshot at our current floor is ready or on its way.
+    /// Makes sure a snapshot at our current cut is ready or on its way.
     pub(crate) fn prepare(&mut self, agreement: AgreementId, log: &Log, outbox: &mut Outbox) {
-        let floor = log.floor();
-        let current = self.prepared.as_ref().is_some_and(|it| &it.floor == floor);
-        if current || self.scanning.is_some() {
+        let current = self
+            .prepared
+            .as_ref()
+            .is_some_and(|it| &it.cut == log.cut());
+        if current || self.scanning {
             return;
         }
 
-        self.scanning = Some((floor.clone(), log.clock().lamport));
-        outbox.scan(keys::data(agreement));
+        self.scanning = true;
+        outbox.scan(keys::settled(agreement));
     }
 
     pub(crate) fn prepared(&self) -> Option<&Snapshot> {
         self.prepared.as_ref()
     }
 
-    /// Our scan of the data range is back.
+    /// Our scan of the settled range is back.
     pub(crate) fn scanned(&mut self, entries: &[(Vec<u8>, Vec<u8>)]) {
-        let Some((floor, lamport)) = self.scanning.take() else {
+        if !std::mem::take(&mut self.scanning) {
             return;
-        };
+        }
 
-        let versions = entries.iter().filter_map(|(key, value)| {
-            let Record::Version {
-                model, key, stamp, ..
-            } = keys::parse(key)?
-            else {
-                return None;
-            };
+        let mut cut = None;
+        let mut values = Vec::new();
+        for (key, value) in entries {
+            match keys::parse(key) {
+                Some(Record::Cut(_)) => cut = encoding::decode(value),
+                Some(Record::Settled { model, key, .. }) => values.push(SettledValue {
+                    model,
+                    key,
+                    value: value.clone(),
+                }),
+                _ => {}
+            }
+        }
 
-            Some(Versioned {
-                model,
-                key,
-                stamp: *stamp,
-                value: value.clone(),
-            })
-        });
-
-        self.prepared = Some(Snapshot {
-            floor,
-            lamport,
-            versions: versions.collect(),
-        });
+        // Without a cut, nothing has settled, and there's nothing to send.
+        self.prepared = cut.map(|cut| Snapshot { cut, values });
     }
 }

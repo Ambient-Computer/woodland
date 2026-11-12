@@ -28,8 +28,8 @@ impl Progress {
     /// one of them has integrated.
     ///
     /// A contributor that hasn't reported yet counts as having nothing, which
-    /// pulls the floor to zero. That's deliberate: a new member's arrival
-    /// should never let others compact away history it might still need.
+    /// pulls the floor to zero. That's deliberate: nothing should settle
+    /// before a new member says what it holds.
     pub(crate) fn floor(&self, contributors: &BTreeSet<Peer>) -> VersionVector {
         let mut reports = contributors.iter().map(|peer| self.of(*peer));
 
@@ -42,6 +42,35 @@ impl Progress {
                 report.map(|report| floor.meet(report))
             })
             .unwrap_or_default()
+    }
+
+    /// The least upper bound across `contributors`: history that any one
+    /// of them has integrated.
+    pub(crate) fn ceiling(&self, contributors: &BTreeSet<Peer>) -> VersionVector {
+        let mut ceiling = VersionVector::default();
+        for report in contributors.iter().filter_map(|peer| self.of(*peer)) {
+            ceiling.join(report);
+        }
+
+        ceiling
+    }
+
+    /// How many of `author`'s transactions some one of `contributors` has
+    /// reported integrating.
+    ///
+    /// If none of them has reported at all, any report counts, as with the
+    /// [baseline]. Otherwise contributors who all arrived after `author`
+    /// left could never take its transactions, and so never catch up.
+    ///
+    /// [baseline]: Progress::baseline
+    pub(crate) fn vouched(&self, contributors: &BTreeSet<Peer>, author: Peer) -> u64 {
+        let mut reports = contributors.iter().filter_map(|peer| self.of(*peer));
+        let count = |report: &VersionVector| report.get(author);
+
+        match reports.next() {
+            Some(first) => reports.map(count).fold(count(first), u64::max),
+            None => self.0.values().map(count).max().unwrap_or(0),
+        }
     }
 
     /// What a newcomer must hold before it writes: the greatest lower bound

@@ -7,6 +7,17 @@
 //! waits on the state machine, and the application can use whatever its
 //! storage offers: its own thread, snapshots, cursors.
 //!
+//! # Two ways to read
+//!
+//! - **Optimistic** (the default): the most recent state this device knows
+//!   of. It includes writes that haven't settled, so it can change in ways
+//!   that look like going back: a write that was made earlier, elsewhere,
+//!   can arrive later and take its place in the timeline.
+//! - **Committed** ([`Query::committed`]): only what has settled. Every
+//!   device that reads it sees the same history, in the same order, and it
+//!   only ever moves forward. It trails the optimistic state by however
+//!   long the slowest contributor takes to catch up.
+//!
 //! What it gives up: the node can't say what changed, so there's nothing
 //! here to subscribe to. That would be a change feed, as a separate kind of
 //! action, rather than a different read path.
@@ -14,7 +25,7 @@
 //! [`Node`]: crate::Node
 
 use super::ModelId;
-use super::kv::{self, Version};
+use super::kv;
 use crate::agreement::AgreementId;
 use crate::encoding;
 use crate::storage::keys::{self, Record};
@@ -22,12 +33,14 @@ use crate::storage::keys::{self, Record};
 /// A read of one model's entries: a single key, or every key that starts
 /// with a prefix.
 ///
-/// Scan storage for [`Query::storage_prefix`], then decode what it returns
-/// with [`Query::results`]. Storage holds every version of a key that
-/// hasn't been compacted, and the results hold only the current one.
+/// Scan storage for each of [`Query::storage_prefixes`], then decode
+/// everything they return with [`Query::results`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Query {
-    storage_prefix: Vec<u8>,
+    /// Where the settled values are.
+    settled: Vec<u8>,
+    /// Where the versions that haven't settled are, if they're wanted.
+    frontier: Option<Vec<u8>>,
     /// A single-key query also scans keys that extend it, and drops them.
     exact: Option<Vec<u8>>,
 }
@@ -46,33 +59,57 @@ impl Query {
         Self::new(agreement, model, prefix, false)
     }
 
+    /// Reads only what has settled, leaving out writes that could still be
+    /// reordered.
     #[must_use]
-    pub fn storage_prefix(&self) -> &[u8] {
-        &self.storage_prefix
+    pub fn committed(mut self) -> Self {
+        self.frontier = None;
+        self
+    }
+
+    /// The storage prefixes to scan: one for a committed read, two for an
+    /// optimistic one.
+    pub fn storage_prefixes(&self) -> impl Iterator<Item = &[u8]> {
+        let frontier = self.frontier.as_deref();
+
+        std::iter::once(self.settled.as_slice()).chain(frontier)
     }
 
     /// Decodes scanned storage entries into the application's keys and
-    /// values, in key order. Removed keys are left out.
+    /// values, in key order. Removed keys are left out. `scanned` holds
+    /// the results of every scan, in any order.
     #[must_use]
     pub fn results(&self, scanned: &[(Vec<u8>, Vec<u8>)]) -> Vec<(Vec<u8>, Vec<u8>)> {
-        let versions = scanned
-            .iter()
-            .filter(|(key, _)| key.starts_with(&self.storage_prefix))
-            .filter_map(|(key, value)| {
-                let Record::Version { key, stamp, .. } = keys::parse(key)? else {
-                    return None;
-                };
+        let wanted = |key: &Vec<u8>| self.exact.as_ref().is_none_or(|exact| exact == key);
+        let mut settled = Vec::new();
+        let mut versions = Vec::new();
+        for (stored, value) in scanned.iter().filter(|(key, _)| self.scans(key)) {
+            match keys::parse(stored) {
+                Some(Record::Settled { key, .. }) if wanted(&key) => {
+                    settled.push((key, value.clone()));
+                }
+                Some(Record::Version { key, stamp, .. }) if wanted(&key) => {
+                    if let Some(value) = encoding::decode(value) {
+                        versions.push((key, *stamp, value));
+                    }
+                }
+                _ => {}
+            }
+        }
 
-                Some((key, *stamp, encoding::decode::<Version>(value)?))
-            })
-            .filter(|(key, ..)| self.exact.as_ref().is_none_or(|exact| exact == key));
+        kv::current(settled, versions).into_iter().collect()
+    }
 
-        kv::current(versions).into_iter().collect()
+    /// Whether a stored key is one this query asked for.
+    fn scans(&self, stored: &[u8]) -> bool {
+        self.storage_prefixes()
+            .any(|prefix| stored.starts_with(prefix))
     }
 
     fn new(agreement: AgreementId, model: ModelId, key: &[u8], exact: bool) -> Self {
         Self {
-            storage_prefix: keys::versions(agreement, model, key),
+            settled: keys::settled_value(agreement, model, key),
+            frontier: Some(keys::versions(agreement, model, key)),
             exact: exact.then(|| key.to_vec()),
         }
     }
@@ -93,17 +130,20 @@ mod tests {
         ModelId::new(agreement(), [2; 32])
     }
 
-    fn stored(key: &str, value: Option<&str>) -> (Vec<u8>, Vec<u8>) {
-        stored_at(1, key, value)
+    fn settled(key: &str, value: &str) -> (Vec<u8>, Vec<u8>) {
+        let key = keys::settled_value(agreement(), model(), key.as_bytes());
+
+        (key, value.into())
     }
 
-    fn stored_at(lamport: u64, key: &str, value: Option<&str>) -> (Vec<u8>, Vec<u8>) {
+    /// A version that hasn't settled, written at `lamport`.
+    fn version(lamport: u64, key: &str, value: Option<&str>) -> (Vec<u8>, Vec<u8>) {
         let author = phone();
         let stamp = Stamp { lamport, author };
-        let version = Version(value.map(Into::into));
+        let value: Option<Vec<u8>> = value.map(Into::into);
 
         let key = keys::version(agreement(), model(), key.as_bytes(), stamp);
-        (key, encoding::encode(&version))
+        (key, encoding::encode(&value))
     }
 
     fn result(key: &str, value: &str) -> (Vec<u8>, Vec<u8>) {
@@ -113,8 +153,9 @@ mod tests {
     #[test]
     fn a_key_query_ignores_longer_keys() {
         let scanned = [
-            stored("color", Some("blue")),
-            stored("colors", Some("many")),
+            settled("color", "blue"),
+            settled("colors", "many"),
+            version(1, "colorful", Some("very")),
         ];
         let query = Query::key(agreement(), model(), b"color");
 
@@ -123,17 +164,46 @@ mod tests {
 
     #[test]
     fn only_the_last_version_of_a_key_is_read() {
-        let mut scanned = vec![
-            stored_at(1, "color", Some("red")),
-            stored_at(3, "color", Some("blue")),
-            stored_at(2, "color", None),
-            stored_at(1, "size", Some("large")),
-            stored_at(2, "size", None),
+        let scanned = [
+            version(1, "color", Some("red")),
+            version(3, "color", Some("blue")),
+            version(2, "color", None),
+            version(1, "size", Some("large")),
+            version(2, "size", None),
         ];
-        scanned.sort();
         let query = Query::prefix(agreement(), model(), b"");
 
         assert_eq!(query.results(&scanned), [result("color", "blue")]);
+    }
+
+    #[test]
+    fn versions_take_the_place_of_settled_values() {
+        let scanned = [
+            settled("color", "red"),
+            settled("size", "large"),
+            settled("shape", "round"),
+            version(1, "color", Some("blue")),
+            version(1, "size", None),
+        ];
+        let query = Query::prefix(agreement(), model(), b"");
+
+        assert_eq!(
+            query.results(&scanned),
+            [result("color", "blue"), result("shape", "round")],
+        );
+    }
+
+    #[test]
+    fn a_committed_query_reads_only_whats_settled() {
+        let scanned = [
+            settled("color", "red"),
+            version(1, "color", Some("blue")),
+            version(1, "size", Some("large")),
+        ];
+        let query = Query::prefix(agreement(), model(), b"").committed();
+
+        assert_eq!(query.storage_prefixes().count(), 1);
+        assert_eq!(query.results(&scanned), [result("color", "red")]);
     }
 
     /// A stamp ends in its author's key, which can hold any bytes. A key
@@ -145,9 +215,9 @@ mod tests {
             author: laptop(),
         };
         let long = keys::version(agreement(), model(), b"color", stamp);
-        let long = &long[keys::model(agreement(), model()).len()..];
+        let long = &long[keys::versions(agreement(), model(), b"").len()..];
 
-        let scanned = [stored("color", Some("blue"))];
+        let scanned = [version(1, "color", Some("blue"))];
         let query = Query::key(agreement(), model(), long);
 
         assert_eq!(query.results(&scanned), []);
@@ -156,9 +226,9 @@ mod tests {
     #[test]
     fn a_prefix_query_leaves_out_removed_keys() {
         let scanned = [
-            stored("pet/cat", Some("tabby")),
-            stored("pet/dog", None),
-            stored("pet/fish", Some("goldfish")),
+            settled("pet/cat", "tabby"),
+            version(1, "pet/dog", None),
+            version(1, "pet/fish", Some("goldfish")),
         ];
         let query = Query::prefix(agreement(), model(), b"pet/");
 

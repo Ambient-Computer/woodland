@@ -61,16 +61,36 @@ impl Decision {
     /// removal, its report says everything it took from that device.
     pub(crate) fn floor(&self) -> VersionVector {
         let contributors = self.configuration.members();
-        let everyone_knows = contributors.iter().all(|contributor| {
-            let acknowledged = self.acknowledged.get(contributor);
-            acknowledged.is_some_and(|theirs| self.configuration.leq(theirs))
-        });
+        let everyone_knows = contributors
+            .iter()
+            .all(|&contributor| self.has_acknowledged(contributor));
 
         if everyone_knows {
             self.progress.floor(&contributors)
         } else {
             VersionVector::default()
         }
+    }
+
+    /// Whether every contributor other than `except` has acknowledged this
+    /// decision's configuration.
+    pub(crate) fn acknowledged_by_all_but(&self, except: Peer) -> bool {
+        let contributors = self.configuration.members();
+        let mut others = contributors.iter().filter(|&&it| it != except);
+
+        others.all(|&contributor| self.has_acknowledged(contributor))
+    }
+
+    /// How many of `author`'s transactions a current contributor has
+    /// reported integrating.
+    pub(crate) fn vouched(&self, author: Peer) -> u64 {
+        self.progress.vouched(&self.configuration.members(), author)
+    }
+
+    fn has_acknowledged(&self, contributor: Peer) -> bool {
+        let acknowledged = self.acknowledged.get(&contributor);
+
+        acknowledged.is_some_and(|theirs| self.configuration.leq(theirs))
     }
 }
 

@@ -55,6 +55,11 @@ impl Configuration {
         self.added.contains(&peer) && !self.removed.contains(&peer)
     }
 
+    /// Everyone who was a contributor and no longer is.
+    pub(crate) fn removed(&self) -> impl Iterator<Item = Peer> + '_ {
+        self.added.intersection(&self.removed).copied()
+    }
+
     /// Whether `peer` was ever a contributor, even if removed since.
     pub(crate) fn was_ever_member(&self, peer: Peer) -> bool {
         self.added.contains(&peer)

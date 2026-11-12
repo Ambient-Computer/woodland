@@ -5,17 +5,18 @@
 //! - the **genesis**, so the agreement ID can always be re-derived;
 //! - the agreement **view**, so learned decisions survive restarts, and
 //!   this device's latest **attestation** of it, so revisions keep rising;
-//! - the **clock** (integrated version vector, Lamport counter, floor);
-//! - the **log** of signed transactions above the floor;
+//! - the **clock** (integrated version vector, Lamport counter, cut);
+//! - the **log** of signed transactions that haven't settled;
 //! - writes **held** until this device is admitted, unsigned;
-//! - every **version** of every model key, one storage key each.
+//! - the **settled** value of every model key, and the cut they reflect;
+//! - a **version** for every write that hasn't settled.
 //!
 //! What isn't: remote transactions still waiting, and everything about
 //! peers. Peers re-send whatever we report missing when they reconnect.
 //!
 //! Hydration loads everything except model data: the protocol range of the
-//! key layout. Its size is bounded by what hasn't been compacted yet, not
-//! by how much data the models hold. The node only ever writes model data.
+//! key layout. Its size is bounded by what hasn't settled yet, not by how
+//! much data the models hold. The node only ever writes model data.
 //! Reading it is the application's business (see [`Query`]).
 //!
 //! [`Query`]: crate::Query
@@ -24,7 +25,7 @@ use std::collections::BTreeMap;
 
 use super::Group;
 use super::admission::{self, Held};
-use super::snapshot::Snapshots;
+use super::snapshot::{Snapshot, Snapshots};
 use crate::actor::{Peer, Signed, Verified};
 use crate::agreement::{Agreement, AgreementId, Attestation, Genesis, View};
 use crate::clock::Stamp;
@@ -101,7 +102,14 @@ impl Restored {
                         restored.held.push((index, write));
                     }
                 }
-                Some(Record::Genesis(_) | Record::Version { .. }) | None => {}
+                // Model data isn't in the protocol range, and never loads.
+                Some(
+                    Record::Genesis(_)
+                    | Record::Cut(_)
+                    | Record::Settled { .. }
+                    | Record::Version { .. },
+                )
+                | None => {}
             }
         }
 
@@ -143,7 +151,9 @@ impl From<Restored> for Group {
 
 impl Persisted {
     /// Writes the view, attestation and clock, if they changed since the
-    /// last write.
+    /// last write. The cut is written a second time next to the settled
+    /// values, in the same write that changes them, so a scan of that
+    /// range always holds both.
     pub(super) fn save(
         &mut self,
         id: AgreementId,
@@ -164,6 +174,11 @@ impl Persisted {
         }
 
         if self.clock.as_ref() != Some(log.clock()) {
+            let cut = self.clock.as_ref().map(|it| &it.cut);
+            if cut != Some(log.cut()) {
+                outbox.put(keys::cut(id), log.cut());
+            }
+
             outbox.put(keys::clock(id), log.clock());
             self.clock = Some(log.clock().clone());
         }
@@ -179,8 +194,9 @@ pub(super) fn save_transaction(id: AgreementId, signed: &Signed<Transaction>, ou
     outbox.put(key, signed);
 }
 
-/// Writes what a transaction's operations leave behind, in order, so a
-/// later operation on the same key replaces an earlier one.
+/// Writes what a transaction's operations leave behind, as versions in
+/// the frontier. In order, so a later operation on the same key replaces
+/// an earlier one.
 pub(super) fn save_operations(
     id: AgreementId,
     model: ModelId,
@@ -188,30 +204,62 @@ pub(super) fn save_operations(
     operations: &[Operation],
     outbox: &mut Outbox,
 ) {
-    for operation in operations {
-        let write = operation.write();
-        save_version(id, model, &write.key, stamp, write.value, outbox);
+    for write in operations.iter().map(Operation::write) {
+        outbox.put(keys::version(id, model, &write.key, stamp), &write.value);
     }
 }
 
-/// Writes one version as the model encoded it.
-pub(super) fn save_version(
+/// Moves a settled transaction out of the frontier: each of its writes
+/// becomes its key's settled value, and its versions and its place in the
+/// log are deleted. Transactions must be settled in timeline order.
+pub(super) fn settle_transaction(
     id: AgreementId,
-    model: ModelId,
-    key: &[u8],
-    stamp: Stamp,
-    value: Vec<u8>,
+    transaction: &Verified<Transaction>,
     outbox: &mut Outbox,
 ) {
-    outbox.put_bytes(keys::version(id, model, key, stamp), value);
+    let payload = transaction.payload();
+    for write in payload.operations.iter().map(Operation::write) {
+        let settled = keys::settled_value(id, payload.model, &write.key);
+        match write.value {
+            Some(value) => outbox.put_bytes(settled, value),
+            None => outbox.delete(settled),
+        }
+    }
+
+    forget_transaction(id, transaction, outbox);
 }
 
-pub(super) fn forget_transactions(
+/// Deletes a transaction's versions and its place in the log. A snapshot
+/// already holds what it settled to.
+pub(super) fn forget_transaction(
     id: AgreementId,
-    author: Peer,
-    through: u64,
+    transaction: &Verified<Transaction>,
     outbox: &mut Outbox,
 ) {
-    let (start, end) = keys::log_through(id, author, through);
+    let (author, payload) = (transaction.author(), transaction.payload());
+    let stamp = payload.stamp(author);
+    for write in payload.operations.iter().map(Operation::write) {
+        outbox.delete(keys::version(id, payload.model, &write.key, stamp));
+    }
+
+    outbox.delete(keys::log(id, author, payload.seq));
+}
+
+/// Replaces everything settled with a snapshot's state.
+pub(super) fn save_snapshot(id: AgreementId, snapshot: &Snapshot, outbox: &mut Outbox) {
+    let (start, end) = keys::range(keys::settled(id));
     outbox.delete_range(start, end);
+    outbox.put(keys::cut(id), &snapshot.cut);
+    for it in &snapshot.values {
+        let key = keys::settled_value(id, it.model, &it.key);
+        outbox.put_bytes(key, it.value.clone());
+    }
+}
+
+/// Deletes everything that hasn't settled, for a rewind.
+pub(super) fn forget_frontier(id: AgreementId, outbox: &mut Outbox) {
+    for prefix in [keys::logs(id), keys::frontier(id)] {
+        let (start, end) = keys::range(prefix);
+        outbox.delete_range(start, end);
+    }
 }

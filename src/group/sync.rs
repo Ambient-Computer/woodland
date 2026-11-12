@@ -8,17 +8,22 @@
 //!
 //! 1. Both sides send their **clock** when it changes. A peer's clock says
 //!    exactly which transactions it has.
-//! 2. Knowing a peer's clock, send the **transactions** it lacks. If it's
-//!    behind our floor, the transactions it needs are gone, so send a
-//!    **snapshot** (our model state) first, and nothing else until it's
-//!    caught up to the floor.
+//! 2. Knowing a peer's clock, send the **transactions** it lacks. If it
+//!    lacks some that have settled here, they're gone, so send a
+//!    **snapshot** (our settled state) first, and nothing else until it
+//!    holds everything we've settled.
 //! 3. Send our agreement **view** whenever it changes, and every
 //!    **attestation** newer than what we last sent, whoever signed it.
 //!    That's all the agreement protocol needs: views merge, and matching
 //!    attestations are witnesses.
 //!
+//! A device that [rewinds] says so, and its peers forget what they thought
+//! it had.
+//!
 //! Sends are best-effort. Everything here resets when the peer disconnects,
 //! so reconnecting re-sends whatever might have been lost.
+//!
+//! [rewinds]: super::removal
 
 use std::collections::BTreeMap;
 
@@ -37,6 +42,9 @@ use crate::log::Transaction;
 pub(crate) struct GroupMessage {
     pub(crate) view: Option<View>,
     pub(crate) attestations: Vec<Signed<Attestation>>,
+    /// The sender dropped what it had integrated. Its clock, in this
+    /// message, replaces whatever it said before.
+    pub(crate) rewound: bool,
     pub(crate) clock: Option<VersionVector>,
     pub(crate) snapshot: Option<Snapshot>,
     pub(crate) transactions: Vec<Signed<Transaction>>,
@@ -60,6 +68,8 @@ pub(crate) struct PeerSync {
     /// The last view and clock we sent, so we only send changes.
     sent_view: Option<View>,
     sent_clock: Option<VersionVector>,
+    /// Whether we rewound and haven't told the peer yet.
+    rewound: bool,
     /// The latest revision sent from each attesting replica.
     sent_attestations: BTreeMap<Peer, u64>,
 }
@@ -70,10 +80,20 @@ impl PeerSync {
         self.has.get_or_insert_default().join(clock);
     }
 
-    /// Whether the peer lacks transactions we've already compacted, so only
+    /// The peer rewound: it has nothing until it says otherwise.
+    pub(crate) fn heard_rewind(&mut self) {
+        self.has = None;
+    }
+
+    /// We rewound. The peer must hear about it.
+    pub(crate) fn rewound(&mut self) {
+        self.rewound = true;
+    }
+
+    /// Whether the peer lacks transactions that have settled here, so only
     /// a snapshot can catch it up.
-    pub(crate) fn is_behind(&self, floor: &VersionVector) -> bool {
-        self.has.as_ref().is_some_and(|has| !floor.leq(has))
+    pub(crate) fn is_behind(&self, settled: &VersionVector) -> bool {
+        self.has.as_ref().is_some_and(|has| !settled.leq(has))
     }
 
     /// Builds what `peer` needs, and assumes it will arrive. `snapshot` is
@@ -103,26 +123,27 @@ impl PeerSync {
             }
         }
 
-        if self.sent_clock.as_ref() != Some(log.integrated()) {
+        message.rewound = std::mem::take(&mut self.rewound);
+        if message.rewound || self.sent_clock.as_ref() != Some(log.integrated()) {
             self.sent_clock = Some(log.integrated().clone());
             message.clock = Some(log.integrated().clone());
         }
 
         if let Some(has) = &mut self.has {
-            // Our snapshot may trail our floor while a newer one is being
+            // Our snapshot may trail our cut while a newer one is being
             // prepared. It's still worth sending if it gets the peer closer.
             if let Some(snapshot) = snapshot
-                && !log.floor().leq(has)
-                && !snapshot.floor.leq(has)
+                && !log.settled().leq(has)
+                && !snapshot.cut.settled.leq(has)
             {
                 message.snapshot = Some(snapshot.clone());
-                has.join(&snapshot.floor);
+                has.join(&snapshot.cut.settled);
             }
 
             // Not while the peer is still behind: counting what we send as
-            // had would hide the gap below the floor, and no snapshot would
+            // had would hide the gap below our cut, and no snapshot would
             // ever be sent to fill it.
-            if log.floor().leq(has) {
+            if log.settled().leq(has) {
                 message.transactions = log.missing_from(has);
                 has.join(log.integrated());
             }

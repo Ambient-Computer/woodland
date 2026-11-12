@@ -5,10 +5,12 @@
 //! [GENESIS][agreement]                                → Genesis
 //! [AGREEMENT][agreement][PROTOCOL][VIEW]              → agreement View
 //! [AGREEMENT][agreement][PROTOCOL][ATTESTATION]       → our latest Signed<Attestation>
-//! [AGREEMENT][agreement][PROTOCOL][CLOCK]             → integrated clock, floor
+//! [AGREEMENT][agreement][PROTOCOL][CLOCK]             → integrated clock, settled cut
 //! [AGREEMENT][agreement][PROTOCOL][LOG][author][seq]  → Signed<Transaction>
 //! [AGREEMENT][agreement][PROTOCOL][HELD][index]       → a write held until admission
-//! [AGREEMENT][agreement][DATA][model][key…][stamp]    → KV Version
+//! [AGREEMENT][agreement][SETTLED][CUT]                → which transactions are settled
+//! [AGREEMENT][agreement][SETTLED][DATA][model][key…]  → the key's settled value
+//! [AGREEMENT][agreement][FRONTIER][model][key…][stamp] → a version: a value, or none
 //! ```
 //!
 //! Identifiers are fixed width and counters are big-endian, so byte order
@@ -21,14 +23,17 @@
 //!
 //! - Everything an agreement owns shares one prefix, so dropping an
 //!   agreement is one range.
-//! - **Protocol** state (what replication needs) and **data** (what models
-//!   hold) are separate ranges. Hydration loads the protocol range, which
-//!   stays small because compaction trims the log. The node never loads
-//!   data at all, except to send a snapshot.
-//! - An author's log is a sub-range, so compacting it is one range delete.
-//! - A key's versions are a sub-range in timeline order, because a stamp's
-//!   bytes sort the way stamps do. Writing a version never needs to read
-//!   the others, and the last one in the range is the current one.
+//! - **Protocol** state (what replication needs) and model data are
+//!   separate ranges. Hydration loads the protocol range, which stays small
+//!   because settling trims the log. The node never loads model data at
+//!   all, except to send a snapshot.
+//! - Model data is split by whether it can still change. The **settled**
+//!   range holds one value per key and the cut it reflects, so one scan of
+//!   it is a consistent snapshot, whenever the scan happens to run. The
+//!   **frontier** holds what transactions above the cut wrote.
+//! - A key's frontier versions are a sub-range in timeline order, because a
+//!   stamp's bytes sort the way stamps do. Writing a version never needs to
+//!   read the others, and the last one in the range is the current one.
 
 use crate::actor::Peer;
 use crate::agreement::AgreementId;
@@ -39,6 +44,10 @@ const GENESIS: u8 = 1;
 const AGREEMENT: u8 = 2;
 
 const PROTOCOL: u8 = 1;
+const SETTLED: u8 = 2;
+const FRONTIER: u8 = 3;
+
+const CUT: u8 = 1;
 const DATA: u8 = 2;
 
 const VIEW: u8 = 1;
@@ -62,6 +71,12 @@ pub(crate) enum Record {
     Held {
         agreement: AgreementId,
         index: u64,
+    },
+    Cut(AgreementId),
+    Settled {
+        agreement: AgreementId,
+        model: ModelId,
+        key: Vec<u8>,
     },
     Version {
         agreement: AgreementId,
@@ -91,14 +106,43 @@ pub(crate) fn protocol(id: AgreementId) -> Vec<u8> {
     [agreement(id), vec![PROTOCOL]].concat()
 }
 
-/// Every model's data.
-pub(crate) fn data(id: AgreementId) -> Vec<u8> {
-    [agreement(id), vec![DATA]].concat()
+/// Every transaction in the log.
+pub(crate) fn logs(id: AgreementId) -> Vec<u8> {
+    [protocol(id), vec![LOG]].concat()
 }
 
-/// One model's data.
-pub(crate) fn model(id: AgreementId, model: ModelId) -> Vec<u8> {
-    [data(id), model.as_bytes().to_vec()].concat()
+/// Every key that starts with `prefix`, as a key range. The prefix must
+/// not end in `0xFF`. None of this module's do.
+pub(crate) fn range(mut prefix: Vec<u8>) -> (Vec<u8>, Vec<u8>) {
+    let start = prefix.clone();
+    if let Some(last) = prefix.last_mut() {
+        *last = last.saturating_add(1);
+    }
+
+    (start, prefix)
+}
+
+/// Everything settled: the cut, and every model's settled values. What a
+/// snapshot is made of.
+pub(crate) fn settled(id: AgreementId) -> Vec<u8> {
+    [agreement(id), vec![SETTLED]].concat()
+}
+
+/// Which transactions the settled values reflect.
+pub(crate) fn cut(id: AgreementId) -> Vec<u8> {
+    [settled(id), vec![CUT]].concat()
+}
+
+/// The settled value of `key`, and of every key that starts with it.
+pub(crate) fn settled_value(id: AgreementId, model: ModelId, key: &[u8]) -> Vec<u8> {
+    let model = model.as_bytes().to_vec();
+
+    [settled(id), vec![DATA], model, key.to_vec()].concat()
+}
+
+/// Everything written by transactions that haven't settled.
+pub(crate) fn frontier(id: AgreementId) -> Vec<u8> {
+    [agreement(id), vec![FRONTIER]].concat()
 }
 
 pub(crate) fn view(id: AgreementId) -> Vec<u8> {
@@ -126,31 +170,21 @@ pub(crate) fn log(id: AgreementId, author: Peer, seq: u64) -> Vec<u8> {
     [log_of(id, author), seq.to_be_bytes().to_vec()].concat()
 }
 
-/// One author's transactions with `seq` in `1..=through`, as a key range.
-pub(crate) fn log_through(id: AgreementId, author: Peer, through: u64) -> (Vec<u8>, Vec<u8>) {
-    (log(id, author, 0), log(id, author, through + 1))
-}
-
 /// Every version of `key`, and of every key that starts with it.
-pub(crate) fn versions(id: AgreementId, model_id: ModelId, key: &[u8]) -> Vec<u8> {
-    [model(id, model_id), key.to_vec()].concat()
+pub(crate) fn versions(id: AgreementId, model: ModelId, key: &[u8]) -> Vec<u8> {
+    [frontier(id), model.as_bytes().to_vec(), key.to_vec()].concat()
 }
 
 /// What the transaction stamped `stamp` wrote to `key`.
-pub(crate) fn version(id: AgreementId, model_id: ModelId, key: &[u8], stamp: Stamp) -> Vec<u8> {
+pub(crate) fn version(id: AgreementId, model: ModelId, key: &[u8], stamp: Stamp) -> Vec<u8> {
     let lamport = stamp.lamport.to_be_bytes();
     let author = stamp.author.as_bytes();
 
-    [
-        versions(id, model_id, key),
-        lamport.to_vec(),
-        author.to_vec(),
-    ]
-    .concat()
+    [versions(id, model, key), lamport.to_vec(), author.to_vec()].concat()
 }
 
 fn log_of(id: AgreementId, author: Peer) -> Vec<u8> {
-    [protocol(id), vec![LOG], author.as_bytes().to_vec()].concat()
+    [logs(id), author.as_bytes().to_vec()].concat()
 }
 
 /// Reads a key written by this module. `None` means it isn't one of ours.
@@ -163,7 +197,8 @@ pub(crate) fn parse(key: &[u8]) -> Option<Record> {
         GENESIS if rest.is_empty() => Some(Record::Genesis(agreement)),
         AGREEMENT => match rest.split_first()? {
             (&PROTOCOL, rest) => parse_protocol(agreement, rest),
-            (&DATA, rest) => parse_data(agreement, rest),
+            (&SETTLED, rest) => parse_settled(agreement, rest),
+            (&FRONTIER, rest) => parse_version(agreement, rest),
             _ => None,
         },
         _ => None,
@@ -195,7 +230,24 @@ fn parse_protocol(agreement: AgreementId, key: &[u8]) -> Option<Record> {
     }
 }
 
-fn parse_data(agreement: AgreementId, key: &[u8]) -> Option<Record> {
+fn parse_settled(agreement: AgreementId, key: &[u8]) -> Option<Record> {
+    let (&record, rest) = key.split_first()?;
+    match record {
+        CUT if rest.is_empty() => Some(Record::Cut(agreement)),
+        DATA => {
+            let (model, key) = take_id(rest)?;
+
+            Some(Record::Settled {
+                agreement,
+                model: ModelId::from_bytes(model),
+                key: key.to_vec(),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn parse_version(agreement: AgreementId, key: &[u8]) -> Option<Record> {
     let (model, key) = take_id(key)?;
     let (key, author) = key.split_last_chunk::<32>()?;
     let (key, lamport) = key.split_last_chunk::<8>()?;
@@ -254,6 +306,15 @@ mod tests {
                 index: 4
             }),
         );
+        assert_eq!(parse(&cut(id())), Some(Record::Cut(id())));
+        assert_eq!(
+            parse(&settled_value(id(), model, b"color")),
+            Some(Record::Settled {
+                agreement: id(),
+                model,
+                key: b"color".to_vec(),
+            }),
+        );
         assert_eq!(
             parse(&version(id(), model, b"color", stamp(3, phone()))),
             Some(Record::Version {
@@ -266,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn protocol_state_and_data_are_separate_ranges() {
+    fn protocol_state_settled_data_and_the_frontier_are_separate_ranges() {
         let model = ModelId::new(id(), [2; 32]);
 
         for key in [
@@ -279,10 +340,17 @@ mod tests {
             assert!(key.starts_with(&protocol(id())));
         }
 
-        assert!(versions(id(), model, b"").starts_with(&data(id())));
-        assert!(!versions(id(), model, b"").starts_with(&protocol(id())));
-        assert!(protocol(id()).starts_with(&agreement(id())));
-        assert!(data(id()).starts_with(&agreement(id())));
+        for key in [cut(id()), settled_value(id(), model, b"")] {
+            assert!(key.starts_with(&settled(id())));
+        }
+
+        assert!(versions(id(), model, b"").starts_with(&frontier(id())));
+        let ranges = [protocol(id()), settled(id()), frontier(id())];
+        for range in &ranges {
+            assert!(range.starts_with(&agreement(id())));
+            let overlapping = ranges.iter().filter(|other| other.starts_with(range));
+            assert_eq!(overlapping.count(), 1);
+        }
     }
 
     #[test]
@@ -304,12 +372,21 @@ mod tests {
     }
 
     #[test]
-    fn log_keys_sort_by_sequence() {
-        let (start, end) = log_through(id(), phone(), 256);
+    fn a_prefixes_range_holds_exactly_its_keys() {
+        let model = ModelId::new(id(), [2; 32]);
+        let (start, end) = range(logs(id()));
 
-        assert!(start < log(id(), phone(), 1));
+        assert!(start <= log(id(), phone(), 0));
+        assert!(log(id(), laptop(), u64::MAX) < end);
+        assert!(clock(id()) < start);
+        assert!(end <= held(id(), 0));
+        assert!(end < cut(id()));
+        assert!(end < versions(id(), model, b""));
+    }
+
+    #[test]
+    fn log_keys_sort_by_sequence() {
         assert!(log(id(), phone(), 255) < log(id(), phone(), 256));
-        assert!(log(id(), phone(), 256) < end);
-        assert!(end <= log(id(), phone(), 257));
+        assert!(log(id(), phone(), 256) < log(id(), phone(), 257));
     }
 }

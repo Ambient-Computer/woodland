@@ -34,6 +34,10 @@
 //! decision, and a contributor who hasn't reported yet holds the floor at
 //! zero, so nothing settles without them.
 //!
+//! A newcomer that integrated a removed contributor's writes while it was
+//! only observing also waits until those are vouched for. Its first report
+//! would vouch for them otherwise (see `removal`).
+//!
 //! Admission is remembered (see `log::Clock`). A contributor that learns
 //! of newer history while offline keeps writing: it's already counted, so
 //! the floor waits for it.

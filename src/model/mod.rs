@@ -24,7 +24,7 @@
 //!
 //! An agreement can hold any number of models. The agreement's clock counts
 //! transactions across all of them, so one version vector (and one
-//! compaction floor) covers every model at once. A model is just a
+//! settled cut) covers every model at once. A model is just a
 //! namespace inside that history: creating one is choosing an ID, and the
 //! first transaction that names it brings it into existence everywhere.
 //!
@@ -41,12 +41,16 @@ pub use query::Query;
 use crate::agreement::AgreementId;
 use crate::encoding;
 
-/// What one operation leaves in storage, at its transaction's place in the
-/// timeline. Both the key and the value are the model's to interpret.
+/// What one operation leaves under a key, at its transaction's place in
+/// the timeline. Both the key and the value are the model's to interpret.
+///
+/// It's kept as a version of the key until the transaction settles, and
+/// then becomes the key's settled value (see `group::settling`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Write {
     pub(crate) key: Vec<u8>,
-    pub(crate) value: Vec<u8>,
+    /// `None` leaves the key without a value.
+    pub(crate) value: Option<Vec<u8>>,
 }
 
 /// Names a model within an agreement. The BLAKE3 hash of the agreement's ID

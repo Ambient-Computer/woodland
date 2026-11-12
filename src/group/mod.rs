@@ -3,26 +3,28 @@
 //! This is where the independent pieces meet. Each one stays ignorant of
 //! the others, and the group is the only place that knows how they connect:
 //!
-//! - the **agreement** decides who may write, and proves the compaction
-//!   floor;
+//! - the **agreement** decides who may write, and proves how much of the
+//!   timeline has settled;
 //! - the **log** (transactions and their clock) orders and deduplicates
 //!   transactions;
 //! - the **models** say what each transaction writes to storage;
-//! - **admission** holds this device's writes until it may make them.
+//! - **admission** holds this device's writes until it may make them;
+//! - **removal** says which of a removed contributor's writes still count.
 //!
 //! The life of a batch, from the group's point of view:
 //!
 //! 1. [`write`](Group::write) and [`receive`](Group::receive) take in local
 //!    and remote changes. Transactions only queue up at this point.
-//! 2. [`settle`](Group::settle) runs once all events are in. It learns what
-//!    it can, integrates queued transactions, signs held writes if this
-//!    device was admitted, reports progress, compacts, and persists what
-//!    changed.
+//! 2. [`advance`](Group::advance) runs once all events are in. It learns
+//!    what it can, integrates queued transactions, signs held writes if
+//!    this device was admitted, reports progress, settles what's final,
+//!    and persists what changed.
 //! 3. [`outgoing`](Group::outgoing) says what each peer is missing.
 
 mod admission;
-mod compaction;
 mod persistence;
+mod removal;
+mod settling;
 mod snapshot;
 mod sync;
 
@@ -37,6 +39,7 @@ pub(crate) use sync::{GroupMessage, VerifiedParts};
 use crate::actor::{Identity, Peer, Signed};
 use crate::agreement::{Agreement, AgreementId, Change, Genesis};
 use crate::clock::Progress;
+use crate::lattice::Lattice;
 use crate::log::Log;
 use crate::model::{ModelId, Operation};
 use crate::node::Outbox;
@@ -52,7 +55,7 @@ pub(crate) struct Group {
     snapshots: Snapshots,
     /// Connected peers subscribed to this agreement.
     peers: BTreeMap<Peer, PeerSync>,
-    /// What's in storage, so `settle` only writes what changed.
+    /// What's in storage, so `advance` only writes what changed.
     persisted: persistence::Persisted,
 }
 
@@ -87,7 +90,10 @@ impl Group {
         operations: Vec<Operation>,
         outbox: &mut Outbox,
     ) {
-        if self.log.admitted() {
+        let configuration = &self.agreement.learned().configuration;
+        if configuration.removed().any(|peer| peer == self.me) {
+            tracing::warn!("removed from the agreement, dropped a write");
+        } else if self.log.admitted() {
             self.sign(identity, model, operations, outbox);
         } else {
             self.held.hold(self.id, (model, operations), outbox);
@@ -114,10 +120,14 @@ impl Group {
             self.agreement.hear(attestation);
         }
 
-        if let Some(clock) = &message.clock
-            && let Some(peer) = self.peers.get_mut(&from)
-        {
-            peer.heard_clock(clock);
+        if let Some(peer) = self.peers.get_mut(&from) {
+            if message.rewound {
+                peer.heard_rewind();
+            }
+
+            if let Some(clock) = &message.clock {
+                peer.heard_clock(clock);
+            }
         }
 
         if let Some(snapshot) = &message.snapshot {
@@ -129,23 +139,24 @@ impl Group {
         }
     }
 
-    /// Our scan of the data range is back, for a snapshot.
+    /// Our scan of the settled range is back, for a snapshot.
     pub(crate) fn scanned(&mut self, entries: &[(Vec<u8>, Vec<u8>)]) {
         self.snapshots.scanned(entries);
     }
 
     /// Runs after every event in the batch is in. `identity` must be this
-    /// device's, for attesting to the settled view.
-    pub(crate) fn settle(&mut self, identity: &Identity, outbox: &mut Outbox) {
+    /// device's, for attesting to the view it ends up with.
+    pub(crate) fn advance(&mut self, identity: &Identity, outbox: &mut Outbox) {
         // Learning first: a decision may grant write access to transactions
         // that are already waiting.
         self.agreement.try_learn();
+        self.rewind(outbox);
         self.integrate(outbox);
         self.admit(identity, outbox);
 
         // Contributors report how far they've gotten, and which
         // configuration they knew of. That report is what eventually lets
-        // everyone compact.
+        // everyone settle.
         if self.may_report() {
             let report = Progress::report(self.me, self.log.integrated().clone());
             self.agreement.propose_progress(&report);
@@ -153,8 +164,8 @@ impl Group {
         }
 
         self.agreement.try_learn();
-        for (author, through) in compaction::compact(&mut self.log, self.agreement.learned()) {
-            persistence::forget_transactions(self.id, author, through, outbox);
+        for transaction in settling::settle(&mut self.log, self.agreement.learned()) {
+            persistence::settle_transaction(self.id, &transaction, outbox);
         }
 
         // Last, so it covers everything above. It's saved in the same write
@@ -172,11 +183,11 @@ impl Group {
         }
     }
 
-    /// What `peer` is missing. A peer behind our floor needs a snapshot,
-    /// which may have to be read from storage first.
+    /// What `peer` is missing. A peer that lacks what we've settled needs
+    /// a snapshot, which may have to be read from storage first.
     pub(crate) fn outgoing(&mut self, peer: Peer, outbox: &mut Outbox) -> Option<GroupMessage> {
         let sync = self.peers.get_mut(&peer)?;
-        if sync.is_behind(self.log.floor()) {
+        if sync.is_behind(self.log.settled()) {
             self.snapshots.prepare(self.id, &self.log, outbox);
         }
 
@@ -195,7 +206,7 @@ impl Group {
     /// Learning needs a quorum to hold the same view at once. Every report
     /// changes the view, so contributors that report on every batch keep
     /// moving the target, and with steady writes nothing is ever learned
-    /// (see `steady_writing_still_compacts`). Holding each contributor to
+    /// (see `steady_writing_still_settles`). Holding each contributor to
     /// one report in flight bounds the churn, and the floor trails by about
     /// one round.
     fn may_report(&self) -> bool {
@@ -214,7 +225,10 @@ impl Group {
     fn admit(&mut self, identity: &Identity, outbox: &mut Outbox) {
         let learned = self.agreement.learned();
         if !self.log.admitted() {
-            if admission::caught_up(learned, self.me, self.log.integrated()) {
+            let integrated = self.log.integrated();
+            if admission::caught_up(learned, self.me, integrated)
+                && !removal::holds_unvouched(learned, integrated)
+            {
                 self.log.admit();
             } else if learned.configuration.was_ever_member(self.me)
                 && !learned.configuration.is_member(self.me)
@@ -255,12 +269,34 @@ impl Group {
         self.log.offer(signed);
     }
 
-    /// Integrates whatever is in order and authorized, and writes what it
+    /// Goes back to what has settled if anything integrated since includes
+    /// transactions the contributors agreed to discard (see `removal`).
+    /// Peers send the rest again, without them.
+    fn rewind(&mut self, outbox: &mut Outbox) {
+        let learned = self.agreement.learned();
+        let (me, admitted) = (self.me, self.log.admitted());
+        self.log
+            .forget_waiting(|author, seq| removal::abandoned(learned, me, author, seq));
+
+        if !removal::must_rewind(learned, me, admitted, self.log.integrated()) {
+            return;
+        }
+
+        tracing::info!("rewinding: holding transactions nobody vouched for");
+        self.log.rewind();
+        persistence::forget_frontier(self.id, outbox);
+        for peer in self.peers.values_mut() {
+            peer.rewound();
+        }
+    }
+
+    /// Integrates whatever is in order and counts, and writes what it
     /// leaves behind. Nothing is read first: a transaction's versions go
     /// wherever its stamp puts them in the timeline.
     fn integrate(&mut self, outbox: &mut Outbox) {
-        let writers = &self.agreement.learned().configuration;
-        for transaction in self.log.integrate_ready(writers) {
+        let learned = self.agreement.learned();
+        let counts = |author, seq| removal::counts(learned, author, seq);
+        for transaction in self.log.integrate_ready(counts) {
             let author = transaction.author();
             let payload = transaction.payload();
             persistence::save_transaction(self.id, transaction.signed(), outbox);
@@ -270,16 +306,23 @@ impl Group {
         }
     }
 
-    /// Takes on a peer's snapshot. Its versions merge with ours by union.
+    /// Takes on a peer's snapshot, if it has settled more than we have.
+    /// Its state replaces ours: both are prefixes of one timeline (see
+    /// `settling`), so the longer one already contains the shorter.
     fn absorb(&mut self, snapshot: &Snapshot, outbox: &mut Outbox) {
-        for it in &snapshot.versions {
-            let value = it.value.clone();
-            persistence::save_version(self.id, it.model, &it.key, it.stamp, value, outbox);
+        let (ours, theirs) = (self.log.settled(), &snapshot.cut.settled);
+        if theirs.leq(ours) {
+            return;
         }
 
-        let forgotten = self.log.absorb(&snapshot.floor, snapshot.lamport);
-        for (author, through) in forgotten {
-            persistence::forget_transactions(self.id, author, through, outbox);
+        if !ours.leq(theirs) {
+            tracing::warn!("ignored a snapshot that settled a different history");
+            return;
+        }
+
+        persistence::save_snapshot(self.id, snapshot, outbox);
+        for transaction in self.log.absorb(&snapshot.cut) {
+            persistence::forget_transaction(self.id, &transaction, outbox);
         }
     }
 }
