@@ -7,17 +7,20 @@
 //!   floor;
 //! - the **log** (transactions and their clock) orders and deduplicates
 //!   transactions;
-//! - the **models** say what each transaction writes to storage.
+//! - the **models** say what each transaction writes to storage;
+//! - **admission** holds this device's writes until it may make them.
 //!
 //! The life of a batch, from the group's point of view:
 //!
 //! 1. [`write`](Group::write) and [`receive`](Group::receive) take in local
 //!    and remote changes. Transactions only queue up at this point.
 //! 2. [`settle`](Group::settle) runs once all events are in. It learns what
-//!    it can, integrates queued transactions, reports progress, compacts,
-//!    and persists what changed.
+//!    it can, integrates queued transactions, signs held writes if this
+//!    device was admitted, reports progress, compacts, and persists what
+//!    changed.
 //! 3. [`outgoing`](Group::outgoing) says what each peer is missing.
 
+mod admission;
 mod compaction;
 mod persistence;
 mod snapshot;
@@ -25,6 +28,7 @@ mod sync;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use admission::Held;
 pub(crate) use persistence::Restored;
 use snapshot::{Snapshot, Snapshots};
 use sync::PeerSync;
@@ -43,6 +47,8 @@ pub(crate) struct Group {
     me: Peer,
     agreement: Agreement,
     log: Log,
+    /// Writes made before this device was admitted.
+    held: Held,
     snapshots: Snapshots,
     /// Connected peers subscribed to this agreement.
     peers: BTreeMap<Peer, PeerSync>,
@@ -71,9 +77,9 @@ impl Group {
         &self.log
     }
 
-    /// Commits a local transaction. It's signed now, so the stored and sent
-    /// bytes are final, and it's persisted right away so it survives a
-    /// restart even if this device can't integrate it yet.
+    /// Commits a local transaction, or holds it until this device is
+    /// admitted. Either way it's persisted right away, so it survives a
+    /// restart.
     pub(crate) fn write(
         &mut self,
         identity: &Identity,
@@ -81,11 +87,11 @@ impl Group {
         operations: Vec<Operation>,
         outbox: &mut Outbox,
     ) {
-        let transaction = self.log.author(self.id, model, operations);
-        let signed = Signed::sign(identity, transaction);
-        persistence::save_transaction(self.id, signed.signed(), outbox);
-
-        self.log.offer(signed);
+        if self.log.admitted() {
+            self.sign(identity, model, operations, outbox);
+        } else {
+            self.held.hold(self.id, (model, operations), outbox);
+        }
     }
 
     pub(crate) fn propose(&mut self, change: Change) {
@@ -135,6 +141,7 @@ impl Group {
         // that are already waiting.
         self.agreement.try_learn();
         self.integrate(outbox);
+        self.admit(identity, outbox);
 
         // Contributors report how far they've gotten. That report is what
         // eventually lets everyone compact.
@@ -175,8 +182,13 @@ impl Group {
         sync.outgoing(peer, &self.agreement, &self.log, snapshot)
     }
 
-    /// Whether to propose a new progress report: only as a contributor, and
-    /// only once the previous report has been learned.
+    /// Whether to propose a new progress report: only as a contributor
+    /// that has been admitted, and only once the previous report has been
+    /// learned.
+    ///
+    /// A newcomer's report is a promise that everything it writes builds on
+    /// it, and other newcomers catch up to it. Until it's admitted, it
+    /// hasn't caught up to anything worth promising.
     ///
     /// Learning needs a quorum to hold the same view at once. Every report
     /// changes the view, so contributors that report on every batch keep
@@ -189,7 +201,55 @@ impl Group {
         let proposed = &self.agreement.view().candidate;
 
         learned.configuration.is_member(self.me)
+            && self.log.admitted()
             && learned.progress.of(self.me) == proposed.of(self.me)
+    }
+
+    /// Admits this device once it has learned it's a contributor and caught
+    /// up, then signs the writes it was holding. A device that learns it
+    /// was removed before it was ever admitted drops them.
+    fn admit(&mut self, identity: &Identity, outbox: &mut Outbox) {
+        let learned = self.agreement.learned();
+        if !self.log.admitted() {
+            if admission::caught_up(learned, self.me, self.log.integrated()) {
+                self.log.admit();
+            } else if learned.configuration.was_ever_member(self.me)
+                && !learned.configuration.is_member(self.me)
+            {
+                let dropped = self.held.release(self.id, outbox).len();
+                if dropped > 0 {
+                    tracing::warn!(dropped, "removed before admission, dropped held writes");
+                }
+            }
+        }
+
+        if self.log.admitted() {
+            let held = self.held.release(self.id, outbox);
+            let any = !held.is_empty();
+            for (model, operations) in held {
+                self.sign(identity, model, operations, outbox);
+            }
+
+            if any {
+                self.integrate(outbox);
+            }
+        }
+    }
+
+    /// Signs a transaction on top of everything integrated here. The stored
+    /// and sent bytes are final from now on.
+    fn sign(
+        &mut self,
+        identity: &Identity,
+        model: ModelId,
+        operations: Vec<Operation>,
+        outbox: &mut Outbox,
+    ) {
+        let transaction = self.log.author(self.id, model, operations);
+        let signed = Signed::sign(identity, transaction);
+        persistence::save_transaction(self.id, signed.signed(), outbox);
+
+        self.log.offer(signed);
     }
 
     /// Integrates whatever is in order and authorized, and writes what it

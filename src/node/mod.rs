@@ -342,8 +342,8 @@ mod tests {
         write(&mut cluster, FRIEND, "gift", "book");
         cluster.settle();
 
-        // Signed and delivered, but the friend isn't a contributor yet, so
-        // nobody integrates it. Not even the friend.
+        // The friend isn't a contributor yet, so the write is held on its
+        // device, unsigned. Nobody sees it. Not even the friend.
         assert_eq!(read(&cluster, PHONE, "gift"), None);
         assert_eq!(read(&cluster, FRIEND, "gift"), None);
 
@@ -359,6 +359,27 @@ mod tests {
         );
         for device in [PHONE, LAPTOP, NAS, FRIEND] {
             assert_eq!(read(&cluster, device, "gift").as_deref(), Some("book"));
+        }
+    }
+
+    /// A write made before admission isn't signed until the newcomer has
+    /// caught up, so it lands on top of what it caught up to. Signed when it
+    /// was made, it would have been written on top of nothing, and lost to
+    /// the phone's write.
+    #[test]
+    fn a_held_write_lands_on_top_of_what_the_newcomer_caught_up_to() {
+        let mut cluster = household();
+        write(&mut cluster, FRIEND, "color", "green");
+        write(&mut cluster, PHONE, "color", "blue");
+        write(&mut cluster, PHONE, "color", "navy");
+        cluster.settle();
+
+        let (agreement, friend) = (genesis(&cluster).id(), cluster.key(FRIEND));
+        cluster.run(PHONE, |batch| batch.add_contributor(agreement, friend));
+        cluster.settle();
+
+        for device in [PHONE, LAPTOP, NAS, FRIEND] {
+            assert_eq!(read(&cluster, device, "color").as_deref(), Some("green"));
         }
     }
 

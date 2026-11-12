@@ -43,6 +43,32 @@ impl Progress {
             })
             .unwrap_or_default()
     }
+
+    /// What a newcomer must hold before it writes: the greatest lower bound
+    /// across the `contributors` that have reported, other than itself.
+    ///
+    /// Unlike the [floor], silent contributors are skipped, not counted
+    /// as zero. Skipping one can only raise the bar. If no other
+    /// contributor has reported, the bar is everything anyone has: the join
+    /// of every report. That covers a configuration whose earlier
+    /// contributors were all replaced.
+    ///
+    /// [floor]: Progress::floor
+    pub(crate) fn baseline(&self, contributors: &BTreeSet<Peer>, newcomer: Peer) -> VersionVector {
+        let others = contributors.iter().filter(|&&peer| peer != newcomer);
+        let mut reports = others.filter_map(|peer| self.of(*peer));
+
+        let Some(first) = reports.next() else {
+            let mut everything = VersionVector::default();
+            for report in self.0.values() {
+                everything.join(report);
+            }
+
+            return everything;
+        };
+
+        reports.fold(first.clone(), |baseline, report| baseline.meet(report))
+    }
 }
 
 impl Lattice for Progress {
@@ -100,6 +126,38 @@ mod tests {
         assert_eq!(
             progress.floor(&contributors),
             clock(&[(phone(), 3), (laptop(), 2)]),
+        );
+    }
+
+    #[test]
+    fn a_newcomer_starts_from_what_the_others_have() {
+        let contributors = BTreeSet::from([phone(), laptop(), friend()]);
+
+        assert_eq!(
+            progress().baseline(&contributors, friend()),
+            clock(&[(phone(), 3), (laptop(), 2)]),
+        );
+    }
+
+    #[test]
+    fn a_newcomers_own_report_doesnt_lower_its_baseline() {
+        let mut progress = progress();
+        progress.join(&Progress::report(friend(), VersionVector::default()));
+        let contributors = BTreeSet::from([phone(), laptop(), friend()]);
+
+        assert_eq!(
+            progress.baseline(&contributors, friend()),
+            clock(&[(phone(), 3), (laptop(), 2)]),
+        );
+    }
+
+    #[test]
+    fn a_newcomer_replacing_everyone_starts_from_everything() {
+        let contributors = BTreeSet::from([friend()]);
+
+        assert_eq!(
+            progress().baseline(&contributors, friend()),
+            clock(&[(phone(), 5), (laptop(), 4)]),
         );
     }
 

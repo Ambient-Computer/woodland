@@ -7,6 +7,7 @@
 //! [AGREEMENT][agreement][PROTOCOL][ATTESTATION]       → our latest Signed<Attestation>
 //! [AGREEMENT][agreement][PROTOCOL][CLOCK]             → integrated clock, floor
 //! [AGREEMENT][agreement][PROTOCOL][LOG][author][seq]  → Signed<Transaction>
+//! [AGREEMENT][agreement][PROTOCOL][HELD][index]       → a write held until admission
 //! [AGREEMENT][agreement][DATA][model][key…][stamp]    → KV Version
 //! ```
 //!
@@ -44,6 +45,7 @@ const VIEW: u8 = 1;
 const ATTESTATION: u8 = 2;
 const CLOCK: u8 = 3;
 const LOG: u8 = 4;
+const HELD: u8 = 5;
 
 /// A stored key, parsed back into what it names.
 #[derive(Debug, PartialEq, Eq)]
@@ -56,6 +58,10 @@ pub(crate) enum Record {
         agreement: AgreementId,
         author: [u8; 32],
         seq: u64,
+    },
+    Held {
+        agreement: AgreementId,
+        index: u64,
     },
     Version {
         agreement: AgreementId,
@@ -105,6 +111,15 @@ pub(crate) fn attestation(id: AgreementId) -> Vec<u8> {
 
 pub(crate) fn clock(id: AgreementId) -> Vec<u8> {
     [protocol(id), vec![CLOCK]].concat()
+}
+
+pub(crate) fn held(id: AgreementId, index: u64) -> Vec<u8> {
+    [protocol(id), vec![HELD], index.to_be_bytes().to_vec()].concat()
+}
+
+/// Held writes with an index below `next`, as a key range.
+pub(crate) fn held_through(id: AgreementId, next: u64) -> (Vec<u8>, Vec<u8>) {
+    (held(id, 0), held(id, next))
 }
 
 pub(crate) fn log(id: AgreementId, author: Peer, seq: u64) -> Vec<u8> {
@@ -171,6 +186,11 @@ fn parse_protocol(agreement: AgreementId, key: &[u8]) -> Option<Record> {
                 seq,
             })
         }
+        HELD => {
+            let index = u64::from_be_bytes(rest.try_into().ok()?);
+
+            Some(Record::Held { agreement, index })
+        }
         _ => None,
     }
 }
@@ -228,6 +248,13 @@ mod tests {
             }),
         );
         assert_eq!(
+            parse(&held(id(), 4)),
+            Some(Record::Held {
+                agreement: id(),
+                index: 4
+            }),
+        );
+        assert_eq!(
             parse(&version(id(), model, b"color", stamp(3, phone()))),
             Some(Record::Version {
                 agreement: id(),
@@ -247,6 +274,7 @@ mod tests {
             attestation(id()),
             clock(id()),
             log(id(), phone(), 1),
+            held(id(), 1),
         ] {
             assert!(key.starts_with(&protocol(id())));
         }

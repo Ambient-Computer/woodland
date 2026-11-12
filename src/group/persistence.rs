@@ -6,8 +6,8 @@
 //! - the agreement **view**, so learned decisions survive restarts, and
 //!   this device's latest **attestation** of it, so revisions keep rising;
 //! - the **clock** (integrated version vector, Lamport counter, floor);
-//! - the **log** of signed transactions above the floor, plus this device's
-//!   own transactions still waiting for write access;
+//! - the **log** of signed transactions above the floor;
+//! - writes **held** until this device is admitted, unsigned;
 //! - every **version** of every model key, one storage key each.
 //!
 //! What isn't: remote transactions still waiting, and everything about
@@ -23,6 +23,7 @@
 use std::collections::BTreeMap;
 
 use super::Group;
+use super::admission::{self, Held};
 use super::snapshot::Snapshots;
 use crate::actor::{Peer, Signed, Verified};
 use crate::agreement::{Agreement, AgreementId, Attestation, Genesis, View};
@@ -43,6 +44,7 @@ pub(crate) struct Restored {
     attested: Option<Verified<Attestation>>,
     clock: Clock,
     transactions: Vec<Verified<Transaction>>,
+    held: Vec<(u64, admission::HeldWrite)>,
 }
 
 /// The last view, attestation and clock written, so unchanged ones aren't
@@ -64,6 +66,7 @@ impl Restored {
             attested: None,
             clock: Clock::default(),
             transactions: Vec::new(),
+            held: Vec::new(),
         }
     }
 
@@ -93,6 +96,11 @@ impl Restored {
                         restored.transactions.push(Verified::trust_stored(signed));
                     }
                 }
+                Some(Record::Held { index, .. }) => {
+                    if let Some(write) = encoding::decode(value) {
+                        restored.held.push((index, write));
+                    }
+                }
                 Some(Record::Genesis(_) | Record::Version { .. }) | None => {}
             }
         }
@@ -110,11 +118,18 @@ impl From<Restored> for Group {
             None => Agreement::new(&restored.genesis, restored.me),
         };
 
+        // Founders never wait to be admitted (see `admission`).
+        let mut log = Log::restore(restored.clock.clone(), restored.transactions, restored.me);
+        if restored.genesis.configuration().is_member(restored.me) {
+            log.admit();
+        }
+
         Self {
             id,
             me: restored.me,
             agreement,
-            log: Log::restore(restored.clock.clone(), restored.transactions, restored.me),
+            log,
+            held: Held::restore(restored.held),
             snapshots: Snapshots::default(),
             peers: BTreeMap::new(),
             persisted: Persisted {

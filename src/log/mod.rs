@@ -53,8 +53,7 @@ pub(crate) use transaction::Transaction;
 #[derive(Debug, Default)]
 pub(crate) struct Log {
     clock: Clock,
-    /// The highest sequence number this device has authored, including
-    /// transactions still waiting for write access.
+    /// The highest sequence number this device has authored.
     authored: u64,
     transactions: BTreeMap<(Peer, u64), Verified<Transaction>>,
     /// Verified transactions that can't be integrated yet: there's a gap
@@ -73,11 +72,14 @@ pub(crate) struct Clock {
     pub(crate) lamport: u64,
     /// Below this, transactions are no longer kept individually.
     pub(crate) floor: VersionVector,
+    /// Whether this device may write (see `group::admission`). Once true,
+    /// it stays true.
+    pub(crate) admitted: bool,
 }
 
 impl Log {
     /// Rebuilds from storage. Stored transactions beyond the clock are this
-    /// device's own, still waiting for write access.
+    /// device's own, written but not integrated before it stopped.
     pub(crate) fn restore(clock: Clock, stored: Vec<Verified<Transaction>>, me: Peer) -> Self {
         let mut log = Self {
             authored: clock.integrated.get(me),
@@ -113,6 +115,15 @@ impl Log {
 
     pub(crate) fn floor(&self) -> &VersionVector {
         &self.clock.floor
+    }
+
+    pub(crate) fn admitted(&self) -> bool {
+        self.clock.admitted
+    }
+
+    /// This device may write from now on.
+    pub(crate) fn admit(&mut self) {
+        self.clock.admitted = true;
     }
 
     /// The next transaction this device will author. It's written on top of
