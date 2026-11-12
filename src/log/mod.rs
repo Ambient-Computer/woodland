@@ -207,19 +207,32 @@ impl Log {
             .collect()
     }
 
+    /// Everything integrated that hasn't settled, in timeline order.
+    pub(crate) fn frontier(&self) -> Vec<&Verified<Transaction>> {
+        let mut timeline: Vec<_> = self.transactions.values().collect();
+        timeline.sort_by_key(|it| it.payload().stamp(it.author()));
+
+        timeline
+    }
+
     /// Settles the longest prefix of the timeline that lies within `floor`
-    /// and returns it, in timeline order. Those transactions leave the
-    /// log.
+    /// and is `ready`, and returns it, in timeline order. Those
+    /// transactions leave the log.
     ///
     /// An author's transactions appear in the timeline in the order it
     /// wrote them, so a prefix never skips one, and the cut stays a
     /// version vector.
-    pub(crate) fn settle(&mut self, floor: &VersionVector) -> Vec<Verified<Transaction>> {
-        let mut timeline: Vec<_> = self.transactions.values().collect();
-        timeline.sort_by_key(|it| it.payload().stamp(it.author()));
+    pub(crate) fn settle(
+        &mut self,
+        floor: &VersionVector,
+        ready: impl Fn(&Verified<Transaction>) -> bool,
+    ) -> Vec<Verified<Transaction>> {
+        let within = |it: &&Verified<Transaction>| {
+            floor.contains(it.author(), it.payload().seq) && ready(it)
+        };
 
-        let within = |it: &&Verified<Transaction>| floor.contains(it.author(), it.payload().seq);
-        let settled: Vec<_> = timeline.into_iter().take_while(within).cloned().collect();
+        let timeline = self.frontier().into_iter();
+        let settled: Vec<_> = timeline.take_while(within).cloned().collect();
         for transaction in &settled {
             let (author, payload) = (transaction.author(), transaction.payload());
             self.transactions.remove(&(author, payload.seq));
@@ -385,11 +398,11 @@ mod tests {
         // Everyone holds the phone's writes. Not the laptop's, which sorts
         // before the phone's second.
         let floor = [(phone(), 2)].into_iter().collect();
-        nas_device.log.settle(&floor);
+        nas_device.log.settle(&floor, |_| true);
         assert!(nas_device.log.settled().get(phone()) < 2);
 
         let floor: VersionVector = [(phone(), 2), (laptop(), 1)].into_iter().collect();
-        nas_device.log.settle(&floor);
+        nas_device.log.settle(&floor, |_| true);
         assert_eq!(nas_device.log.settled(), &floor);
         assert_eq!(nas_device.log.cut().lamport, second.payload().lamport);
     }
@@ -403,7 +416,7 @@ mod tests {
         let reply = phone_device.write();
 
         let floor = [(phone(), 2), (laptop(), 1)].into_iter().collect();
-        let settled = phone_device.log.settle(&floor);
+        let settled = phone_device.log.settle(&floor, |_| true);
         let stamps: Vec<_> = settled
             .iter()
             .map(|it| it.payload().stamp(it.author()))

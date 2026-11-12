@@ -1,9 +1,23 @@
 //! Models: application data, derived from the log's timeline.
 //!
-//! A model knows nothing about agreements, quorums or peers. It says what
-//! the operations of a verified, authorized transaction leave behind at
-//! that transaction's place in the timeline. What it relies on from the
-//! layers above:
+//! A model knows nothing about agreements, quorums or peers. It declares
+//! two things about each of its operations, and everything else follows
+//! from the timeline:
+//!
+//! - what it **writes**: a value under a key, or the absence of one
+//!   ([`Write`]);
+//! - what it **requires** of the model's state at its transaction's place
+//!   in the timeline ([`Requirement`]). A transaction with a requirement
+//!   that doesn't hold is **pruned**: it stays in the log, and none of
+//!   its operations happen.
+//!
+//! A key holds whatever the last transaction that wasn't pruned wrote
+//! there. The models differ in their rules:
+//!
+//! - `kv` requires nothing, so the last writer wins.
+//! - `claims` requires the key to be vacant, so the first writer wins.
+//!
+//! What a model relies on from the layers above:
 //!
 //! - **Every transaction has a unique [`Stamp`].** The author's Lamport
 //!   counter plus the author's key. Sorting by stamp is the timeline: one
@@ -17,9 +31,13 @@
 //!
 //! A model owns its operations and the meaning of what it stores. To the
 //! log, the group and storage, an operation is something to carry, and
-//! what it leaves behind is a [`Write`]: bytes under a key, in the model's
-//! own range, at the transaction's stamp. Only the model and its
-//! [`Query`] read them back.
+//! what it declares is all they know of it: bytes under a key, in the
+//! model's own range, at the transaction's stamp, and whether the key
+//! had to be vacant. Only the model and its [`Query`] read them back.
+//!
+//! A model's ID says which kind it is, and an operation of another kind
+//! doesn't belong to it. A transaction holding one is pruned, so a `Set`
+//! can never take a claimed key.
 //!
 //! # Many models per agreement
 //!
@@ -33,6 +51,7 @@
 //!
 //! [`Stamp`]: crate::clock::Stamp
 
+mod claims;
 mod kv;
 mod query;
 
@@ -47,29 +66,79 @@ use crate::encoding;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Operation {
     pub(crate) model: ModelId,
-    pub(crate) change: kv::Operation,
+    pub(crate) change: Change,
+}
+
+/// A change, in the vocabulary of the kind of model it's for.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum Change {
+    Kv(kv::Operation),
+    Claims(claims::Operation),
+}
+
+/// What an operation needs to be true of its key, at its transaction's
+/// place in the timeline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Requirement {
+    /// The key holds no value.
+    Vacant,
+}
+
+/// The kinds of model there are. A model's kind is part of its ID.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Kind {
+    Kv = 1,
+    Claims = 2,
 }
 
 impl Operation {
     pub(crate) fn set(model: ModelId, key: Vec<u8>, value: Vec<u8>) -> Self {
-        let change = kv::Operation::Set { key, value };
+        let change = Change::Kv(kv::Operation::Set { key, value });
 
         Self { model, change }
     }
 
     pub(crate) fn remove(model: ModelId, key: Vec<u8>) -> Self {
-        let change = kv::Operation::Remove { key };
+        let change = Change::Kv(kv::Operation::Remove { key });
 
         Self { model, change }
     }
 
+    pub(crate) fn claim(model: ModelId, key: Vec<u8>, value: Vec<u8>) -> Self {
+        let change = Change::Claims(claims::Operation::Claim { key, value });
+
+        Self { model, change }
+    }
+
+    /// Whether the change is one its model takes.
+    pub(crate) fn belongs(&self) -> bool {
+        let kind = match self.change {
+            Change::Kv(_) => Kind::Kv,
+            Change::Claims(_) => Kind::Claims,
+        };
+
+        self.model.kind() == Some(kind)
+    }
+
     pub(crate) fn write(&self) -> Write {
-        let (key, value) = self.change.write();
+        let (key, value) = match &self.change {
+            Change::Kv(operation) => operation.write(),
+            Change::Claims(operation) => operation.write(),
+        };
 
         Write {
             model: self.model,
             key,
             value,
+        }
+    }
+
+    /// What must hold of the operation's key for its transaction to
+    /// happen.
+    pub(crate) fn requires(&self) -> Option<Requirement> {
+        match &self.change {
+            Change::Kv(_) => None,
+            Change::Claims(operation) => Some(operation.requires()),
         }
     }
 }
@@ -87,8 +156,8 @@ pub(crate) struct Write {
     pub(crate) value: Option<Vec<u8>>,
 }
 
-/// Names a model within an agreement. The BLAKE3 hash of the agreement's ID
-/// and a nonce.
+/// Names a model within an agreement: its kind, then the BLAKE3 hash of
+/// the agreement's ID and a nonce.
 ///
 /// Like an agreement ID, it's derived from how the model began, so models
 /// created independently on different devices never collide. The model's
@@ -97,15 +166,34 @@ pub(crate) struct Write {
 pub struct ModelId([u8; 32]);
 
 impl ModelId {
-    /// The application supplies the nonce, as with [`Genesis`].
+    /// A key-value map: the last write to a key wins. The application
+    /// supplies the nonce, as with [`Genesis`].
     ///
     /// [`Genesis`]: crate::Genesis
     #[must_use]
-    pub fn new(agreement: AgreementId, nonce: [u8; 32]) -> Self {
-        Self(encoding::hash(
-            "woodland/model/kv",
-            &(agreement.as_bytes(), nonce),
-        ))
+    pub fn kv(agreement: AgreementId, nonce: [u8; 32]) -> Self {
+        Self::new(Kind::Kv, agreement, nonce)
+    }
+
+    /// A map of claims: the first claim on a key wins, and a transaction
+    /// that loses one doesn't happen at all.
+    #[must_use]
+    pub fn claims(agreement: AgreementId, nonce: [u8; 32]) -> Self {
+        Self::new(Kind::Claims, agreement, nonce)
+    }
+
+    /// `None` for an ID this version of the library didn't make.
+    pub(crate) fn kind(&self) -> Option<Kind> {
+        [Kind::Kv, Kind::Claims]
+            .into_iter()
+            .find(|&kind| kind as u8 == self.0[0])
+    }
+
+    fn new(kind: Kind, agreement: AgreementId, nonce: [u8; 32]) -> Self {
+        let mut id = encoding::hash("woodland/model", &(agreement.as_bytes(), nonce));
+        id[0] = kind as u8;
+
+        Self(id)
     }
 
     pub(crate) fn as_bytes(&self) -> &[u8; 32] {

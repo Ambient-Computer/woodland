@@ -19,7 +19,7 @@ use crate::agreement::AgreementId;
 use crate::encoding;
 use crate::group::{Group, VerifiedParts};
 use crate::io::{Action, Event, LocalEvent, NetworkEvent, StorageEvent};
-use crate::storage::keys;
+use crate::storage::keys::{self, Record};
 
 /// Represents this device. Applications should only create one.
 ///
@@ -35,7 +35,7 @@ use crate::storage::keys;
 ///
 /// 1. **Apply** each event in order. Domains take in changes and queue
 ///    storage work in the `Outbox`. Nothing is sent yet.
-/// 2. **Settle** each group: learn, integrate, report progress, compact.
+/// 2. **Advance** each group: learn, integrate, report progress, settle.
 /// 3. **Compose** one message per connected peer, and order everything:
 ///    storage first, then scans, then sends.
 #[derive(Debug)]
@@ -130,6 +130,12 @@ impl Node {
                 }
             }
 
+            Event::Storage(StorageEvent::Got { entries }) => {
+                for (key, value) in entries {
+                    self.got(&key, value.is_some());
+                }
+            }
+
             Event::Local(LocalEvent::Join { genesis }) => {
                 let me = self.me();
                 if let Entry::Vacant(vacant) = self.groups.entry(genesis.id()) {
@@ -152,6 +158,19 @@ impl Node {
                     group.write(&self.identity, operations, outbox);
                 }
             }
+        }
+    }
+
+    /// A read is back. Groups read settled values to work out verdicts.
+    fn got(&mut self, stored: &[u8], holds: bool) {
+        if let Some(Record::Settled {
+            agreement,
+            model,
+            key,
+        }) = keys::parse(stored)
+            && let Some(group) = self.groups.get_mut(&agreement)
+        {
+            group.got(model, key, holds);
         }
     }
 

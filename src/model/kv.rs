@@ -1,5 +1,6 @@
-//! A key-value map, derived from the timeline: each key holds whatever the
-//! last transaction to write it left there.
+//! A key-value map: each key holds whatever the last transaction to
+//! write it left there. Its operations require nothing, so none of its
+//! transactions is ever pruned on its account.
 //!
 //! # Versions
 //!

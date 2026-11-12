@@ -14,6 +14,11 @@ enum Step {
         key: u8,
         value: u8,
     },
+    /// Claims a name, and notes whose it is, in one transaction.
+    Claim {
+        device: usize,
+        name: u8,
+    },
     Connect {
         left: usize,
         right: usize,
@@ -42,6 +47,7 @@ fn step() -> impl Strategy<Value = Step> {
     prop_oneof![
         4 => (device.clone(), 0..3u8, any::<u8>())
             .prop_map(|(device, key, value)| Step::Write { device, key, value }),
+        3 => (device.clone(), 0..3u8).prop_map(|(device, name)| Step::Claim { device, name }),
         2 => (device.clone(), device.clone())
             .prop_map(|(left, right)| Step::Connect { left, right }),
         2 => (device.clone(), device.clone())
@@ -58,6 +64,9 @@ fn run(cluster: &mut Cluster, step: Step) {
     match step {
         Step::Write { device, key, value } => {
             write(cluster, device, &key.to_string(), &value.to_string());
+        }
+        Step::Claim { device, name } => {
+            claim(cluster, device, &name.to_string(), &device.to_string());
         }
         Step::Connect { left, right } => cluster.connect(left, right),
         Step::Disconnect { left, right } => cluster.disconnect(left, right),
@@ -168,6 +177,14 @@ proptest! {
                 reference.agreement().learned(),
                 "device {}", device,
             );
+        }
+
+        // A claim and the note written with it happen together, or not
+        // at all.
+        for name in 0..3u8 {
+            let name = name.to_string();
+            let note = format!("owner/{name}");
+            prop_assert_eq!(holder(&cluster, PHONE, &name), read(&cluster, PHONE, &note));
         }
 
         // Settling really forgets: nothing settled stays in the log.

@@ -9,7 +9,8 @@
 //! - the **log** of signed transactions that haven't settled;
 //! - writes **held** until this device is admitted, unsigned;
 //! - the **settled** value of every model key, and the cut they reflect;
-//! - a **version** for every write that hasn't settled.
+//! - a **version** for every write that hasn't settled, of every
+//!   transaction that hasn't been pruned.
 //!
 //! What isn't: remote transactions still waiting, and everything about
 //! peers. Peers re-send whatever we report missing when they reconnect.
@@ -26,6 +27,7 @@ use std::collections::BTreeMap;
 use super::Group;
 use super::admission::{self, Held};
 use super::snapshot::{Snapshot, Snapshots};
+use super::verdicts::Verdicts;
 use crate::actor::{Peer, Signed, Verified};
 use crate::agreement::{Agreement, AgreementId, Attestation, Genesis, View};
 use crate::clock::Stamp;
@@ -136,6 +138,7 @@ impl From<Restored> for Group {
             id,
             me: restored.me,
             agreement,
+            verdicts: Verdicts::resume(&log.frontier()),
             log,
             held: Held::restore(restored.held),
             snapshots: Snapshots::default(),
@@ -194,8 +197,8 @@ pub(super) fn save_transaction(id: AgreementId, signed: &Signed<Transaction>, ou
     outbox.put(key, signed);
 }
 
-/// Writes what a transaction's operations leave behind, as versions in
-/// the frontier. In order, so a later operation on the same key replaces
+/// Writes what a live transaction's operations leave behind, as versions
+/// in the frontier. In order, so a later operation on the same key replaces
 /// an earlier one.
 pub(super) fn save_operations(
     id: AgreementId,
@@ -209,40 +212,40 @@ pub(super) fn save_operations(
     }
 }
 
-/// Moves a settled transaction out of the frontier: each of its writes
-/// becomes its key's settled value, and its versions and its place in the
-/// log are deleted. Transactions must be settled in timeline order.
-pub(super) fn settle_transaction(
-    id: AgreementId,
-    transaction: &Verified<Transaction>,
-    outbox: &mut Outbox,
-) {
-    let payload = transaction.payload();
-    for write in payload.operations.iter().map(Operation::write) {
+/// Makes a live transaction's writes the settled values of their keys.
+/// Transactions must be folded in timeline order.
+pub(super) fn fold_operations(id: AgreementId, operations: &[Operation], outbox: &mut Outbox) {
+    for write in operations.iter().map(Operation::write) {
         let settled = keys::settled_value(id, write.model, &write.key);
         match write.value {
             Some(value) => outbox.put_bytes(settled, value),
             None => outbox.delete(settled),
         }
     }
-
-    forget_transaction(id, transaction, outbox);
 }
 
-/// Deletes a transaction's versions and its place in the log. A snapshot
-/// already holds what it settled to.
+/// Deletes a transaction's versions and its place in the log: it settled,
+/// here or in a snapshot.
 pub(super) fn forget_transaction(
     id: AgreementId,
     transaction: &Verified<Transaction>,
     outbox: &mut Outbox,
 ) {
     let (author, payload) = (transaction.author(), transaction.payload());
-    let stamp = payload.stamp(author);
-    for write in payload.operations.iter().map(Operation::write) {
+    forget_operations(id, payload.stamp(author), &payload.operations, outbox);
+    outbox.delete(keys::log(id, author, payload.seq));
+}
+
+/// Deletes a transaction's versions: it was pruned, or it settled.
+pub(super) fn forget_operations(
+    id: AgreementId,
+    stamp: Stamp,
+    operations: &[Operation],
+    outbox: &mut Outbox,
+) {
+    for write in operations.iter().map(Operation::write) {
         outbox.delete(keys::version(id, write.model, &write.key, stamp));
     }
-
-    outbox.delete(keys::log(id, author, payload.seq));
 }
 
 /// Replaces everything settled with a snapshot's state.

@@ -48,6 +48,12 @@ impl<'a> Batch<'a> {
         self.push(Event::Storage(StorageEvent::Scanned { prefix, entries }))
     }
 
+    /// A get the node asked for finished. Report every key it asked for,
+    /// with `None` for keys that aren't stored.
+    pub fn got(self, entries: Vec<(Vec<u8>, Option<Vec<u8>>)>) -> Self {
+        self.push(Event::Storage(StorageEvent::Got { entries }))
+    }
+
     /// A connection to `peer` opened.
     pub fn connected(self, peer: VerifyingKey) -> Self {
         let peer = peer.into();
@@ -107,7 +113,10 @@ impl<'a> Batch<'a> {
 }
 
 impl<'a> TransactionBuilder<'a> {
-    /// Sets `key` in `model`. Naming a new model ID creates it.
+    /// Sets `key` in `model`, a [key-value] model. Naming a new model ID
+    /// creates it.
+    ///
+    /// [key-value]: ModelId::kv
     pub fn set(
         mut self,
         model: ModelId,
@@ -115,6 +124,23 @@ impl<'a> TransactionBuilder<'a> {
         value: impl Into<Vec<u8>>,
     ) -> Self {
         let operation = Operation::set(model, key.into(), value.into());
+        self.operations.push(operation);
+        self
+    }
+
+    /// Claims `key` in `model`, a [claims] model, for `value`. If the key
+    /// is already claimed at this transaction's place in the timeline,
+    /// the whole transaction is dropped, on every device. Read the key to
+    /// see who has it.
+    ///
+    /// [claims]: ModelId::claims
+    pub fn claim(
+        mut self,
+        model: ModelId,
+        key: impl Into<Vec<u8>>,
+        value: impl Into<Vec<u8>>,
+    ) -> Self {
+        let operation = Operation::claim(model, key.into(), value.into());
         self.operations.push(operation);
         self
     }

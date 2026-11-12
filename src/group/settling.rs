@@ -59,6 +59,8 @@
 //!
 //! - **Committed reads.** Settled state is the same on every device that
 //!   has it, and only ever moves forward.
+//! - **Final verdicts.** Whether a transaction's requirements held can't
+//!   change once nothing can land before it (see `verdicts`).
 //! - **Bounded storage.** A settled transaction leaves the log, and its
 //!   writes fold into one settled value per key (see `persistence`). A
 //!   removal that settles leaves nothing: no write that would have lost to
@@ -75,13 +77,19 @@ use crate::log::{Log, Transaction};
 ///
 /// Nothing settles until this device holds everything the contributors
 /// have reported. An observer that's behind can learn a floor long before
-/// it has the transactions to settle it.
-pub(super) fn settle(log: &mut Log, learned: &Decision) -> Vec<Verified<Transaction>> {
+/// it has the transactions to settle it. And nothing settles past a
+/// transaction that isn't `ready`: one whose verdict is still out (see
+/// `verdicts`).
+pub(super) fn settle(
+    log: &mut Log,
+    learned: &Decision,
+    ready: impl Fn(&Verified<Transaction>) -> bool,
+) -> Vec<Verified<Transaction>> {
     let contributors = learned.configuration.members();
     let reported = learned.progress.ceiling(&contributors);
     if !reported.leq(log.integrated()) {
         return Vec::new();
     }
 
-    log.settle(&learned.floor())
+    log.settle(&learned.floor(), ready)
 }

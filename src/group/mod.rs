@@ -9,7 +9,8 @@
 //!   transactions;
 //! - the **models** say what each transaction writes to storage;
 //! - **admission** holds this device's writes until it may make them;
-//! - **removal** says which of a removed contributor's writes still count.
+//! - **removal** says which of a removed contributor's writes still count;
+//! - **verdicts** say which transactions' requirements hold.
 //!
 //! The life of a batch, from the group's point of view:
 //!
@@ -17,8 +18,9 @@
 //!    and remote changes. Transactions only queue up at this point.
 //! 2. [`advance`](Group::advance) runs once all events are in. It learns
 //!    what it can, integrates queued transactions, signs held writes if
-//!    this device was admitted, reports progress, settles what's final,
-//!    and persists what changed.
+//!    this device was admitted, reports progress, works out which
+//!    transactions happen, settles what's final, and persists what
+//!    changed.
 //! 3. [`outgoing`](Group::outgoing) says what each peer is missing.
 
 mod admission;
@@ -27,6 +29,7 @@ mod removal;
 mod settling;
 mod snapshot;
 mod sync;
+mod verdicts;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -35,13 +38,14 @@ pub(crate) use persistence::Restored;
 use snapshot::{Snapshot, Snapshots};
 use sync::PeerSync;
 pub(crate) use sync::{GroupMessage, VerifiedParts};
+use verdicts::{Verdict, Verdicts};
 
 use crate::actor::{Identity, Peer, Signed};
 use crate::agreement::{Agreement, AgreementId, Change, Genesis};
 use crate::clock::Progress;
 use crate::lattice::Lattice;
 use crate::log::Log;
-use crate::model::Operation;
+use crate::model::{ModelId, Operation};
 use crate::node::Outbox;
 
 #[derive(Debug)]
@@ -50,6 +54,8 @@ pub(crate) struct Group {
     me: Peer,
     agreement: Agreement,
     log: Log,
+    /// Which transactions in the frontier happen.
+    verdicts: Verdicts,
     /// Writes made before this device was admitted.
     held: Held,
     snapshots: Snapshots,
@@ -143,6 +149,11 @@ impl Group {
         self.snapshots.scanned(entries);
     }
 
+    /// A read of a settled value is back, for a verdict.
+    pub(crate) fn got(&mut self, model: ModelId, key: Vec<u8>, holds: bool) {
+        self.verdicts.got(model, key, holds);
+    }
+
     /// Runs after every event in the batch is in. `identity` must be this
     /// device's, for attesting to the view it ends up with.
     pub(crate) fn advance(&mut self, identity: &Identity, outbox: &mut Outbox) {
@@ -163,9 +174,8 @@ impl Group {
         }
 
         self.agreement.try_learn();
-        for transaction in settling::settle(&mut self.log, self.agreement.learned()) {
-            persistence::settle_transaction(self.id, &transaction, outbox);
-        }
+        self.judge(outbox);
+        self.settle(outbox);
 
         // Last, so it covers everything above. It's saved in the same write
         // as the view, before anything is sent.
@@ -283,19 +293,50 @@ impl Group {
         }
     }
 
-    /// Integrates whatever is in order and counts, and writes what it
-    /// leaves behind. Nothing is read first: a transaction's versions go
-    /// wherever its stamp puts them in the timeline.
+    /// Integrates whatever is in order and counts.
     fn integrate(&mut self, outbox: &mut Outbox) {
         let learned = self.agreement.learned();
         let counts = |author, seq| removal::counts(learned, author, seq);
         for transaction in self.log.integrate_ready(counts) {
-            let author = transaction.author();
-            let payload = transaction.payload();
             persistence::save_transaction(self.id, transaction.signed(), outbox);
+        }
+    }
 
-            let stamp = payload.stamp(author);
-            persistence::save_operations(self.id, stamp, &payload.operations, outbox);
+    /// Works out which transactions in the frontier happen, and makes
+    /// storage hold the writes of exactly those. A live transaction's
+    /// versions go wherever its stamp puts them in the timeline, without
+    /// reading what's there.
+    fn judge(&mut self, outbox: &mut Outbox) {
+        let frontier = self.log.frontier();
+        for (transaction, verdict) in self.verdicts.judge(self.id, &frontier, outbox) {
+            let payload = transaction.payload();
+            let (stamp, operations) = (payload.stamp(transaction.author()), &payload.operations);
+            match verdict {
+                Verdict::Live => persistence::save_operations(self.id, stamp, operations, outbox),
+                Verdict::Pruned => {
+                    persistence::forget_operations(self.id, stamp, operations, outbox);
+                }
+                Verdict::Pending => {}
+            }
+        }
+    }
+
+    /// Settles what agreement proves is final. A live transaction's
+    /// writes become settled values. A pruned one just leaves.
+    fn settle(&mut self, outbox: &mut Outbox) {
+        let verdicts = &self.verdicts;
+        let ready = |transaction: &_| !verdicts.is_pending(transaction);
+        let settled = settling::settle(&mut self.log, self.agreement.learned(), ready);
+        for transaction in settled {
+            let operations = &transaction.payload().operations;
+            if self.verdicts.is_live(&transaction) {
+                persistence::fold_operations(self.id, operations, outbox);
+                for write in operations.iter().map(Operation::write) {
+                    self.verdicts.folded(&write);
+                }
+            }
+
+            persistence::forget_transaction(self.id, &transaction, outbox);
         }
     }
 
@@ -314,6 +355,7 @@ impl Group {
         }
 
         persistence::save_snapshot(self.id, snapshot, outbox);
+        self.verdicts.absorbed();
         for transaction in self.log.absorb(&snapshot.cut) {
             persistence::forget_transaction(self.id, &transaction, outbox);
         }

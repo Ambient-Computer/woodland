@@ -13,7 +13,35 @@ fn genesis(cluster: &Cluster) -> Genesis {
 }
 
 fn notes(cluster: &Cluster) -> ModelId {
-    ModelId::new(genesis(cluster).id(), [1; 32])
+    ModelId::kv(genesis(cluster).id(), [1; 32])
+}
+
+/// Usernames: only one device can have each.
+fn names(cluster: &Cluster) -> ModelId {
+    ModelId::claims(genesis(cluster).id(), [3; 32])
+}
+
+/// Claims a username, and writes a note saying whose it is, in one
+/// transaction.
+fn claim(cluster: &mut Cluster, device: usize, name: &str, owner: &str) {
+    let agreement = genesis(cluster).id();
+    let (names, notes) = (names(cluster), notes(cluster));
+    let (name, owner) = (name.to_owned(), owner.to_owned());
+    cluster.run(device, |batch| {
+        let transaction = batch.transaction(agreement);
+
+        transaction
+            .claim(names, name.clone(), owner.clone())
+            .set(notes, format!("owner/{name}"), owner)
+            .commit()
+    });
+}
+
+/// Who holds a username, as far as the device knows.
+fn holder(cluster: &Cluster, device: usize, name: &str) -> Option<String> {
+    let query = Query::key(genesis(cluster).id(), names(cluster), name.as_bytes());
+
+    run_query(cluster, device, &query)
 }
 
 /// Everyone, the friend included, holds the genesis and is online.
@@ -189,7 +217,7 @@ fn quiet_contributors_settle_everything() {
 fn a_transaction_spans_models() {
     let mut cluster = household();
     let agreement = genesis(&cluster).id();
-    let (notes, tags) = (notes(&cluster), ModelId::new(agreement, [2; 32]));
+    let (notes, tags) = (notes(&cluster), ModelId::kv(agreement, [2; 32]));
     cluster.run(PHONE, |batch| {
         let transaction = batch.transaction(agreement);
 
@@ -205,6 +233,81 @@ fn a_transaction_spans_models() {
 
         assert_eq!(read(&cluster, device, "color").as_deref(), Some("blue"));
         assert_eq!(tag.as_deref(), Some("cool"));
+    }
+}
+
+/// Two devices claim the same name while apart. Each believes it won
+/// until they meet. Then one of them did, everywhere, and the other's
+/// whole transaction never happened.
+#[test]
+fn the_first_claim_wins_everywhere() {
+    let mut cluster = household();
+    cluster.disconnect_everyone();
+    cluster.settle();
+
+    claim(&mut cluster, PHONE, "ada", "phone");
+    claim(&mut cluster, LAPTOP, "ada", "laptop");
+    cluster.settle();
+    assert_eq!(holder(&cluster, PHONE, "ada").as_deref(), Some("phone"));
+    assert_eq!(holder(&cluster, LAPTOP, "ada").as_deref(), Some("laptop"));
+
+    cluster.connect_everyone();
+    cluster.settle();
+
+    let winner = holder(&cluster, PHONE, "ada");
+    assert!(winner.is_some());
+    for device in [PHONE, LAPTOP, NAS, FRIEND] {
+        assert_eq!(holder(&cluster, device, "ada"), winner, "device {device}");
+        assert_eq!(read(&cluster, device, "owner/ada"), winner);
+        assert_eq!(read_committed(&cluster, device, "owner/ada"), winner);
+        assert_eq!(stored_frontier(&cluster, device), [], "device {device}");
+    }
+}
+
+/// A claim that has settled is only in storage. A later claim has to
+/// read it to find out it lost.
+#[test]
+fn a_settled_claim_cant_be_taken() {
+    let mut cluster = household();
+    claim(&mut cluster, PHONE, "ada", "phone");
+    cluster.settle();
+    cluster.restart(LAPTOP);
+    cluster.connect_everyone();
+
+    claim(&mut cluster, LAPTOP, "ada", "laptop");
+    claim(&mut cluster, LAPTOP, "grace", "laptop");
+    cluster.settle();
+
+    for device in [PHONE, LAPTOP, NAS, FRIEND] {
+        assert_eq!(holder(&cluster, device, "ada").as_deref(), Some("phone"));
+        assert_eq!(holder(&cluster, device, "grace").as_deref(), Some("laptop"));
+        assert_eq!(
+            read(&cluster, device, "owner/ada").as_deref(),
+            Some("phone")
+        );
+        assert_eq!(stored_log_len(&cluster, device), 0, "device {device}");
+    }
+}
+
+/// A key-value write to a claims model isn't one of its operations, so
+/// it can't be used to take a name.
+#[test]
+fn a_set_cant_overwrite_a_claim() {
+    let mut cluster = household();
+    claim(&mut cluster, PHONE, "ada", "phone");
+    cluster.settle();
+
+    let (agreement, names) = (genesis(&cluster).id(), names(&cluster));
+    cluster.run(LAPTOP, |batch| {
+        batch
+            .transaction(agreement)
+            .set(names, "ada", "laptop")
+            .commit()
+    });
+    cluster.settle();
+
+    for device in [PHONE, LAPTOP, NAS, FRIEND] {
+        assert_eq!(holder(&cluster, device, "ada").as_deref(), Some("phone"));
     }
 }
 

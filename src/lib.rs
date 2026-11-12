@@ -13,7 +13,8 @@
 //!    are, and how far each has gotten.
 //! 4. `log/`: signed transactions, delivered in causal order, and the
 //!    timeline they sort into.
-//! 5. `model/`: the KV model, derived from the timeline.
+//! 5. `model/`: what operations write and require. A key-value map,
+//!    and a map of claims.
 //! 6. `clock/`: version vectors, the stamps that order the timeline, and
 //!    the greatest lower bound that settling starts from.
 //! 7. `storage/`: the key-value contract and the key layout.
@@ -67,8 +68,15 @@
 //!   device and only moves forward. The frontier on top of it is the
 //!   latest this device knows, and may still be reordered
 //!   ([`Query::committed`]).
-//! - Many models per agreement: one clock spans them all, and a model is
-//!   just a namespace in that history.
+//! - Many models per agreement: one clock spans them all, a model is
+//!   just a namespace in that history, and one transaction can change
+//!   several.
+//! - Rules as declarations. A model says what each operation writes and
+//!   what it requires of its key. Everything else (who wins, what's
+//!   pruned, what readers see, what settles) follows from the timeline,
+//!   in code that never looks inside an operation (`group/verdicts.rs`).
+//!   Last-writer-wins is "requires nothing". First-writer-wins is
+//!   "requires the key to be vacant" (`model/claims.rs`).
 //! - Signed transactions and attestations can be relayed by anyone, so sync
 //!   and agreement both work over chains of devices, not just a full mesh.
 //!   Both go through the same batch verification before a group sees them.
@@ -102,6 +110,11 @@
 //!   settling back until every contributor has acknowledged it, so one
 //!   offline contributor stalls committed reads for everyone. Removing
 //!   it is the only way out.
+//! - Requirements and sans-IO. Blind writes were enough while nothing
+//!   depended on what a key held. A requirement does, and what has
+//!   settled is only in storage, so the point read came back, and with
+//!   it a third verdict: pending. It only costs a round trip the first
+//!   time a key is asked about (`group/verdicts.rs`).
 //! - Crash faults only. A lying member can forge progress or equivocate,
 //!   and Byzantine RLA is a separate line of research.
 

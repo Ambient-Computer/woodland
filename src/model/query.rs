@@ -127,7 +127,7 @@ mod tests {
     }
 
     fn model() -> ModelId {
-        ModelId::new(agreement(), [2; 32])
+        ModelId::kv(agreement(), [2; 32])
     }
 
     fn settled(key: &str, value: &str) -> (Vec<u8>, Vec<u8>) {

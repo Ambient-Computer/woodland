@@ -285,7 +285,7 @@ mod tests {
 
     #[test]
     fn round_trips_every_record() {
-        let model = ModelId::new(id(), [2; 32]);
+        let model = ModelId::kv(id(), [2; 32]);
 
         assert_eq!(parse(&genesis(id())), Some(Record::Genesis(id())));
         assert_eq!(parse(&view(id())), Some(Record::View(id())));
@@ -328,7 +328,7 @@ mod tests {
 
     #[test]
     fn protocol_state_settled_data_and_the_frontier_are_separate_ranges() {
-        let model = ModelId::new(id(), [2; 32]);
+        let model = ModelId::kv(id(), [2; 32]);
 
         for key in [
             view(id()),
@@ -355,7 +355,7 @@ mod tests {
 
     #[test]
     fn a_keys_versions_sort_by_stamp() {
-        let model = ModelId::new(id(), [2; 32]);
+        let model = ModelId::kv(id(), [2; 32]);
         let mut stamps = [
             stamp(1, phone()),
             stamp(1, laptop()),
@@ -373,7 +373,7 @@ mod tests {
 
     #[test]
     fn a_prefixes_range_holds_exactly_its_keys() {
-        let model = ModelId::new(id(), [2; 32]);
+        let model = ModelId::kv(id(), [2; 32]);
         let (start, end) = range(logs(id()));
 
         assert!(start <= log(id(), phone(), 0));

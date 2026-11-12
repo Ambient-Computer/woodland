@@ -12,15 +12,17 @@
 //! - **Writes are durable before the next action.** Messages that follow a
 //!   write may advertise what it stored. A crash between the two must never
 //!   leave peers believing in data that was lost.
-//! - **Reads answer later.** Perform a [`StorageAction::Scan`] whenever
-//!   convenient and report the result with [`Batch::scanned`]. The node
-//!   never blocks waiting for storage.
+//! - **Reads answer later.** Perform a [`StorageAction::Scan`] or
+//!   [`StorageAction::Get`] whenever convenient and report the result
+//!   with [`Batch::scanned`] or [`Batch::got`]. The node never blocks
+//!   waiting for storage.
 //! - **Reads see earlier writes.** A read must reflect every write that
 //!   came before it in the action list. A snapshot relies on it: the scan
-//!   it's built from must hold everything the node had integrated when it
+//!   it's built from must hold everything the node had settled when it
 //!   asked.
 //!
 //! [`Batch::scanned`]: crate::Batch::scanned
+//! [`Batch::got`]: crate::Batch::got
 
 pub(crate) mod keys;
 
@@ -35,6 +37,12 @@ pub enum StorageAction {
     ///
     /// [`Batch::scanned`]: crate::Batch::scanned
     Scan { prefix: Vec<u8> },
+
+    /// Read each of these keys, and report what's stored under each one
+    /// (or that nothing is) with [`Batch::got`].
+    ///
+    /// [`Batch::got`]: crate::Batch::got
+    Get { keys: Vec<Vec<u8>> },
 }
 
 /// One change within an atomic write.
