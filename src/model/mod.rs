@@ -1,8 +1,8 @@
 //! Models: application data, derived from the log's timeline.
 //!
 //! A model knows nothing about agreements, quorums or peers. It declares
-//! two things about each of its operations, and everything else follows
-//! from the timeline:
+//! a few things, and everything else follows from the timeline. About
+//! each of its operations:
 //!
 //! - what it **writes**: a value under a key, or the absence of one
 //!   ([`Write`]);
@@ -11,11 +11,20 @@
 //!   that doesn't hold is **pruned**: it stays in the log, and none of
 //!   its operations happen.
 //!
+//! And about itself: whether readers may see writes that **haven't
+//! settled** ([`Kind::shows_unsettled`]).
+//!
 //! A key holds whatever the last transaction that wasn't pruned wrote
-//! there. The models differ in their rules:
+//! there. The kinds of model differ only in what they declare:
 //!
 //! - `kv` requires nothing, so the last writer wins.
 //! - `claims` requires the key to be vacant, so the first writer wins.
+//! - A **threshold** map takes the same operations as `kv`, but only
+//!   shows what has settled. A reader never sees a value that some
+//!   contributor might not have, or one that an earlier write could
+//!   still displace, and what it sees never goes back. It's for values
+//!   that others act on: a schema version to migrate to, a key to
+//!   rotate to, a checkpoint.
 //!
 //! What a model relies on from the layers above:
 //!
@@ -89,6 +98,15 @@ pub(crate) enum Requirement {
 pub(crate) enum Kind {
     Kv = 1,
     Claims = 2,
+    Threshold = 3,
+}
+
+impl Kind {
+    /// Whether readers see writes that haven't settled. If not, they
+    /// aren't kept as versions at all: they wait in the log.
+    pub(crate) fn shows_unsettled(self) -> bool {
+        !matches!(self, Self::Threshold)
+    }
 }
 
 impl Operation {
@@ -112,12 +130,11 @@ impl Operation {
 
     /// Whether the change is one its model takes.
     pub(crate) fn belongs(&self) -> bool {
-        let kind = match self.change {
-            Change::Kv(_) => Kind::Kv,
-            Change::Claims(_) => Kind::Claims,
-        };
-
-        self.model.kind() == Some(kind)
+        match (&self.change, self.model.kind()) {
+            (Change::Kv(_), Some(Kind::Kv | Kind::Threshold))
+            | (Change::Claims(_), Some(Kind::Claims)) => true,
+            (Change::Kv(_) | Change::Claims(_), _) => false,
+        }
     }
 
     pub(crate) fn write(&self) -> Write {
@@ -182,9 +199,19 @@ impl ModelId {
         Self::new(Kind::Claims, agreement, nonce)
     }
 
+    /// A key-value map that only shows what has settled: values every
+    /// contributor holds, in an order that's final. Reads of it never go
+    /// back. Written like a [key-value] map.
+    ///
+    /// [key-value]: ModelId::kv
+    #[must_use]
+    pub fn threshold(agreement: AgreementId, nonce: [u8; 32]) -> Self {
+        Self::new(Kind::Threshold, agreement, nonce)
+    }
+
     /// `None` for an ID this version of the library didn't make.
     pub(crate) fn kind(&self) -> Option<Kind> {
-        [Kind::Kv, Kind::Claims]
+        [Kind::Kv, Kind::Claims, Kind::Threshold]
             .into_iter()
             .find(|&kind| kind as u8 == self.0[0])
     }

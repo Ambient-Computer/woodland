@@ -113,10 +113,11 @@ impl<'a> Batch<'a> {
 }
 
 impl<'a> TransactionBuilder<'a> {
-    /// Sets `key` in `model`, a [key-value] model. Naming a new model ID
-    /// creates it.
+    /// Sets `key` in `model`, a [key-value] or [threshold] model. Naming a
+    /// new model ID creates it.
     ///
     /// [key-value]: ModelId::kv
+    /// [threshold]: ModelId::threshold
     pub fn set(
         mut self,
         model: ModelId,

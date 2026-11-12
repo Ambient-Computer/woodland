@@ -417,6 +417,37 @@ fn a_committed_read_waits_for_every_contributor() {
     }
 }
 
+/// A threshold model shows a value only once every contributor holds
+/// it, even to the device that wrote it.
+#[test]
+fn a_threshold_value_shows_once_everyone_has_it() {
+    let mut cluster = household();
+    for other in [PHONE, LAPTOP, FRIEND] {
+        cluster.disconnect(NAS, other);
+    }
+
+    let agreement = genesis(&cluster).id();
+    let schema = ModelId::threshold(agreement, [4; 32]);
+    let version = Query::key(agreement, schema, b"version");
+    cluster.run(PHONE, |batch| {
+        batch
+            .transaction(agreement)
+            .set(schema, "version", "2")
+            .commit()
+    });
+    cluster.settle();
+    for device in [PHONE, LAPTOP, FRIEND] {
+        assert_eq!(run_query(&cluster, device, &version), None);
+    }
+
+    cluster.connect(NAS, LAPTOP);
+    cluster.settle();
+    for device in [PHONE, LAPTOP, NAS, FRIEND] {
+        let read = run_query(&cluster, device, &version);
+        assert_eq!(read.as_deref(), Some("2"), "device {device}");
+    }
+}
+
 /// A settled removal leaves nothing in storage: no value, and no
 /// tombstone either.
 #[test]

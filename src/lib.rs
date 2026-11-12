@@ -14,7 +14,7 @@
 //! 4. `log/`: signed transactions, delivered in causal order, and the
 //!    timeline they sort into.
 //! 5. `model/`: what operations write and require. A key-value map,
-//!    and a map of claims.
+//!    a map of claims, and a map that only shows what has settled.
 //! 6. `clock/`: version vectors, the stamps that order the timeline, and
 //!    the greatest lower bound that settling starts from.
 //! 7. `storage/`: the key-value contract and the key layout.

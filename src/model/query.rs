@@ -16,16 +16,18 @@
 //! - **Committed** ([`Query::committed`]): only what has settled. Every
 //!   device that reads it sees the same history, in the same order, and it
 //!   only ever moves forward. It trails the optimistic state by however
-//!   long the slowest contributor takes to catch up.
+//!   long the slowest contributor takes to catch up. A [threshold] model
+//!   is always read this way.
 //!
 //! What it gives up: the node can't say what changed, so there's nothing
 //! here to subscribe to. That would be a change feed, as a separate kind of
 //! action, rather than a different read path.
 //!
 //! [`Node`]: crate::Node
+//! [threshold]: ModelId::threshold
 
-use super::ModelId;
 use super::kv;
+use super::{Kind, ModelId};
 use crate::agreement::AgreementId;
 use crate::encoding;
 use crate::storage::keys::{self, Record};
@@ -107,9 +109,12 @@ impl Query {
     }
 
     fn new(agreement: AgreementId, model: ModelId, key: &[u8], exact: bool) -> Self {
+        let shows_unsettled = model.kind().is_some_and(Kind::shows_unsettled);
+        let frontier = shows_unsettled.then(|| keys::versions(agreement, model, key));
+
         Self {
             settled: keys::settled_value(agreement, model, key),
-            frontier: Some(keys::versions(agreement, model, key)),
+            frontier,
             exact: exact.then(|| key.to_vec()),
         }
     }
@@ -204,6 +209,14 @@ mod tests {
 
         assert_eq!(query.storage_prefixes().count(), 1);
         assert_eq!(query.results(&scanned), [result("color", "red")]);
+    }
+
+    #[test]
+    fn a_threshold_model_is_always_read_committed() {
+        let model = ModelId::threshold(agreement(), [2; 32]);
+        let query = Query::prefix(agreement(), model, b"");
+
+        assert_eq!(query, query.clone().committed());
     }
 
     /// A stamp ends in its author's key, which can hold any bytes. A key

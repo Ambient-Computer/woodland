@@ -34,7 +34,7 @@ use crate::clock::Stamp;
 use crate::encoding;
 use crate::log::Transaction;
 use crate::log::{Clock, Log};
-use crate::model::Operation;
+use crate::model::{Kind, Operation, Write};
 use crate::node::Outbox;
 use crate::storage::keys::{self, Record};
 
@@ -198,7 +198,8 @@ pub(super) fn save_transaction(id: AgreementId, signed: &Signed<Transaction>, ou
 }
 
 /// Writes what a live transaction's operations leave behind, as versions
-/// in the frontier. In order, so a later operation on the same key replaces
+/// in the frontier. Not for models that only show what has settled:
+/// their writes wait in the log. In order, so a later operation on the same key replaces
 /// an earlier one.
 pub(super) fn save_operations(
     id: AgreementId,
@@ -206,7 +207,8 @@ pub(super) fn save_operations(
     operations: &[Operation],
     outbox: &mut Outbox,
 ) {
-    for write in operations.iter().map(Operation::write) {
+    let shown = |write: &Write| write.model.kind().is_some_and(Kind::shows_unsettled);
+    for write in operations.iter().map(Operation::write).filter(shown) {
         let key = keys::version(id, write.model, &write.key, stamp);
         outbox.put(key, &write.value);
     }
