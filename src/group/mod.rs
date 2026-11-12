@@ -43,9 +43,10 @@ use verdicts::{Verdict, Verdicts};
 use crate::actor::{Identity, Peer, Signed};
 use crate::agreement::{Agreement, AgreementId, Change, Genesis};
 use crate::clock::Progress;
+use crate::io::Changed;
 use crate::lattice::Lattice;
 use crate::log::Log;
-use crate::model::{ModelId, Operation};
+use crate::model::{Kind, ModelId, Operation};
 use crate::node::Outbox;
 
 #[derive(Debug)]
@@ -288,6 +289,7 @@ impl Group {
         tracing::info!("rewinding: holding transactions nobody vouched for");
         self.log.rewind();
         persistence::forget_frontier(self.id, outbox);
+        outbox.changed(Changed::Everything { agreement: self.id });
         for peer in self.peers.values_mut() {
             peer.rewound();
         }
@@ -316,9 +318,30 @@ impl Group {
                 Verdict::Pruned => {
                     persistence::forget_operations(self.id, stamp, operations, outbox);
                 }
-                Verdict::Pending => {}
+                Verdict::Pending => continue,
+            }
+
+            // Either way, what readers see at its keys may be different.
+            let shown = |operation: &&Operation| {
+                let kind = operation.model.kind();
+
+                kind.is_some_and(Kind::shows_unsettled)
+            };
+            for operation in operations.iter().filter(shown) {
+                self.notify(operation, false, outbox);
             }
         }
+    }
+
+    /// Tells whoever is watching that an operation's key changed.
+    fn notify(&self, operation: &Operation, committed: bool, outbox: &mut Outbox) {
+        let write = operation.write();
+        outbox.changed(Changed::Key {
+            agreement: self.id,
+            model: write.model,
+            key: write.key,
+            committed,
+        });
     }
 
     /// Settles what agreement proves is final. A live transaction's
@@ -331,8 +354,9 @@ impl Group {
             let operations = &transaction.payload().operations;
             if self.verdicts.is_live(&transaction) {
                 persistence::fold_operations(self.id, operations, outbox);
-                for write in operations.iter().map(Operation::write) {
-                    self.verdicts.folded(&write);
+                for operation in operations {
+                    self.verdicts.folded(&operation.write());
+                    self.notify(operation, true, outbox);
                 }
             }
 
@@ -355,6 +379,7 @@ impl Group {
         }
 
         persistence::save_snapshot(self.id, snapshot, outbox);
+        outbox.changed(Changed::Everything { agreement: self.id });
         self.verdicts.absorbed();
         for transaction in self.log.absorb(&snapshot.cut) {
             persistence::forget_transaction(self.id, &transaction, outbox);

@@ -12,7 +12,7 @@ use ed25519_dalek::VerifyingKey;
 use super::peers;
 use super::store::MemoryStore;
 use crate::actor::Identity;
-use crate::io::{Action, NetworkAction};
+use crate::io::{Action, Changed, NetworkAction};
 use crate::node::{Batch, Node};
 use crate::storage::StorageAction;
 
@@ -26,6 +26,8 @@ pub(crate) struct Device {
     pub(crate) node: Node,
     pub(crate) store: MemoryStore,
     key: VerifyingKey,
+    /// Every change the node has reported, oldest first.
+    pub(crate) changes: Vec<Changed>,
     /// Events waiting to go into this device's next batch.
     inbox: VecDeque<Incoming>,
 }
@@ -61,6 +63,7 @@ impl Cluster {
                 node: Node::new(identity(index)),
                 store: MemoryStore::default(),
                 key: identity(index).public_key(),
+                changes: Vec::new(),
                 inbox: VecDeque::new(),
             })
             .collect();
@@ -187,6 +190,8 @@ impl Cluster {
                     let entries = self.devices[device].store.get(keys);
                     self.devices[device].inbox.push_back(Incoming::Got(entries));
                 }
+
+                Action::Changed(change) => self.devices[device].changes.push(change),
 
                 Action::Network(NetworkAction::Send { peer, message }) => {
                     let sender = self.key(device);

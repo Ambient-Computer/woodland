@@ -2,6 +2,7 @@ mod convergence;
 
 use super::*;
 use crate::agreement::Genesis;
+use crate::io::Changed;
 use crate::model::{ModelId, Query};
 use crate::storage::keys::Record;
 use crate::testing::cluster::{Cluster, FRIEND, LAPTOP, NAS, PHONE};
@@ -415,6 +416,58 @@ fn a_committed_read_waits_for_every_contributor() {
         assert_eq!(committed.as_deref(), Some("blue"), "device {device}");
         assert_eq!(stored_frontier(&cluster, device), [], "device {device}");
     }
+}
+
+/// What a device reports as changed is enough to keep a query's results
+/// current: run it again whenever a change affects it, and it never
+/// misses anything.
+#[test]
+fn changes_say_when_to_read_again() {
+    let mut cluster = household();
+    for other in [PHONE, LAPTOP, FRIEND] {
+        cluster.disconnect(NAS, other);
+    }
+
+    let color = Query::key(genesis(&cluster).id(), notes(&cluster), b"color");
+    let committed = color.clone().committed();
+    let affected = |cluster: &Cluster, query: &Query| {
+        let changes = cluster.devices[LAPTOP].changes.iter();
+
+        changes
+            .filter(|change| query.is_affected_by(change))
+            .count()
+    };
+
+    // The write arrives: optimistic reads change, committed ones don't.
+    write(&mut cluster, PHONE, "color", "blue");
+    write(&mut cluster, PHONE, "size", "large");
+    cluster.settle();
+    assert_eq!(affected(&cluster, &color), 1);
+    assert_eq!(affected(&cluster, &committed), 0);
+
+    // It settles: now committed reads change, and optimistic ones don't.
+    cluster.connect(NAS, PHONE);
+    cluster.settle();
+    assert_eq!(affected(&cluster, &color), 1);
+    assert_eq!(affected(&cluster, &committed), 1);
+}
+
+/// A device that catches up from a snapshot can't say which keys changed.
+#[test]
+fn a_snapshot_changes_everything() {
+    let mut cluster = household();
+    for other in [PHONE, LAPTOP, NAS] {
+        cluster.disconnect(FRIEND, other);
+    }
+
+    write(&mut cluster, PHONE, "color", "blue");
+    cluster.settle();
+    cluster.connect(FRIEND, NAS);
+    cluster.settle();
+
+    let agreement = genesis(&cluster).id();
+    let changes = &cluster.devices[FRIEND].changes;
+    assert!(changes.contains(&Changed::Everything { agreement }));
 }
 
 /// A threshold model shows a value only once every contributor holds

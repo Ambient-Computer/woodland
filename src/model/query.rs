@@ -19,17 +19,23 @@
 //!   long the slowest contributor takes to catch up. A [threshold] model
 //!   is always read this way.
 //!
-//! What it gives up: the node can't say what changed, so there's nothing
-//! here to subscribe to. That would be a change feed, as a separate kind of
-//! action, rather than a different read path.
+//! # Subscribing
+//!
+//! The node doesn't run queries, so it can't push results. It says what
+//! changed instead ([`Changed`]), after the write that changed it. Keep
+//! the queries you're showing, and run again the ones a change
+//! [affects]. An optimistic query feeding a signal in a UI and a
+//! committed one feeding an index on disk are the same loop.
 //!
 //! [`Node`]: crate::Node
+//! [affects]: Query::is_affected_by
 //! [threshold]: ModelId::threshold
 
 use super::kv;
 use super::{Kind, ModelId};
 use crate::agreement::AgreementId;
 use crate::encoding;
+use crate::io::Changed;
 use crate::storage::keys::{self, Record};
 
 /// A read of one model's entries: a single key, or every key that starts
@@ -75,6 +81,28 @@ impl Query {
         let frontier = self.frontier.as_deref();
 
         std::iter::once(self.settled.as_slice()).chain(frontier)
+    }
+
+    /// Whether `change` could alter what this query returns. If so, scan
+    /// and decode again.
+    #[must_use]
+    pub fn is_affected_by(&self, change: &Changed) -> bool {
+        match change {
+            Changed::Everything { agreement } => {
+                self.settled.starts_with(&keys::agreement(*agreement))
+            }
+            Changed::Key {
+                agreement,
+                model,
+                key,
+                committed,
+            } => {
+                let stored = keys::settled_value(*agreement, *model, key);
+                let wanted = self.exact.as_ref().is_none_or(|exact| exact == key);
+
+                *committed == self.frontier.is_none() && wanted && stored.starts_with(&self.settled)
+            }
+        }
     }
 
     /// Decodes scanned storage entries into the application's keys and
@@ -217,6 +245,60 @@ mod tests {
         let query = Query::prefix(agreement(), model, b"");
 
         assert_eq!(query, query.clone().committed());
+    }
+
+    fn changed(key: &str, committed: bool) -> Changed {
+        Changed::Key {
+            agreement: agreement(),
+            model: model(),
+            key: key.into(),
+            committed,
+        }
+    }
+
+    #[test]
+    fn a_query_is_affected_by_changes_to_the_keys_it_reads() {
+        let one = Query::key(agreement(), model(), b"pet");
+        let many = Query::prefix(agreement(), model(), b"pet");
+
+        assert!(one.is_affected_by(&changed("pet", false)));
+        assert!(!one.is_affected_by(&changed("pet/cat", false)));
+        assert!(many.is_affected_by(&changed("pet/cat", false)));
+        assert!(!many.is_affected_by(&changed("color", false)));
+
+        let elsewhere = Query::key(agreement(), ModelId::kv(agreement(), [9; 32]), b"pet");
+        assert!(!elsewhere.is_affected_by(&changed("pet", false)));
+    }
+
+    /// Settling a write changes committed reads. Optimistic ones showed it
+    /// already.
+    #[test]
+    fn a_query_is_affected_by_changes_to_its_kind_of_read() {
+        let optimistic = Query::key(agreement(), model(), b"pet");
+        let committed = optimistic.clone().committed();
+
+        assert!(optimistic.is_affected_by(&changed("pet", false)));
+        assert!(!optimistic.is_affected_by(&changed("pet", true)));
+        assert!(committed.is_affected_by(&changed("pet", true)));
+        assert!(!committed.is_affected_by(&changed("pet", false)));
+    }
+
+    #[test]
+    fn every_query_of_an_agreement_is_affected_when_everything_changed() {
+        let query = Query::key(agreement(), model(), b"pet");
+        let other = Genesis::new([2; 32], [phone().id()]).id();
+
+        assert!(query.is_affected_by(&Changed::Everything {
+            agreement: agreement()
+        }));
+        assert!(query.committed().is_affected_by(&Changed::Everything {
+            agreement: agreement()
+        }));
+        assert!(
+            !Query::key(other, model(), b"pet").is_affected_by(&Changed::Everything {
+                agreement: agreement()
+            })
+        );
     }
 
     /// A stamp ends in its author's key, which can hold any bytes. A key

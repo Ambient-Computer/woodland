@@ -2,7 +2,9 @@ use serde::Serialize;
 
 use crate::actor::Peer;
 use crate::encoding;
-use crate::io::{Action, NetworkAction};
+use std::collections::BTreeSet;
+
+use crate::io::{Action, Changed, NetworkAction};
 use crate::storage::{StorageAction, StorageWrite};
 
 /// Collects the storage work domains produce while processing a batch, then
@@ -18,6 +20,8 @@ pub(crate) struct Outbox {
     scans: Vec<Vec<u8>>,
     /// Keys to read, all in one get.
     gets: Vec<Vec<u8>>,
+    /// What changed for readers. Each change is reported once.
+    changes: BTreeSet<Changed>,
 }
 
 impl Outbox {
@@ -47,8 +51,12 @@ impl Outbox {
         self.gets.push(key);
     }
 
-    /// Writes first, then reads, then sends. Never advertise before it's
-    /// durable, and never read around a pending write.
+    pub(crate) fn changed(&mut self, change: Changed) {
+        self.changes.insert(change);
+    }
+
+    /// Writes first, then reads, then changes, then sends. Never advertise
+    /// before it's durable, and never read around a pending write.
     pub(crate) fn into_actions(self, messages: Vec<(Peer, Vec<u8>)>) -> Vec<Action> {
         let write = (!self.writes.is_empty()).then_some(StorageAction::Write(self.writes));
         let scans = self
@@ -68,6 +76,7 @@ impl Outbox {
             .chain(scans)
             .chain(get)
             .map(Action::Storage)
+            .chain(self.changes.into_iter().map(Action::Changed))
             .chain(sends)
             .collect()
     }

@@ -4,5 +4,5 @@
 mod action;
 mod event;
 
-pub use action::{Action, NetworkAction};
+pub use action::{Action, Changed, NetworkAction};
 pub(crate) use event::{Event, LocalEvent, NetworkEvent, StorageEvent};
