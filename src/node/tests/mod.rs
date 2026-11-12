@@ -33,7 +33,7 @@ fn write(cluster: &mut Cluster, device: usize, key: &str, value: &str) {
     let (agreement, model) = (genesis(cluster).id(), notes(cluster));
     let (key, value) = (key.to_owned(), value.to_owned());
     cluster.run(device, |batch| {
-        batch.transaction(agreement, model).set(key, value).commit()
+        batch.transaction(agreement).set(model, key, value).commit()
     });
 }
 
@@ -183,6 +183,31 @@ fn quiet_contributors_settle_everything() {
     }
 }
 
+/// One transaction changes two models. Each keeps its own keys, and
+/// neither change shows up without the other.
+#[test]
+fn a_transaction_spans_models() {
+    let mut cluster = household();
+    let agreement = genesis(&cluster).id();
+    let (notes, tags) = (notes(&cluster), ModelId::new(agreement, [2; 32]));
+    cluster.run(PHONE, |batch| {
+        let transaction = batch.transaction(agreement);
+
+        transaction
+            .set(notes, "color", "blue")
+            .set(tags, "color", "cool")
+            .commit()
+    });
+    cluster.settle();
+
+    for device in [PHONE, LAPTOP, NAS, FRIEND] {
+        let tag = run_query(&cluster, device, &Query::key(agreement, tags, b"color"));
+
+        assert_eq!(read(&cluster, device, "color").as_deref(), Some("blue"));
+        assert_eq!(tag.as_deref(), Some("cool"));
+    }
+}
+
 /// Peers don't form a full mesh. Transactions are signed by their
 /// authors, so any device can relay them, and views merge, so they
 /// spread hop by hop.
@@ -299,7 +324,7 @@ fn a_settled_removal_leaves_nothing_behind() {
 
     let (agreement, model) = (genesis(&cluster).id(), notes(&cluster));
     cluster.run(PHONE, |batch| {
-        batch.transaction(agreement, model).remove("color").commit()
+        batch.transaction(agreement).remove(model, "color").commit()
     });
     cluster.settle();
 

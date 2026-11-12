@@ -10,7 +10,8 @@
 //!   order every device agrees on, in which a transaction always comes
 //!   after everything it was written on top of.
 //! - **Transactions are atomic.** All of a transaction's operations share
-//!   its stamp and are written together, or not at all.
+//!   its stamp and are written together, or not at all, whichever models
+//!   they're for.
 //!
 //! # What a model owns
 //!
@@ -22,11 +23,13 @@
 //!
 //! # Many models per agreement
 //!
-//! An agreement can hold any number of models. The agreement's clock counts
-//! transactions across all of them, so one version vector (and one
-//! settled cut) covers every model at once. A model is just a
-//! namespace inside that history: creating one is choosing an ID, and the
-//! first transaction that names it brings it into existence everywhere.
+//! An agreement can hold any number of models, and a transaction can
+//! change several of them at once: each operation names the model it's
+//! for. The agreement's clock counts transactions, not models, so one
+//! version vector (and one settled cut) covers every model. A model is
+//! just a namespace inside that history: creating one is choosing an ID,
+//! and the first operation that names it brings it into existence
+//! everywhere. Two models never see each other's keys.
 //!
 //! [`Stamp`]: crate::clock::Stamp
 
@@ -35,11 +38,41 @@ mod query;
 
 use serde::{Deserialize, Serialize};
 
-pub(crate) use kv::Operation;
 pub use query::Query;
 
 use crate::agreement::AgreementId;
 use crate::encoding;
+
+/// One step of a transaction: a change to one model.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Operation {
+    pub(crate) model: ModelId,
+    pub(crate) change: kv::Operation,
+}
+
+impl Operation {
+    pub(crate) fn set(model: ModelId, key: Vec<u8>, value: Vec<u8>) -> Self {
+        let change = kv::Operation::Set { key, value };
+
+        Self { model, change }
+    }
+
+    pub(crate) fn remove(model: ModelId, key: Vec<u8>) -> Self {
+        let change = kv::Operation::Remove { key };
+
+        Self { model, change }
+    }
+
+    pub(crate) fn write(&self) -> Write {
+        let (key, value) = self.change.write();
+
+        Write {
+            model: self.model,
+            key,
+            value,
+        }
+    }
+}
 
 /// What one operation leaves under a key, at its transaction's place in
 /// the timeline. Both the key and the value are the model's to interpret.
@@ -48,6 +81,7 @@ use crate::encoding;
 /// then becomes the key's settled value (see `group::settling`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Write {
+    pub(crate) model: ModelId,
     pub(crate) key: Vec<u8>,
     /// `None` leaves the key without a value.
     pub(crate) value: Option<Vec<u8>>,

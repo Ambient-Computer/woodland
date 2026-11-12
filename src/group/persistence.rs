@@ -32,7 +32,7 @@ use crate::clock::Stamp;
 use crate::encoding;
 use crate::log::Transaction;
 use crate::log::{Clock, Log};
-use crate::model::{ModelId, Operation};
+use crate::model::Operation;
 use crate::node::Outbox;
 use crate::storage::keys::{self, Record};
 
@@ -199,13 +199,13 @@ pub(super) fn save_transaction(id: AgreementId, signed: &Signed<Transaction>, ou
 /// an earlier one.
 pub(super) fn save_operations(
     id: AgreementId,
-    model: ModelId,
     stamp: Stamp,
     operations: &[Operation],
     outbox: &mut Outbox,
 ) {
     for write in operations.iter().map(Operation::write) {
-        outbox.put(keys::version(id, model, &write.key, stamp), &write.value);
+        let key = keys::version(id, write.model, &write.key, stamp);
+        outbox.put(key, &write.value);
     }
 }
 
@@ -219,7 +219,7 @@ pub(super) fn settle_transaction(
 ) {
     let payload = transaction.payload();
     for write in payload.operations.iter().map(Operation::write) {
-        let settled = keys::settled_value(id, payload.model, &write.key);
+        let settled = keys::settled_value(id, write.model, &write.key);
         match write.value {
             Some(value) => outbox.put_bytes(settled, value),
             None => outbox.delete(settled),
@@ -239,7 +239,7 @@ pub(super) fn forget_transaction(
     let (author, payload) = (transaction.author(), transaction.payload());
     let stamp = payload.stamp(author);
     for write in payload.operations.iter().map(Operation::write) {
-        outbox.delete(keys::version(id, payload.model, &write.key, stamp));
+        outbox.delete(keys::version(id, write.model, &write.key, stamp));
     }
 
     outbox.delete(keys::log(id, author, payload.seq));

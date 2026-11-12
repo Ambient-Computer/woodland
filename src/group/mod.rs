@@ -41,7 +41,7 @@ use crate::agreement::{Agreement, AgreementId, Change, Genesis};
 use crate::clock::Progress;
 use crate::lattice::Lattice;
 use crate::log::Log;
-use crate::model::{ModelId, Operation};
+use crate::model::Operation;
 use crate::node::Outbox;
 
 #[derive(Debug)]
@@ -86,7 +86,6 @@ impl Group {
     pub(crate) fn write(
         &mut self,
         identity: &Identity,
-        model: ModelId,
         operations: Vec<Operation>,
         outbox: &mut Outbox,
     ) {
@@ -94,9 +93,9 @@ impl Group {
         if configuration.removed().any(|peer| peer == self.me) {
             tracing::warn!("removed from the agreement, dropped a write");
         } else if self.log.admitted() {
-            self.sign(identity, model, operations, outbox);
+            self.sign(identity, operations, outbox);
         } else {
-            self.held.hold(self.id, (model, operations), outbox);
+            self.held.hold(self.id, operations, outbox);
         }
     }
 
@@ -243,8 +242,8 @@ impl Group {
         if self.log.admitted() {
             let held = self.held.release(self.id, outbox);
             let any = !held.is_empty();
-            for (model, operations) in held {
-                self.sign(identity, model, operations, outbox);
+            for operations in held {
+                self.sign(identity, operations, outbox);
             }
 
             if any {
@@ -255,14 +254,8 @@ impl Group {
 
     /// Signs a transaction on top of everything integrated here. The stored
     /// and sent bytes are final from now on.
-    fn sign(
-        &mut self,
-        identity: &Identity,
-        model: ModelId,
-        operations: Vec<Operation>,
-        outbox: &mut Outbox,
-    ) {
-        let transaction = self.log.author(self.id, model, operations);
+    fn sign(&mut self, identity: &Identity, operations: Vec<Operation>, outbox: &mut Outbox) {
+        let transaction = self.log.author(self.id, operations);
         let signed = Signed::sign(identity, transaction);
         persistence::save_transaction(self.id, signed.signed(), outbox);
 
@@ -301,8 +294,8 @@ impl Group {
             let payload = transaction.payload();
             persistence::save_transaction(self.id, transaction.signed(), outbox);
 
-            let (model, stamp) = (payload.model, payload.stamp(author));
-            persistence::save_operations(self.id, model, stamp, &payload.operations, outbox);
+            let stamp = payload.stamp(author);
+            persistence::save_operations(self.id, stamp, &payload.operations, outbox);
         }
     }
 

@@ -1,6 +1,6 @@
 use crate::actor::Peer;
 use crate::agreement::{AgreementId, Change, Genesis};
-use crate::model::{ModelId, Operation};
+use crate::model::Operation;
 
 /// Something that happened, locally or remotely.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -43,7 +43,6 @@ pub(crate) enum LocalEvent {
     /// Commit a transaction.
     Write {
         agreement: AgreementId,
-        model: ModelId,
         operations: Vec<Operation>,
     },
 }

@@ -146,11 +146,10 @@ impl Node {
 
             Event::Local(LocalEvent::Write {
                 agreement,
-                model,
                 operations,
             }) => {
                 if let Some(group) = self.groups.get_mut(&agreement) {
-                    group.write(&self.identity, model, operations, outbox);
+                    group.write(&self.identity, operations, outbox);
                 }
             }
         }

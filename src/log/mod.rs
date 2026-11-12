@@ -42,7 +42,7 @@ use crate::actor::{Peer, Signed, Verified};
 use crate::agreement::AgreementId;
 use crate::clock::VersionVector;
 use crate::lattice::Lattice;
-use crate::model::{ModelId, Operation};
+use crate::model::Operation;
 pub(crate) use transaction::Transaction;
 
 /// One log on this device.
@@ -151,7 +151,6 @@ impl Log {
     pub(crate) fn author(
         &mut self,
         agreement: AgreementId,
-        model: ModelId,
         operations: Vec<Operation>,
     ) -> Transaction {
         self.authored += 1;
@@ -159,7 +158,6 @@ impl Log {
 
         Transaction {
             agreement,
-            model,
             seq: self.authored,
             after: self.clock.integrated.clone(),
             lamport: self.clock.lamport,
@@ -307,8 +305,7 @@ mod tests {
 
         /// Writes a transaction and integrates it locally.
         fn write(&mut self) -> Verified<Transaction> {
-            let model = ModelId::new(genesis().id(), [1; 32]);
-            let transaction = self.log.author(genesis().id(), model, Vec::new());
+            let transaction = self.log.author(genesis().id(), Vec::new());
             let signed = Signed::sign(&identity_of(self.me), transaction);
             self.receive(&signed);
 

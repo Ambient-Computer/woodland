@@ -3,9 +3,10 @@ use serde::{Deserialize, Serialize};
 use crate::actor::{Peer, Signable};
 use crate::agreement::AgreementId;
 use crate::clock::{Stamp, VersionVector};
-use crate::model::{ModelId, Operation};
+use crate::model::Operation;
 
-/// An atomic group of operations against one model, and the unit that's
+/// An atomic group of operations, against any of the agreement's models,
+/// and the unit that's
 /// signed, sent, stored and integrated.
 ///
 /// The transaction carries its own clock values:
@@ -29,7 +30,6 @@ use crate::model::{ModelId, Operation};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Transaction {
     pub(crate) agreement: AgreementId,
-    pub(crate) model: ModelId,
     pub(crate) seq: u64,
     pub(crate) after: VersionVector,
     pub(crate) lamport: u64,

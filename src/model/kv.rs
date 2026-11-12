@@ -34,7 +34,6 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::Write;
 use crate::clock::Stamp;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,17 +43,12 @@ pub(crate) enum Operation {
 }
 
 impl Operation {
-    /// What the operation's key holds once it's applied.
-    pub(crate) fn write(&self) -> Write {
+    /// The operation's key, and what it holds once the operation is
+    /// applied.
+    pub(crate) fn write(&self) -> (Vec<u8>, Option<Vec<u8>>) {
         match self {
-            Self::Set { key, value } => Write {
-                key: key.clone(),
-                value: Some(value.clone()),
-            },
-            Self::Remove { key } => Write {
-                key: key.clone(),
-                value: None,
-            },
+            Self::Set { key, value } => (key.clone(), Some(value.clone())),
+            Self::Remove { key } => (key.clone(), None),
         }
     }
 }
@@ -104,7 +98,7 @@ mod tests {
     impl Store {
         /// Integrates one transaction's operations, all under its stamp.
         fn apply(&mut self, stamp: Stamp, operations: &[Operation]) {
-            for Write { key, value } in operations.iter().map(Operation::write) {
+            for (key, value) in operations.iter().map(Operation::write) {
                 self.versions.insert((key, stamp), value);
             }
         }
@@ -112,7 +106,7 @@ mod tests {
         /// Settles one transaction, the way the group does: its writes are
         /// folded into the settled values, and its versions dropped.
         fn settle(&mut self, stamp: Stamp, operations: &[Operation]) {
-            for Write { key, value } in operations.iter().map(Operation::write) {
+            for (key, value) in operations.iter().map(Operation::write) {
                 self.versions.remove(&(key.clone(), stamp));
                 match value {
                     Some(value) => self.settled.insert(key, value),
@@ -258,7 +252,7 @@ mod tests {
     /// behind: the plainest reading of "derived from the timeline".
     fn one_at_a_time(transactions: &[(Stamp, Vec<Operation>)]) -> BTreeMap<Vec<u8>, Vec<u8>> {
         let mut state = BTreeMap::new();
-        for Write { key, value } in transactions
+        for (key, value) in transactions
             .iter()
             .flat_map(|(_, operations)| operations.iter().map(Operation::write))
         {

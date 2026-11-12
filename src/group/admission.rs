@@ -50,7 +50,7 @@ use crate::actor::Peer;
 use crate::agreement::{AgreementId, Decision};
 use crate::clock::VersionVector;
 use crate::lattice::Lattice;
-use crate::model::{ModelId, Operation};
+use crate::model::Operation;
 use crate::node::Outbox;
 use crate::storage::keys;
 
@@ -73,7 +73,7 @@ pub(super) struct Held {
 }
 
 /// A write as the application made it: not yet a transaction.
-pub(super) type HeldWrite = (ModelId, Vec<Operation>);
+pub(super) type HeldWrite = Vec<Operation>;
 
 impl Held {
     /// Rebuilds from storage. `stored` is in storage order, by index.

@@ -17,14 +17,13 @@ pub struct Batch<'a> {
     events: Vec<Event>,
 }
 
-/// A transaction being built: operations against one model, committed
-/// atomically. Start one with [`Batch::transaction`].
+/// A transaction being built: operations against any of an agreement's
+/// models, committed atomically. Start one with [`Batch::transaction`].
 #[derive(Debug)]
 #[must_use = "the transaction is discarded unless committed"]
 pub struct TransactionBuilder<'a> {
     batch: Batch<'a>,
     agreement: AgreementId,
-    model: ModelId,
     operations: Vec<Operation>,
 }
 
@@ -86,13 +85,11 @@ impl<'a> Batch<'a> {
         self.push(Event::Local(LocalEvent::Reconfigure { agreement, change }))
     }
 
-    /// Starts a transaction against `model`. Naming a new model ID creates
-    /// it.
-    pub fn transaction(self, agreement: AgreementId, model: ModelId) -> TransactionBuilder<'a> {
+    /// Starts a transaction against the agreement's models.
+    pub fn transaction(self, agreement: AgreementId) -> TransactionBuilder<'a> {
         TransactionBuilder {
             batch: self,
             agreement,
-            model,
             operations: Vec::new(),
         }
     }
@@ -110,15 +107,21 @@ impl<'a> Batch<'a> {
 }
 
 impl<'a> TransactionBuilder<'a> {
-    pub fn set(mut self, key: impl Into<Vec<u8>>, value: impl Into<Vec<u8>>) -> Self {
-        let (key, value) = (key.into(), value.into());
-        self.operations.push(Operation::Set { key, value });
+    /// Sets `key` in `model`. Naming a new model ID creates it.
+    pub fn set(
+        mut self,
+        model: ModelId,
+        key: impl Into<Vec<u8>>,
+        value: impl Into<Vec<u8>>,
+    ) -> Self {
+        let operation = Operation::set(model, key.into(), value.into());
+        self.operations.push(operation);
         self
     }
 
-    pub fn remove(mut self, key: impl Into<Vec<u8>>) -> Self {
-        let key = key.into();
-        self.operations.push(Operation::Remove { key });
+    /// Removes `key` from `model`.
+    pub fn remove(mut self, model: ModelId, key: impl Into<Vec<u8>>) -> Self {
+        self.operations.push(Operation::remove(model, key.into()));
         self
     }
 
@@ -130,7 +133,6 @@ impl<'a> TransactionBuilder<'a> {
 
         self.batch.push(Event::Local(LocalEvent::Write {
             agreement: self.agreement,
-            model: self.model,
             operations: self.operations,
         }))
     }
