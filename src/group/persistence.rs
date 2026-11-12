@@ -30,7 +30,7 @@ use crate::clock::Stamp;
 use crate::encoding;
 use crate::log::Transaction;
 use crate::log::{Clock, Log};
-use crate::model::{ModelId, Operation, Version};
+use crate::model::{ModelId, Operation};
 use crate::node::Outbox;
 use crate::storage::keys::{self, Record};
 
@@ -174,26 +174,21 @@ pub(super) fn save_operations(
     outbox: &mut Outbox,
 ) {
     for operation in operations {
-        save_version(
-            id,
-            model,
-            operation.key(),
-            stamp,
-            &operation.version(),
-            outbox,
-        );
+        let write = operation.write();
+        save_version(id, model, &write.key, stamp, write.value, outbox);
     }
 }
 
+/// Writes one version as the model encoded it.
 pub(super) fn save_version(
     id: AgreementId,
     model: ModelId,
     key: &[u8],
     stamp: Stamp,
-    version: &Version,
+    value: Vec<u8>,
     outbox: &mut Outbox,
 ) {
-    outbox.put(keys::version(id, model, key, stamp), version);
+    outbox.put_bytes(keys::version(id, model, key, stamp), value);
 }
 
 pub(super) fn forget_transactions(

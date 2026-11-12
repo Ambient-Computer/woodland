@@ -210,7 +210,8 @@ impl Group {
     /// Takes on a peer's snapshot. Its versions merge with ours by union.
     fn absorb(&mut self, snapshot: &Snapshot, outbox: &mut Outbox) {
         for it in &snapshot.versions {
-            persistence::save_version(self.id, it.model, &it.key, it.stamp, &it.version, outbox);
+            let value = it.value.clone();
+            persistence::save_version(self.id, it.model, &it.key, it.stamp, value, outbox);
         }
 
         let forgotten = self.log.absorb(&snapshot.floor, snapshot.lamport);

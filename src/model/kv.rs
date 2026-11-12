@@ -28,7 +28,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use super::Write;
 use crate::clock::Stamp;
+use crate::encoding;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Operation {
@@ -53,6 +55,14 @@ impl Operation {
         match self {
             Self::Set { value, .. } => Version(Some(value.clone())),
             Self::Remove { .. } => Version(None),
+        }
+    }
+
+    /// The version this operation stores under its key.
+    pub(crate) fn write(&self) -> Write {
+        Write {
+            key: self.key().to_vec(),
+            value: encoding::encode(&self.version()),
         }
     }
 }

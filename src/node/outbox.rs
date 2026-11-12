@@ -24,6 +24,11 @@ impl Outbox {
         self.writes.push(StorageWrite::Put { key, value });
     }
 
+    /// Stores bytes that are already encoded.
+    pub(crate) fn put_bytes(&mut self, key: Vec<u8>, value: Vec<u8>) {
+        self.writes.push(StorageWrite::Put { key, value });
+    }
+
     pub(crate) fn delete_range(&mut self, start: Vec<u8>, end: Vec<u8>) {
         self.writes.push(StorageWrite::DeleteRange { start, end });
     }

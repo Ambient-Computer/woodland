@@ -12,6 +12,14 @@
 //! - **Transactions are atomic.** All of a transaction's operations share
 //!   its stamp and are written together, or not at all.
 //!
+//! # What a model owns
+//!
+//! A model owns its operations and the meaning of what it stores. To the
+//! log, the group and storage, an operation is something to carry, and
+//! what it leaves behind is a [`Write`]: bytes under a key, in the model's
+//! own range, at the transaction's stamp. Only the model and its
+//! [`Query`] read them back.
+//!
 //! # Many models per agreement
 //!
 //! An agreement can hold any number of models. The agreement's clock counts
@@ -27,11 +35,19 @@ mod query;
 
 use serde::{Deserialize, Serialize};
 
-pub(crate) use kv::{Operation, Version};
+pub(crate) use kv::Operation;
 pub use query::Query;
 
 use crate::agreement::AgreementId;
 use crate::encoding;
+
+/// What one operation leaves in storage, at its transaction's place in the
+/// timeline. Both the key and the value are the model's to interpret.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Write {
+    pub(crate) key: Vec<u8>,
+    pub(crate) value: Vec<u8>,
+}
 
 /// Names a model within an agreement. The BLAKE3 hash of the agreement's ID
 /// and a nonce.

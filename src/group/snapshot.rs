@@ -14,9 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::agreement::AgreementId;
 use crate::clock::{Stamp, VersionVector};
-use crate::encoding;
 use crate::log::Log;
-use crate::model::{ModelId, Version};
+use crate::model::ModelId;
 use crate::node::Outbox;
 use crate::storage::keys::{self, Record};
 
@@ -32,13 +31,14 @@ pub(crate) struct Snapshot {
     pub(crate) versions: Vec<Versioned>,
 }
 
-/// One version of one key, as a snapshot carries it.
+/// One version of one key, as a snapshot carries it: exactly what the
+/// model stored.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Versioned {
     pub(crate) model: ModelId,
     pub(crate) key: Vec<u8>,
     pub(crate) stamp: Stamp,
-    pub(crate) version: Version,
+    pub(crate) value: Vec<u8>,
 }
 
 #[derive(Debug, Default)]
@@ -84,7 +84,7 @@ impl Snapshots {
                 model,
                 key,
                 stamp: *stamp,
-                version: encoding::decode(value)?,
+                value: value.clone(),
             })
         });
 
