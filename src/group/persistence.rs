@@ -23,13 +23,14 @@
 use std::collections::BTreeMap;
 
 use super::Group;
-use super::history::{Clock, History};
 use super::snapshot::Snapshots;
 use crate::actor::{Peer, Signed, Verified};
 use crate::agreement::{Agreement, AgreementId, Attestation, Genesis, View};
 use crate::clock::Stamp;
 use crate::encoding;
-use crate::model::{ModelId, Operation, Transaction, Version};
+use crate::log::Transaction;
+use crate::log::{Clock, Log};
+use crate::model::{ModelId, Operation, Version};
 use crate::node::Outbox;
 use crate::storage::keys::{self, Record};
 
@@ -113,7 +114,7 @@ impl From<Restored> for Group {
             id,
             me: restored.me,
             agreement,
-            history: History::restore(restored.clock.clone(), restored.transactions, restored.me),
+            log: Log::restore(restored.clock.clone(), restored.transactions, restored.me),
             snapshots: Snapshots::default(),
             peers: BTreeMap::new(),
             persisted: Persisted {
@@ -132,7 +133,7 @@ impl Persisted {
         &mut self,
         id: AgreementId,
         agreement: &Agreement,
-        history: &History,
+        log: &Log,
         outbox: &mut Outbox,
     ) {
         if self.view.as_ref() != Some(agreement.view()) {
@@ -147,9 +148,9 @@ impl Persisted {
             self.attested = Some(attested.payload().revision);
         }
 
-        if self.clock.as_ref() != Some(history.clock()) {
-            outbox.put(keys::clock(id), history.clock());
-            self.clock = Some(history.clock().clone());
+        if self.clock.as_ref() != Some(log.clock()) {
+            outbox.put(keys::clock(id), log.clock());
+            self.clock = Some(log.clock().clone());
         }
     }
 }

@@ -373,7 +373,7 @@ mod tests {
             assert_eq!(stored_log_len(&cluster, device), 0, "device {device}");
             assert_eq!(
                 group(&cluster, device)
-                    .history()
+                    .log()
                     .floor()
                     .get(cluster.key(PHONE).into()),
                 1
@@ -443,7 +443,7 @@ mod tests {
 
         // Never quiet, yet the floor keeps moving.
         let phone = cluster.key(PHONE).into();
-        let floor = group(&cluster, LAPTOP).history().floor().get(phone);
+        let floor = group(&cluster, LAPTOP).log().floor().get(phone);
         assert!(floor > 20, "floor stuck at {floor}");
     }
 
@@ -508,14 +508,14 @@ mod tests {
         let mut cluster = household();
         write(&mut cluster, PHONE, "color", "blue");
         cluster.settle();
-        let clock = group(&cluster, PHONE).history().clock().clone();
+        let clock = group(&cluster, PHONE).log().clock().clone();
         let learned = group(&cluster, PHONE).agreement().learned().clone();
         let attested = group(&cluster, PHONE).agreement().attested().cloned();
 
         cluster.restart(PHONE);
 
         // Protocol state comes back. Model data stays in storage.
-        assert_eq!(group(&cluster, PHONE).history().clock(), &clock);
+        assert_eq!(group(&cluster, PHONE).log().clock(), &clock);
         assert_eq!(group(&cluster, PHONE).agreement().learned(), &learned);
         assert_eq!(
             group(&cluster, PHONE).agreement().attested(),
@@ -676,7 +676,7 @@ mod tests {
             // Compaction really forgets: nothing at or below the floor stays
             // in storage.
             for device in [PHONE, LAPTOP, NAS, FRIEND] {
-                let floor = group(&cluster, device).history().floor().clone();
+                let floor = group(&cluster, device).log().floor().clone();
                 for key in cluster.devices[device].store.keys() {
                     if let Some(Record::Log { author, seq, .. }) = keys::parse(key) {
                         let author = VerifyingKey::from_bytes(&author).map(Peer::from);

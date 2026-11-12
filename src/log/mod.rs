@@ -1,3 +1,39 @@
+//! The log: every transaction a device has integrated, and the clock that
+//! says which ones those are.
+//!
+//! # From a tree to a timeline
+//!
+//! Devices write without asking anyone, so transactions don't arrive as a
+//! list. Each one names what it was written on top of (`after`), and two
+//! that don't name each other are concurrent: together they form a tree
+//! that branches wherever devices wrote at the same time.
+//!
+//! Deriving state needs a list. The **timeline** is that tree flattened,
+//! by sorting on each transaction's [`Stamp`]. A stamp's Lamport counter
+//! is greater than that of everything the transaction was written on top
+//! of, so the timeline never puts an effect before its cause, and
+//! concurrent transactions fall in an order that's arbitrary but the same
+//! on every device. Models derive their state from that order. The log
+//! doesn't know what's inside an operation.
+//!
+//! # What the log guarantees
+//!
+//! - **Causal delivery.** A transaction is integrated only after
+//!   everything in its `after`, and after its author's earlier ones. So
+//!   what a device has integrated is always a history its authors could
+//!   have seen, and a [`VersionVector`] is enough to name it.
+//! - **Only writers' transactions.** Others wait until their author has
+//!   write access.
+//! - **Once each.** A transaction already integrated is ignored.
+//!
+//! It doesn't guarantee arrival in timeline order. A device that was
+//! offline delivers transactions that belong in the middle of everyone
+//! else's timeline, and models have to cope with that.
+//!
+//! [`Stamp`]: crate::clock::Stamp
+
+mod transaction;
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -6,21 +42,21 @@ use crate::actor::{Peer, Signed, Verified};
 use crate::agreement::{AgreementId, Configuration};
 use crate::clock::VersionVector;
 use crate::lattice::Lattice;
-use crate::model::{ModelId, Operation, Transaction};
+use crate::model::{ModelId, Operation};
+pub(crate) use transaction::Transaction;
 
-/// The agreement's clock and transaction log on this device.
+/// One log on this device.
 ///
-/// Invariant: the log holds exactly the transactions in `floor..integrated`.
-/// Everything at or below `floor` is folded into model state and no longer
-/// kept individually, either because it was compacted or because it
-/// arrived in a snapshot.
+/// Invariant: `transactions` holds exactly those in `floor..integrated`.
+/// Everything at or below `floor` lives on only in model data, either
+/// because it was compacted or because it arrived in a snapshot.
 #[derive(Debug, Default)]
-pub(crate) struct History {
+pub(crate) struct Log {
     clock: Clock,
     /// The highest sequence number this device has authored, including
     /// transactions still waiting for write access.
     authored: u64,
-    log: BTreeMap<(Peer, u64), Verified<Transaction>>,
+    transactions: BTreeMap<(Peer, u64), Verified<Transaction>>,
     /// Verified transactions that can't be integrated yet: there's a gap
     /// before them in their author's history, something they were written
     /// on top of is missing, or their author doesn't have write access yet.
@@ -28,7 +64,7 @@ pub(crate) struct History {
     waiting: BTreeMap<(Peer, u64), Verified<Transaction>>,
 }
 
-/// The parts of a [`History`] that are persisted as one record.
+/// The parts of a [`Log`] that are persisted as one record.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Clock {
     /// Per author, how far this device has integrated.
@@ -39,11 +75,11 @@ pub(crate) struct Clock {
     pub(crate) floor: VersionVector,
 }
 
-impl History {
+impl Log {
     /// Rebuilds from storage. Stored transactions beyond the clock are this
     /// device's own, still waiting for write access.
     pub(crate) fn restore(clock: Clock, stored: Vec<Verified<Transaction>>, me: Peer) -> Self {
-        let mut history = Self {
+        let mut log = Self {
             authored: clock.integrated.get(me),
             clock,
             ..Self::default()
@@ -53,18 +89,18 @@ impl History {
             let author = transaction.author();
             let seq = transaction.payload().seq;
             if author == me {
-                history.authored = history.authored.max(seq);
+                log.authored = log.authored.max(seq);
             }
 
-            let destination = if history.clock.integrated.contains(author, seq) {
-                &mut history.log
+            let destination = if log.clock.integrated.contains(author, seq) {
+                &mut log.transactions
             } else {
-                &mut history.waiting
+                &mut log.waiting
             };
             destination.insert((author, seq), transaction);
         }
 
-        history
+        log
     }
 
     pub(crate) fn clock(&self) -> &Clock {
@@ -131,7 +167,7 @@ impl History {
             if let Some(transaction) = self.waiting.remove(&key) {
                 self.clock.integrated.advance(key.0, key.1);
                 self.clock.lamport = self.clock.lamport.max(transaction.payload().lamport);
-                self.log.insert(key, transaction.clone());
+                self.transactions.insert(key, transaction.clone());
                 integrated.push(transaction);
             }
         }
@@ -142,7 +178,7 @@ impl History {
     /// Transactions a peer that has integrated `theirs` is missing. Only
     /// what's in the log: anything below the floor must go as a snapshot.
     pub(crate) fn missing_from(&self, theirs: &VersionVector) -> Vec<Signed<Transaction>> {
-        self.log
+        self.transactions
             .iter()
             .filter(|&(&(author, seq), _)| !theirs.contains(author, seq))
             .map(|(_, transaction)| transaction.signed().clone())
@@ -160,7 +196,7 @@ impl History {
             }
         }
 
-        self.log
+        self.transactions
             .retain(|&(author, seq), _| !self.clock.floor.contains(author, seq));
 
         forgotten
@@ -168,7 +204,7 @@ impl History {
 
     /// Takes on a peer's snapshot: everything at or below its floor is now
     /// reflected in the model data, so this device has it too.
-    /// Returns what was forgotten, as [`History::compact`] does.
+    /// Returns what was forgotten, as [`Log::compact`] does.
     pub(crate) fn absorb(&mut self, floor: &VersionVector, lamport: u64) -> Vec<(Peer, u64)> {
         for (author, through) in floor.iter() {
             self.clock.integrated.advance(author, through);
@@ -205,23 +241,23 @@ mod tests {
         Genesis::new([7; 32], [phone().id(), laptop().id(), nas().id()])
     }
 
-    /// One device's history, and the transactions it has signed.
+    /// One device's log, and the transactions it has signed.
     struct Device {
         me: Peer,
-        history: History,
+        log: Log,
     }
 
     impl Device {
         fn new(me: Peer) -> Self {
-            let history = History::restore(Clock::default(), Vec::new(), me);
+            let log = Log::restore(Clock::default(), Vec::new(), me);
 
-            Self { me, history }
+            Self { me, log }
         }
 
         /// Writes a transaction and integrates it locally.
         fn write(&mut self) -> Verified<Transaction> {
             let model = ModelId::new(genesis().id(), [1; 32]);
-            let transaction = self.history.author(genesis().id(), model, Vec::new());
+            let transaction = self.log.author(genesis().id(), model, Vec::new());
             let signed = Signed::sign(&identity_of(self.me), transaction);
             self.receive(&signed);
 
@@ -231,8 +267,8 @@ mod tests {
         /// Takes in a transaction. Returns what could be integrated, as
         /// `(author, seq)`.
         fn receive(&mut self, transaction: &Verified<Transaction>) -> Vec<(Peer, u64)> {
-            self.history.offer(transaction.clone());
-            let integrated = self.history.integrate_ready(&genesis().configuration());
+            self.log.offer(transaction.clone());
+            let integrated = self.log.integrate_ready(&genesis().configuration());
 
             integrated
                 .iter()
@@ -264,7 +300,7 @@ mod tests {
         let reply = laptop_device.write();
 
         // The reply arrives first. Nothing is missing from the laptop's own
-        // history, but the NAS hasn't seen what the laptop was replying to.
+        // log, but the NAS hasn't seen what the laptop was replying to.
         assert_eq!(nas_device.receive(&reply), []);
         assert_eq!(nas_device.receive(&first), [(phone(), 1), (laptop(), 1)]);
     }

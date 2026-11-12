@@ -24,13 +24,13 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::history::History;
 use super::snapshot::Snapshot;
 use crate::actor::{Peer, Signed, Verified};
 use crate::agreement::{Agreement, Attestation, View};
 use crate::clock::VersionVector;
 use crate::lattice::Lattice;
-use crate::model::Transaction;
+use crate::log::Log;
+use crate::log::Transaction;
 
 /// One agreement's part of a message to a peer.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,7 +82,7 @@ impl PeerSync {
         &mut self,
         peer: Peer,
         agreement: &Agreement,
-        history: &History,
+        log: &Log,
         snapshot: Option<&Snapshot>,
     ) -> Option<GroupMessage> {
         let mut message = GroupMessage::default();
@@ -103,16 +103,16 @@ impl PeerSync {
             }
         }
 
-        if self.sent_clock.as_ref() != Some(history.integrated()) {
-            self.sent_clock = Some(history.integrated().clone());
-            message.clock = Some(history.integrated().clone());
+        if self.sent_clock.as_ref() != Some(log.integrated()) {
+            self.sent_clock = Some(log.integrated().clone());
+            message.clock = Some(log.integrated().clone());
         }
 
         if let Some(has) = &mut self.has {
             // Our snapshot may trail our floor while a newer one is being
             // prepared. It's still worth sending if it gets the peer closer.
             if let Some(snapshot) = snapshot
-                && !history.floor().leq(has)
+                && !log.floor().leq(has)
                 && !snapshot.floor.leq(has)
             {
                 message.snapshot = Some(snapshot.clone());
@@ -122,9 +122,9 @@ impl PeerSync {
             // Not while the peer is still behind: counting what we send as
             // had would hide the gap below the floor, and no snapshot would
             // ever be sent to fill it.
-            if history.floor().leq(has) {
-                message.transactions = history.missing_from(has);
-                has.join(history.integrated());
+            if log.floor().leq(has) {
+                message.transactions = log.missing_from(has);
+                has.join(log.integrated());
             }
         }
 

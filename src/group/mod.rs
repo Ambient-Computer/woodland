@@ -5,8 +5,8 @@
 //!
 //! - the **agreement** decides who may write, and proves the compaction
 //!   floor;
-//! - the **history** (the clock and the transaction log) orders and
-//!   deduplicates transactions;
+//! - the **log** (transactions and their clock) orders and deduplicates
+//!   transactions;
 //! - the **models** say what each transaction writes to storage.
 //!
 //! The life of a batch, from the group's point of view:
@@ -19,14 +19,12 @@
 //! 3. [`outgoing`](Group::outgoing) says what each peer is missing.
 
 mod compaction;
-mod history;
 mod persistence;
 mod snapshot;
 mod sync;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use history::History;
 pub(crate) use persistence::Restored;
 use snapshot::{Snapshot, Snapshots};
 use sync::PeerSync;
@@ -35,6 +33,7 @@ pub(crate) use sync::{GroupMessage, VerifiedParts};
 use crate::actor::{Identity, Peer, Signed};
 use crate::agreement::{Agreement, AgreementId, Change, Genesis};
 use crate::clock::Progress;
+use crate::log::Log;
 use crate::model::{ModelId, Operation};
 use crate::node::Outbox;
 
@@ -43,7 +42,7 @@ pub(crate) struct Group {
     id: AgreementId,
     me: Peer,
     agreement: Agreement,
-    history: History,
+    log: Log,
     snapshots: Snapshots,
     /// Connected peers subscribed to this agreement.
     peers: BTreeMap<Peer, PeerSync>,
@@ -68,8 +67,8 @@ impl Group {
     }
 
     #[cfg(test)]
-    pub(crate) fn history(&self) -> &History {
-        &self.history
+    pub(crate) fn log(&self) -> &Log {
+        &self.log
     }
 
     /// Commits a local transaction. It's signed now, so the stored and sent
@@ -82,11 +81,11 @@ impl Group {
         operations: Vec<Operation>,
         outbox: &mut Outbox,
     ) {
-        let transaction = self.history.author(self.id, model, operations);
+        let transaction = self.log.author(self.id, model, operations);
         let signed = Signed::sign(identity, transaction);
         persistence::save_transaction(self.id, signed.signed(), outbox);
 
-        self.history.offer(signed);
+        self.log.offer(signed);
     }
 
     pub(crate) fn propose(&mut self, change: Change) {
@@ -120,7 +119,7 @@ impl Group {
         }
 
         for transaction in signed.transactions {
-            self.history.offer(transaction);
+            self.log.offer(transaction);
         }
     }
 
@@ -140,12 +139,12 @@ impl Group {
         // Contributors report how far they've gotten. That report is what
         // eventually lets everyone compact.
         if self.may_report() {
-            let report = Progress::report(self.me, self.history.integrated().clone());
+            let report = Progress::report(self.me, self.log.integrated().clone());
             self.agreement.propose_progress(&report);
         }
 
         self.agreement.try_learn();
-        for (author, through) in compaction::compact(&mut self.history, self.agreement.learned()) {
+        for (author, through) in compaction::compact(&mut self.log, self.agreement.learned()) {
             persistence::forget_transactions(self.id, author, through, outbox);
         }
 
@@ -153,7 +152,7 @@ impl Group {
         // as the view, before anything is sent.
         self.agreement.attest(identity);
         self.persisted
-            .save(self.id, &self.agreement, &self.history, outbox);
+            .save(self.id, &self.agreement, &self.log, outbox);
     }
 
     /// Tracks exactly the peers that are connected and subscribed.
@@ -168,12 +167,12 @@ impl Group {
     /// which may have to be read from storage first.
     pub(crate) fn outgoing(&mut self, peer: Peer, outbox: &mut Outbox) -> Option<GroupMessage> {
         let sync = self.peers.get_mut(&peer)?;
-        if sync.is_behind(self.history.floor()) {
-            self.snapshots.prepare(self.id, &self.history, outbox);
+        if sync.is_behind(self.log.floor()) {
+            self.snapshots.prepare(self.id, &self.log, outbox);
         }
 
         let snapshot = self.snapshots.prepared();
-        sync.outgoing(peer, &self.agreement, &self.history, snapshot)
+        sync.outgoing(peer, &self.agreement, &self.log, snapshot)
     }
 
     /// Whether to propose a new progress report: only as a contributor, and
@@ -198,7 +197,7 @@ impl Group {
     /// wherever its stamp puts them in the timeline.
     fn integrate(&mut self, outbox: &mut Outbox) {
         let writers = &self.agreement.learned().configuration;
-        for transaction in self.history.integrate_ready(writers) {
+        for transaction in self.log.integrate_ready(writers) {
             let author = transaction.author();
             let payload = transaction.payload();
             persistence::save_transaction(self.id, transaction.signed(), outbox);
@@ -214,7 +213,7 @@ impl Group {
             persistence::save_version(self.id, it.model, &it.key, it.stamp, &it.version, outbox);
         }
 
-        let forgotten = self.history.absorb(&snapshot.floor, snapshot.lamport);
+        let forgotten = self.log.absorb(&snapshot.floor, snapshot.lamport);
         for (author, through) in forgotten {
             persistence::forget_transactions(self.id, author, through, outbox);
         }

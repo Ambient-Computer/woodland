@@ -11,11 +11,13 @@
 //!    other pieces meet.
 //! 3. `agreement/`: Reconfigurable Lattice Agreement. Who the contributors
 //!    are, and how far each has gotten.
-//! 4. `model/`: the KV model, and the signed transactions that change it.
-//! 5. `clock/`: version vectors, the stamps that order the timeline, and
+//! 4. `log/`: signed transactions, delivered in causal order, and the
+//!    timeline they sort into.
+//! 5. `model/`: the KV model, derived from the timeline.
+//! 6. `clock/`: version vectors, the stamps that order the timeline, and
 //!    the greatest lower bound that drives compaction.
-//! 6. `storage/`: the key-value contract and the key layout.
-//! 7. `actor/`: identities, peers and signatures.
+//! 7. `storage/`: the key-value contract and the key layout.
+//! 8. `actor/`: identities, peers and signatures.
 //!
 //! # What this experiment found
 //!
@@ -76,7 +78,7 @@
 //! - Removal and revocation. RLA gives comparable decisions, not a "first
 //!   decision that included this change". There's no deterministic point at
 //!   which a removed device's writes stop counting, so removal can't revoke
-//!   past or backdated writes (`History::integrate_ready`).
+//!   past or backdated writes (`Log::integrate_ready`).
 //! - Tombstone collection. The floor is enough to drop the log, but not
 //!   enough to drop tombstones, for the same reason plus concurrent
 //!   admission of new members (`group/compaction.rs`).
@@ -90,6 +92,7 @@ mod encoding;
 mod group;
 mod io;
 mod lattice;
+mod log;
 mod model;
 mod node;
 mod storage;

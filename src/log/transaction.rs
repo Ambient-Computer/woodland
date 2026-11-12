@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use super::{ModelId, Operation};
 use crate::actor::{Peer, Signable};
 use crate::agreement::AgreementId;
 use crate::clock::{Stamp, VersionVector};
+use crate::model::{ModelId, Operation};
 
 /// An atomic group of operations against one model, and the unit that's
 /// signed, sent, stored and integrated.

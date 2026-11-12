@@ -1,4 +1,4 @@
-//! Models: CRDTs holding application data, changed by signed transactions.
+//! Models: application data, derived from the log's timeline.
 //!
 //! A model knows nothing about agreements, quorums or peers. It says what
 //! the operations of a verified, authorized transaction leave behind at
@@ -24,13 +24,11 @@
 
 mod kv;
 mod query;
-mod transaction;
 
 use serde::{Deserialize, Serialize};
 
 pub(crate) use kv::{Operation, Version};
 pub use query::Query;
-pub(crate) use transaction::Transaction;
 
 use crate::agreement::AgreementId;
 use crate::encoding;

@@ -12,10 +12,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::history::History;
 use crate::agreement::AgreementId;
 use crate::clock::{Stamp, VersionVector};
 use crate::encoding;
+use crate::log::Log;
 use crate::model::{ModelId, Version};
 use crate::node::Outbox;
 use crate::storage::keys::{self, Record};
@@ -51,19 +51,14 @@ pub(crate) struct Snapshots {
 
 impl Snapshots {
     /// Makes sure a snapshot at our current floor is ready or on its way.
-    pub(crate) fn prepare(
-        &mut self,
-        agreement: AgreementId,
-        history: &History,
-        outbox: &mut Outbox,
-    ) {
-        let floor = history.floor();
+    pub(crate) fn prepare(&mut self, agreement: AgreementId, log: &Log, outbox: &mut Outbox) {
+        let floor = log.floor();
         let current = self.prepared.as_ref().is_some_and(|it| &it.floor == floor);
         if current || self.scanning.is_some() {
             return;
         }
 
-        self.scanning = Some((floor.clone(), history.clock().lamport));
+        self.scanning = Some((floor.clone(), log.clock().lamport));
         outbox.scan(keys::data(agreement));
     }
 

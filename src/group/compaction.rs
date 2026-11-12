@@ -40,7 +40,7 @@
 //!   what everyone else already compacted.
 //! - **A removed member** may still hold writes nobody else has seen. The
 //!   floor stops counting it, but its old writes are still valid (removal
-//!   can't revoke them deterministically, see `History::integrate_ready`).
+//!   can't revoke them deterministically, see `Log::integrate_ready`).
 //!
 //! Both need a deterministic cut-off point. Lattice agreement offers
 //! comparability, not a "first decision that included this change", so
@@ -49,9 +49,9 @@
 //!
 //! [`Progress::floor`]: crate::clock::Progress::floor
 
-use super::history::History;
 use crate::actor::Peer;
 use crate::agreement::Decision;
+use crate::log::Log;
 
 /// Raises the floor to what `learned` proves every contributor has, and
 /// returns what was forgotten (per author, through which sequence number).
@@ -59,9 +59,9 @@ use crate::agreement::Decision;
 /// The agreed floor is clamped to what this device has integrated itself.
 /// An observer that's behind can learn a floor it hasn't reached yet, and
 /// it must never claim to hold transactions it doesn't have.
-pub(super) fn compact(history: &mut History, learned: &Decision) -> Vec<(Peer, u64)> {
+pub(super) fn compact(log: &mut Log, learned: &Decision) -> Vec<(Peer, u64)> {
     let agreed = learned.progress.floor(&learned.configuration.members());
-    let reachable = agreed.meet(history.integrated());
+    let reachable = agreed.meet(log.integrated());
 
-    history.compact(&reachable)
+    log.compact(&reachable)
 }
