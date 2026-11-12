@@ -28,10 +28,6 @@ pub(crate) enum StorageEvent {
         prefix: Vec<u8>,
         entries: Vec<(Vec<u8>, Vec<u8>)>,
     },
-    /// A get finished: each key asked for, and its value if it's stored.
-    Got {
-        entries: Vec<(Vec<u8>, Option<Vec<u8>>)>,
-    },
 }
 
 /// Something the application did on this device.

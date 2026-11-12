@@ -7,7 +7,7 @@
 //! contributor, and its **floor** is their greatest lower bound: the
 //! transactions every current contributor has integrated. No contributor
 //! will ever ask for those individually again, so the log can drop them.
-//! Their effects stay in model state, and a device that falls behind the
+//! Their effects stay in model data, and a device that falls behind the
 //! floor (a returning observer, a new member) catches up from a snapshot.
 //!
 //! # What agreement adds
@@ -25,8 +25,8 @@
 //! decision back to zero (see [`Progress::floor`]). The floor here is a high
 //! watermark: it never goes back down, because the transactions are
 //! already gone. That's safe for the log. The newcomer gets a snapshot
-//! instead of the transactions, and merging snapshots is just merging LWW
-//! registers.
+//! instead of the transactions, and merging a snapshot is just a union of
+//! versions.
 //!
 //! # What this floor is *not* enough for
 //!

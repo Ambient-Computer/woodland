@@ -1,13 +1,16 @@
 //! Models: CRDTs holding application data, changed by signed transactions.
 //!
-//! A model knows nothing about agreements, quorums or peers. It receives
-//! transactions that were already verified and authorized, applies them,
-//! and merges snapshots. What it relies on from the layers above:
+//! A model knows nothing about agreements, quorums or peers. It says what
+//! the operations of a verified, authorized transaction leave behind at
+//! that transaction's place in the timeline. What it relies on from the
+//! layers above:
 //!
 //! - **Every transaction has a unique [`Stamp`].** The author's Lamport
-//!   counter plus the author's key, so last-writer-wins has no ties.
+//!   counter plus the author's key. Sorting by stamp is the timeline: one
+//!   order every device agrees on, in which a transaction always comes
+//!   after everything it was written on top of.
 //! - **Transactions are atomic.** All of a transaction's operations share
-//!   its stamp and are applied together, or not at all.
+//!   its stamp and are written together, or not at all.
 //!
 //! # Many models per agreement
 //!
@@ -25,7 +28,7 @@ mod transaction;
 
 use serde::{Deserialize, Serialize};
 
-pub(crate) use kv::{Entry, KvModel, Operation};
+pub(crate) use kv::{Operation, Version};
 pub use query::Query;
 pub(crate) use transaction::Transaction;
 

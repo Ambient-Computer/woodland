@@ -11,9 +11,9 @@
 //!    other pieces meet.
 //! 3. `agreement/`: Reconfigurable Lattice Agreement. Who the contributors
 //!    are, and how far each has gotten.
-//! 4. `model/`: the KV CRDT, and the signed transactions that change it.
-//! 5. `clock/`: version vectors, Lamport stamps, and the greatest lower
-//!    bound that drives compaction.
+//! 4. `model/`: the KV model, and the signed transactions that change it.
+//! 5. `clock/`: version vectors, the stamps that order the timeline, and
+//!    the greatest lower bound that drives compaction.
 //! 6. `storage/`: the key-value contract and the key layout.
 //! 7. `actor/`: identities, peers and signatures.
 //!
@@ -46,8 +46,8 @@
 //! **What composes**
 //!
 //! - Lattices everywhere: the agreement's value, its configuration, version
-//!   vectors and the KV model all merge by join, so one "merge whatever you
-//!   hear" rule covers sync, gossip and snapshot catch-up.
+//!   vectors and the KV model's versions all merge by join, so one "merge
+//!   whatever you hear" rule covers sync, gossip and snapshot catch-up.
 //! - The agreement carries clock progress as its value, so the compaction
 //!   floor is a GLB over an agreed membership, and models stay ignorant of
 //!   both (`group/compaction.rs`).
@@ -62,17 +62,16 @@
 //!   [`Query`] is just a key range and a decoder.
 //! - Compaction bounds hydration. Only protocol state loads at startup, and
 //!   the log in it holds only what isn't compacted yet (`storage/keys.rs`).
+//! - The timeline and sans-IO. A write is stored as a version of its key
+//!   under its transaction's stamp, so storage's key order is the timeline
+//!   and integrating never reads (`model/kv.rs`,
+//!   `an_older_write_still_loses_after_a_restart`). The first attempt kept
+//!   one entry per key and compared stamps in memory, which made every
+//!   change a read-modify-write, and every read a round trip through the
+//!   application. The cost moved to reads, which skip a key's older
+//!   versions, and to storage, which keeps them. Nothing drops them yet.
 //!
 //! **What fights**
-//!
-//! - Last-writer-wins and sans-IO. LWW can't apply a write blind: it needs
-//!   the current entry's stamp, so integrating is read-modify-write, and
-//!   every read is a round trip through the application. Transactions and
-//!   snapshots wait across batches for their keys to load (`group/models.rs`,
-//!   `an_older_write_still_loses_after_a_restart`). Sending a snapshot is a
-//!   storage scan too. A model whose writes commute blindly in storage
-//!   (multi-version keys, resolved at read time) would avoid all of this,
-//!   and move the cost to reads.
 //!
 //! - Removal and revocation. RLA gives comparable decisions, not a "first
 //!   decision that included this change". There's no deterministic point at

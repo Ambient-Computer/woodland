@@ -8,26 +8,28 @@
 //! - the **clock** (integrated version vector, Lamport counter, floor);
 //! - the **log** of signed transactions above the floor, plus this device's
 //!   own transactions still waiting for write access;
-//! - every **model entry**, one key each.
+//! - every **version** of every model key, one storage key each.
 //!
 //! What isn't: remote transactions still waiting, and everything about
 //! peers. Peers re-send whatever we report missing when they reconnect.
 //!
-//! Hydration loads everything except model entries: the protocol range of
-//! the key layout. Its size is bounded by what hasn't been compacted yet,
-//! not by how much data the models hold. Entries load on demand (see
-//! `models`).
+//! Hydration loads everything except model data: the protocol range of the
+//! key layout. Its size is bounded by what hasn't been compacted yet, not
+//! by how much data the models hold. The node only ever writes model data.
+//! Reading it is the application's business (see [`Query`]).
+//!
+//! [`Query`]: crate::Query
 
 use std::collections::BTreeMap;
 
 use super::Group;
 use super::history::{Clock, History};
-use super::models::Models;
 use super::snapshot::Snapshots;
 use crate::actor::{Peer, Signed, Verified};
 use crate::agreement::{Agreement, AgreementId, Attestation, Genesis, View};
+use crate::clock::Stamp;
 use crate::encoding;
-use crate::model::{ModelId, Transaction};
+use crate::model::{ModelId, Operation, Transaction, Version};
 use crate::node::Outbox;
 use crate::storage::keys::{self, Record};
 
@@ -90,7 +92,7 @@ impl Restored {
                         restored.transactions.push(Verified::trust_stored(signed));
                     }
                 }
-                Some(Record::Genesis(_) | Record::Entry { .. }) | None => {}
+                Some(Record::Genesis(_) | Record::Version { .. }) | None => {}
             }
         }
 
@@ -112,7 +114,6 @@ impl From<Restored> for Group {
             me: restored.me,
             agreement,
             history: History::restore(restored.clock.clone(), restored.transactions, restored.me),
-            models: Models::default(),
             snapshots: Snapshots::default(),
             peers: BTreeMap::new(),
             persisted: Persisted {
@@ -162,18 +163,36 @@ pub(super) fn save_transaction(id: AgreementId, signed: &Signed<Transaction>, ou
     outbox.put(key, signed);
 }
 
-pub(super) fn save_entries(
+/// Writes what a transaction's operations leave behind, in order, so a
+/// later operation on the same key replaces an earlier one.
+pub(super) fn save_operations(
     id: AgreementId,
     model: ModelId,
-    models: &Models,
-    changed: &[Vec<u8>],
+    stamp: Stamp,
+    operations: &[Operation],
     outbox: &mut Outbox,
 ) {
-    for key in changed {
-        if let Some(entry) = models.entry(model, key) {
-            outbox.put(keys::entry(id, model, key), entry);
-        }
+    for operation in operations {
+        save_version(
+            id,
+            model,
+            operation.key(),
+            stamp,
+            &operation.version(),
+            outbox,
+        );
     }
+}
+
+pub(super) fn save_version(
+    id: AgreementId,
+    model: ModelId,
+    key: &[u8],
+    stamp: Stamp,
+    version: &Version,
+    outbox: &mut Outbox,
+) {
+    outbox.put(keys::version(id, model, key, stamp), version);
 }
 
 pub(super) fn forget_transactions(

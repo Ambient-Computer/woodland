@@ -7,22 +7,19 @@
 //!   floor;
 //! - the **history** (the clock and the transaction log) orders and
 //!   deduplicates transactions;
-//! - the **models** apply them, once the entries they change are loaded.
+//! - the **models** say what each transaction writes to storage.
 //!
 //! The life of a batch, from the group's point of view:
 //!
 //! 1. [`write`](Group::write) and [`receive`](Group::receive) take in local
-//!    and remote changes, and [`loaded`](Group::loaded) takes in model
-//!    entries from storage. Changes only queue up at this point.
-//! 2. [`settle`](Group::settle) runs once all events are in. It merges
-//!    snapshots, learns what it can, integrates queued transactions, reports
-//!    progress, compacts, and persists what changed. Anything waiting on
-//!    model entries asks for them and waits for a later batch.
+//!    and remote changes. Transactions only queue up at this point.
+//! 2. [`settle`](Group::settle) runs once all events are in. It learns what
+//!    it can, integrates queued transactions, reports progress, compacts,
+//!    and persists what changed.
 //! 3. [`outgoing`](Group::outgoing) says what each peer is missing.
 
 mod compaction;
 mod history;
-mod models;
 mod persistence;
 mod snapshot;
 mod sync;
@@ -30,7 +27,6 @@ mod sync;
 use std::collections::{BTreeMap, BTreeSet};
 
 use history::History;
-use models::Models;
 pub(crate) use persistence::Restored;
 use snapshot::{Snapshot, Snapshots};
 use sync::PeerSync;
@@ -39,7 +35,7 @@ pub(crate) use sync::{GroupMessage, VerifiedParts};
 use crate::actor::{Identity, Peer, Signed};
 use crate::agreement::{Agreement, AgreementId, Change, Genesis};
 use crate::clock::Progress;
-use crate::model::{Entry, ModelId, Operation, Transaction};
+use crate::model::{ModelId, Operation};
 use crate::node::Outbox;
 
 #[derive(Debug)]
@@ -48,7 +44,6 @@ pub(crate) struct Group {
     me: Peer,
     agreement: Agreement,
     history: History,
-    models: Models,
     snapshots: Snapshots,
     /// Connected peers subscribed to this agreement.
     peers: BTreeMap<Peer, PeerSync>,
@@ -70,11 +65,6 @@ impl Group {
 
     pub(crate) fn agreement(&self) -> &Agreement {
         &self.agreement
-    }
-
-    #[cfg(test)]
-    pub(crate) fn models(&self) -> &Models {
-        &self.models
     }
 
     #[cfg(test)]
@@ -126,18 +116,12 @@ impl Group {
         }
 
         if let Some(snapshot) = &message.snapshot {
-            let snapshot = snapshot.clone();
-            (self.snapshots).arrived(snapshot, self.id, &mut self.models, outbox);
+            self.absorb(snapshot, outbox);
         }
 
         for transaction in signed.transactions {
             self.history.offer(transaction);
         }
-    }
-
-    /// Storage answered for a model entry this group asked for.
-    pub(crate) fn loaded(&mut self, model: ModelId, key: Vec<u8>, entry: Option<Entry>) {
-        self.models.loaded(model, key, entry);
     }
 
     /// Our scan of the data range is back, for a snapshot.
@@ -148,10 +132,6 @@ impl Group {
     /// Runs after every event in the batch is in. `identity` must be this
     /// device's, for attesting to the settled view.
     pub(crate) fn settle(&mut self, identity: &Identity, outbox: &mut Outbox) {
-        for snapshot in self.snapshots.take_loaded(&self.models) {
-            self.absorb(&snapshot, outbox);
-        }
-
         // Learning first: a decision may grant write access to transactions
         // that are already waiting.
         self.agreement.try_learn();
@@ -213,35 +193,25 @@ impl Group {
             && learned.progress.of(self.me) == proposed.of(self.me)
     }
 
-    /// Integrates whatever is in order, authorized and loaded. Everything
-    /// else that's authorized asks for its entries now, so it can go in a
-    /// later batch.
+    /// Integrates whatever is in order and authorized, and writes what it
+    /// leaves behind. Nothing is read first: a transaction's versions go
+    /// wherever its stamp puts them in the timeline.
     fn integrate(&mut self, outbox: &mut Outbox) {
         let writers = &self.agreement.learned().configuration;
-        for transaction in self.history.waiting_for(writers) {
-            let model = transaction.model;
-            (self.models).request(self.id, model, touched(transaction), outbox);
-        }
-
-        let models = &self.models;
-        let loaded =
-            |transaction: &Transaction| models.has(transaction.model, touched(transaction));
-        for transaction in self.history.integrate_ready(writers, loaded) {
+        for transaction in self.history.integrate_ready(writers) {
             let author = transaction.author();
             let payload = transaction.payload();
             persistence::save_transaction(self.id, transaction.signed(), outbox);
 
-            let stamp = payload.stamp(author);
-            let changed = self.models.apply(payload.model, stamp, &payload.operations);
-            let model = payload.model;
-            persistence::save_entries(self.id, model, &self.models, &changed, outbox);
+            let (model, stamp) = (payload.model, payload.stamp(author));
+            persistence::save_operations(self.id, model, stamp, &payload.operations, outbox);
         }
     }
 
+    /// Takes on a peer's snapshot. Its versions merge with ours by union.
     fn absorb(&mut self, snapshot: &Snapshot, outbox: &mut Outbox) {
-        for (&model, theirs) in &snapshot.models {
-            let changed = self.models.merge(model, theirs);
-            persistence::save_entries(self.id, model, &self.models, &changed, outbox);
+        for it in &snapshot.versions {
+            persistence::save_version(self.id, it.model, &it.key, it.stamp, &it.version, outbox);
         }
 
         let forgotten = self.history.absorb(&snapshot.floor, snapshot.lamport);
@@ -249,9 +219,4 @@ impl Group {
             persistence::forget_transactions(self.id, author, through, outbox);
         }
     }
-}
-
-/// The keys a transaction changes.
-fn touched(transaction: &Transaction) -> impl Iterator<Item = &[u8]> {
-    transaction.operations.iter().map(Operation::key)
 }

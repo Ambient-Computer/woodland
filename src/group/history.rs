@@ -114,21 +114,9 @@ impl History {
         }
     }
 
-    /// Waiting transactions whose author may write, whether or not they're
-    /// in order yet.
-    pub(crate) fn waiting_for<'a>(
-        &'a self,
-        writers: &'a Configuration,
-    ) -> impl Iterator<Item = &'a Transaction> {
-        (self.waiting.values())
-            .filter(|transaction| writers.was_ever_member(transaction.author()))
-            .map(Verified::payload)
-    }
-
     /// Integrates every waiting transaction that's now in order, follows
-    /// only what's integrated, whose author may write, and that `loaded`
-    /// says the models can apply now. Returns them in integration order,
-    /// for the models.
+    /// only what's integrated, and whose author may write. Returns them in
+    /// integration order, for the models.
     ///
     /// Write access is "ever a member of the learned configuration". Removal
     /// can't revoke past writes: replicas learn about a removal at different
@@ -137,10 +125,9 @@ impl History {
     pub(crate) fn integrate_ready(
         &mut self,
         writers: &Configuration,
-        loaded: impl Fn(&Transaction) -> bool,
     ) -> Vec<Verified<Transaction>> {
         let mut integrated = Vec::new();
-        while let Some(key) = self.next_ready(writers, &loaded) {
+        while let Some(key) = self.next_ready(writers) {
             if let Some(transaction) = self.waiting.remove(&key) {
                 self.clock.integrated.advance(key.0, key.1);
                 self.clock.lamport = self.clock.lamport.max(transaction.payload().lamport);
@@ -180,7 +167,7 @@ impl History {
     }
 
     /// Takes on a peer's snapshot: everything at or below its floor is now
-    /// reflected in the merged model state, so this device has it too.
+    /// reflected in the model data, so this device has it too.
     /// Returns what was forgotten, as [`History::compact`] does.
     pub(crate) fn absorb(&mut self, floor: &VersionVector, lamport: u64) -> Vec<(Peer, u64)> {
         for (author, through) in floor.iter() {
@@ -195,17 +182,12 @@ impl History {
         self.compact(floor)
     }
 
-    fn next_ready(
-        &self,
-        writers: &Configuration,
-        loaded: impl Fn(&Transaction) -> bool,
-    ) -> Option<(Peer, u64)> {
+    fn next_ready(&self, writers: &Configuration) -> Option<(Peer, u64)> {
         let mut waiting = self.waiting.iter();
         let (&key, _) = waiting.find(|&(&(author, seq), transaction)| {
             seq == self.clock.integrated.next(author)
                 && transaction.payload().after.leq(&self.clock.integrated)
                 && writers.was_ever_member(author)
-                && loaded(transaction.payload())
         })?;
 
         Some(key)
@@ -250,9 +232,7 @@ mod tests {
         /// `(author, seq)`.
         fn receive(&mut self, transaction: &Verified<Transaction>) -> Vec<(Peer, u64)> {
             self.history.offer(transaction.clone());
-            let integrated = self
-                .history
-                .integrate_ready(&genesis().configuration(), |_| true);
+            let integrated = self.history.integrate_ready(&genesis().configuration());
 
             integrated
                 .iter()

@@ -1,20 +1,34 @@
+//! A key-value map, derived from the timeline: each key holds whatever the
+//! last transaction to write it left there.
+//!
+//! # Versions
+//!
+//! Every write is kept as a [`Version`] of its key, under its transaction's
+//! [`Stamp`]. Stamps are the timeline's order, so a key's versions, sorted
+//! by stamp, are that key's history, and the last one is its current
+//! value.
+//!
+//! That makes writing blind. A transaction's versions go straight to
+//! storage, wherever they land in the timeline, without reading what's
+//! already there. A write that arrives late, with an older stamp, slots in
+//! behind the newer ones and changes nothing a reader sees. The comparison
+//! that last-writer-wins needs still happens, but in the order of storage
+//! keys instead of in memory (see `storage::keys`).
+//!
+//! Versions are a grow-only set, so replicas merge by union: applying the
+//! same transaction twice, or taking a snapshot that overlaps what's
+//! already here, writes the same versions again.
+//!
+//! # Removal
+//!
+//! Removing a key writes a version with no value: a tombstone. It's what
+//! makes a late, older `Set` lose to a newer `Remove` it never saw.
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
 use crate::clock::Stamp;
-
-/// A key-value map where each key is a last-writer-wins register.
-///
-/// Removal leaves a tombstone: an entry with no value, but with the stamp
-/// of the removal. Tombstones are what make a late, older `Set` lose to a
-/// newer `Remove` it never saw. Dropping them safely needs a guarantee that
-/// no such late write can still arrive, which is a stronger property than
-/// the compaction floor gives on its own (see `group::compaction`).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct KvModel {
-    entries: BTreeMap<Vec<u8>, Entry>,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Operation {
@@ -22,93 +36,45 @@ pub(crate) enum Operation {
     Remove { key: Vec<u8> },
 }
 
+/// What one transaction left a key holding: a value, or nothing if it
+/// removed the key.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Version(pub(crate) Option<Vec<u8>>);
+
 impl Operation {
     pub(crate) fn key(&self) -> &[u8] {
         match self {
             Self::Set { key, .. } | Self::Remove { key } => key,
         }
     }
+
+    /// What the key holds once this operation is applied.
+    pub(crate) fn version(&self) -> Version {
+        match self {
+            Self::Set { value, .. } => Version(Some(value.clone())),
+            Self::Remove { .. } => Version(None),
+        }
+    }
 }
 
-/// The current state of one key: its value (or none, if removed), and the
-/// stamp of the write that put it there.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Entry {
-    pub(crate) value: Option<Vec<u8>>,
-    pub(crate) stamp: Stamp,
-}
-
-impl KvModel {
-    /// The current value of `key`. Applications read from storage instead
-    /// (see [`Query`](super::Query)).
-    #[cfg(test)]
-    pub(crate) fn get(&self, key: &[u8]) -> Option<&[u8]> {
-        self.entries.get(key)?.value.as_deref()
-    }
-
-    /// Applies one transaction's operations, all under its stamp. Returns
-    /// the keys that changed, so the caller can persist just those.
-    ///
-    /// A write wins if its stamp is at least the current one. "At least",
-    /// not "greater", so later operations in the same transaction overwrite
-    /// earlier ones. Stamps are unique per transaction, so equality only
-    /// happens within one.
-    pub(crate) fn apply(&mut self, stamp: Stamp, operations: &[Operation]) -> Vec<Vec<u8>> {
-        let mut changed = Vec::new();
-        for operation in operations {
-            let (key, value) = match operation {
-                Operation::Set { key, value } => (key, Some(value.clone())),
-                Operation::Remove { key } => (key, None),
-            };
-
-            if self.write(key, Entry { value, stamp }) {
-                changed.push(key.clone());
-            }
+/// The current value of every key that has one: its last version in the
+/// timeline, unless that's a tombstone.
+pub(crate) fn current(
+    versions: impl IntoIterator<Item = (Vec<u8>, Stamp, Version)>,
+) -> BTreeMap<Vec<u8>, Vec<u8>> {
+    let mut latest: BTreeMap<Vec<u8>, (Stamp, Version)> = BTreeMap::new();
+    for (key, stamp, version) in versions {
+        let newer = latest.get(&key).is_none_or(|(held, _)| *held <= stamp);
+        if newer {
+            latest.insert(key, (stamp, version));
         }
-
-        changed
     }
 
-    /// Merges another replica's state, key by key. This is how a device
-    /// that fell behind the compaction floor catches up: it can't be sent
-    /// the transactions, so it gets their result.
-    pub(crate) fn merge(&mut self, other: &KvModel) -> Vec<Vec<u8>> {
-        let mut changed = Vec::new();
-        for (key, entry) in &other.entries {
-            if self.write(key, entry.clone()) {
-                changed.push(key.clone());
-            }
-        }
+    let values = latest
+        .into_iter()
+        .filter_map(|(key, (_, Version(value)))| Some((key, value?)));
 
-        changed
-    }
-
-    pub(crate) fn entry(&self, key: &[u8]) -> Option<&Entry> {
-        self.entries.get(key)
-    }
-
-    /// Every key with an entry, tombstones included.
-    pub(crate) fn keys(&self) -> impl Iterator<Item = &[u8]> {
-        self.entries.keys().map(Vec::as_slice)
-    }
-
-    /// Restores one entry from storage.
-    pub(crate) fn restore(&mut self, key: Vec<u8>, entry: Entry) {
-        self.entries.insert(key, entry);
-    }
-
-    fn write(&mut self, key: &[u8], entry: Entry) -> bool {
-        let wins = self
-            .entries
-            .get(key)
-            .is_none_or(|current| entry.stamp >= current.stamp);
-
-        if wins {
-            self.entries.insert(key.to_vec(), entry);
-        }
-
-        wins
-    }
+    values.collect()
 }
 
 #[cfg(test)]
@@ -118,6 +84,10 @@ mod tests {
     use super::*;
     use crate::actor::Peer;
     use crate::testing::peers::{laptop, nas, phone};
+
+    /// Plays storage: every version, by key and stamp. Like storage, a
+    /// later write to the same key and stamp replaces the earlier one.
+    type Versions = BTreeMap<(Vec<u8>, Stamp), Version>;
 
     fn stamp(lamport: u64, author: Peer) -> Stamp {
         Stamp { lamport, author }
@@ -134,13 +104,32 @@ mod tests {
         Operation::Remove { key: key.into() }
     }
 
+    /// Applies one transaction's operations, all under its stamp.
+    fn apply(versions: &mut Versions, stamp: Stamp, operations: &[Operation]) {
+        for operation in operations {
+            versions.insert((operation.key().to_vec(), stamp), operation.version());
+        }
+    }
+
+    fn read(versions: &Versions) -> BTreeMap<Vec<u8>, Vec<u8>> {
+        let versions = versions.clone().into_iter();
+
+        current(versions.map(|((key, stamp), version)| (key, stamp, version)))
+    }
+
+    fn get(versions: &Versions, key: &str) -> Option<String> {
+        let value = read(versions).remove(key.as_bytes())?;
+
+        Some(String::from_utf8_lossy(&value).into_owned())
+    }
+
     #[test]
     fn later_writes_win() {
-        let mut model = KvModel::default();
-        model.apply(stamp(2, phone()), &[set("color", "blue")]);
-        model.apply(stamp(1, laptop()), &[set("color", "red")]);
+        let mut versions = Versions::new();
+        apply(&mut versions, stamp(2, phone()), &[set("color", "blue")]);
+        apply(&mut versions, stamp(1, laptop()), &[set("color", "red")]);
 
-        assert_eq!(model.get(b"color"), Some(&b"blue"[..]));
+        assert_eq!(get(&versions, "color").as_deref(), Some("blue"));
     }
 
     #[test]
@@ -151,28 +140,29 @@ mod tests {
             (laptop(), phone())
         };
 
-        let mut model = KvModel::default();
-        model.apply(stamp(1, high), &[set("color", "high")]);
-        model.apply(stamp(1, low), &[set("color", "low")]);
+        let mut versions = Versions::new();
+        apply(&mut versions, stamp(1, high), &[set("color", "high")]);
+        apply(&mut versions, stamp(1, low), &[set("color", "low")]);
 
-        assert_eq!(model.get(b"color"), Some(&b"high"[..]));
+        assert_eq!(get(&versions, "color").as_deref(), Some("high"));
     }
 
     #[test]
     fn tombstones_beat_older_writes() {
-        let mut model = KvModel::default();
-        model.apply(stamp(2, phone()), &[remove("color")]);
-        model.apply(stamp(1, laptop()), &[set("color", "red")]);
+        let mut versions = Versions::new();
+        apply(&mut versions, stamp(2, phone()), &[remove("color")]);
+        apply(&mut versions, stamp(1, laptop()), &[set("color", "red")]);
 
-        assert_eq!(model.get(b"color"), None);
+        assert_eq!(get(&versions, "color"), None);
     }
 
     #[test]
     fn later_operations_in_a_transaction_win() {
-        let mut model = KvModel::default();
-        model.apply(stamp(1, phone()), &[set("color", "red"), remove("color")]);
+        let mut versions = Versions::new();
+        let operations = [set("color", "red"), remove("color")];
+        apply(&mut versions, stamp(1, phone()), &operations);
 
-        assert_eq!(model.get(b"color"), None);
+        assert_eq!(get(&versions, "color"), None);
     }
 
     fn transaction() -> impl Strategy<Value = (Stamp, Vec<Operation>)> {
@@ -198,19 +188,36 @@ mod tests {
         unique.into_iter().collect()
     }
 
-    fn replay<'a>(transactions: impl Iterator<Item = &'a (Stamp, Vec<Operation>)>) -> KvModel {
-        let mut model = KvModel::default();
+    fn replay<'a>(transactions: impl Iterator<Item = &'a (Stamp, Vec<Operation>)>) -> Versions {
+        let mut versions = Versions::new();
         for (stamp, operations) in transactions {
-            model.apply(*stamp, operations);
+            apply(&mut versions, *stamp, operations);
         }
 
-        model
+        versions
+    }
+
+    /// What a reader sees is what applying the transactions one at a time,
+    /// in timeline order, would leave behind.
+    fn in_timeline_order(transactions: &[(Stamp, Vec<Operation>)]) -> BTreeMap<Vec<u8>, Vec<u8>> {
+        let mut state = BTreeMap::new();
+        for (_, operations) in transactions {
+            for operation in operations {
+                match operation.version() {
+                    Version(Some(value)) => state.insert(operation.key().to_vec(), value),
+                    Version(None) => state.remove(operation.key()),
+                };
+            }
+        }
+
+        state
     }
 
     proptest! {
-        /// Order of delivery doesn't matter.
+        /// Order of delivery doesn't matter: the result is always the
+        /// timeline's.
         #[test]
-        fn converges_in_any_order(
+        fn any_delivery_order_derives_the_timeline(
             transactions in prop::collection::vec(transaction(), 1..12),
             rotation in any::<prop::sample::Index>(),
         ) {
@@ -220,10 +227,12 @@ mod tests {
             shuffled.rotate_left(by);
             shuffled.reverse();
 
-            prop_assert_eq!(replay(transactions.iter()), replay(shuffled.iter()));
+            let delivered = replay(shuffled.iter());
+            prop_assert_eq!(&delivered, &replay(transactions.iter()));
+            prop_assert_eq!(read(&delivered), in_timeline_order(&transactions));
         }
 
-        /// Merging two replicas' states equals applying everything to one.
+        /// Merging two replicas' versions equals applying everything to one.
         #[test]
         fn merge_matches_replay(
             transactions in prop::collection::vec(transaction(), 0..16),
@@ -233,7 +242,7 @@ mod tests {
             let (left, right) = transactions.split_at(split.index(transactions.len() + 1));
 
             let mut merged = replay(left.iter());
-            merged.merge(&replay(right.iter()));
+            merged.extend(replay(right.iter()));
 
             prop_assert_eq!(merged, replay(transactions.iter()));
         }

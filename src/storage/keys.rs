@@ -7,13 +7,14 @@
 //! [AGREEMENT][agreement][PROTOCOL][ATTESTATION]       → our latest Signed<Attestation>
 //! [AGREEMENT][agreement][PROTOCOL][CLOCK]             → integrated clock, floor
 //! [AGREEMENT][agreement][PROTOCOL][LOG][author][seq]  → Signed<Transaction>
-//! [AGREEMENT][agreement][DATA][model][key…]           → KV Entry
+//! [AGREEMENT][agreement][DATA][model][key…][stamp]    → KV Version
 //! ```
 //!
-//! Identifiers are fixed width and sequence numbers are big-endian, so byte
-//! order matches logical order. The application's key bytes come last,
-//! which keeps them unambiguous without any escaping, and keeps prefix
-//! queries over them a single range.
+//! Identifiers are fixed width and counters are big-endian, so byte order
+//! matches logical order. The application's key bytes are the only part
+//! that varies in length, and everything around them is fixed width, which
+//! keeps them unambiguous without any escaping, and keeps prefix queries
+//! over them a single range.
 //!
 //! The payoff:
 //!
@@ -21,12 +22,16 @@
 //!   agreement is one range.
 //! - **Protocol** state (what replication needs) and **data** (what models
 //!   hold) are separate ranges. Hydration loads the protocol range, which
-//!   stays small because compaction trims the log. Data is loaded a key at a
-//!   time, when something needs it.
+//!   stays small because compaction trims the log. The node never loads
+//!   data at all, except to send a snapshot.
 //! - An author's log is a sub-range, so compacting it is one range delete.
+//! - A key's versions are a sub-range in timeline order, because a stamp's
+//!   bytes sort the way stamps do. Writing a version never needs to read
+//!   the others, and the last one in the range is the current one.
 
 use crate::actor::Peer;
 use crate::agreement::AgreementId;
+use crate::clock::Stamp;
 use crate::model::ModelId;
 
 const GENESIS: u8 = 1;
@@ -52,10 +57,12 @@ pub(crate) enum Record {
         author: [u8; 32],
         seq: u64,
     },
-    Entry {
+    Version {
         agreement: AgreementId,
         model: ModelId,
         key: Vec<u8>,
+        /// Boxed because a stamp holds its author's whole public key.
+        stamp: Box<Stamp>,
     },
 }
 
@@ -78,12 +85,12 @@ pub(crate) fn protocol(id: AgreementId) -> Vec<u8> {
     [agreement(id), vec![PROTOCOL]].concat()
 }
 
-/// Every model's entries.
+/// Every model's data.
 pub(crate) fn data(id: AgreementId) -> Vec<u8> {
     [agreement(id), vec![DATA]].concat()
 }
 
-/// One model's entries.
+/// One model's data.
 pub(crate) fn model(id: AgreementId, model: ModelId) -> Vec<u8> {
     [data(id), model.as_bytes().to_vec()].concat()
 }
@@ -109,8 +116,22 @@ pub(crate) fn log_through(id: AgreementId, author: Peer, through: u64) -> (Vec<u
     (log(id, author, 0), log(id, author, through + 1))
 }
 
-pub(crate) fn entry(id: AgreementId, model_id: ModelId, key: &[u8]) -> Vec<u8> {
+/// Every version of `key`, and of every key that starts with it.
+pub(crate) fn versions(id: AgreementId, model_id: ModelId, key: &[u8]) -> Vec<u8> {
     [model(id, model_id), key.to_vec()].concat()
+}
+
+/// What the transaction stamped `stamp` wrote to `key`.
+pub(crate) fn version(id: AgreementId, model_id: ModelId, key: &[u8], stamp: Stamp) -> Vec<u8> {
+    let lamport = stamp.lamport.to_be_bytes();
+    let author = stamp.author.as_bytes();
+
+    [
+        versions(id, model_id, key),
+        lamport.to_vec(),
+        author.to_vec(),
+    ]
+    .concat()
 }
 
 fn log_of(id: AgreementId, author: Peer) -> Vec<u8> {
@@ -156,11 +177,17 @@ fn parse_protocol(agreement: AgreementId, key: &[u8]) -> Option<Record> {
 
 fn parse_data(agreement: AgreementId, key: &[u8]) -> Option<Record> {
     let (model, key) = take_id(key)?;
+    let (key, author) = key.split_last_chunk::<32>()?;
+    let (key, lamport) = key.split_last_chunk::<8>()?;
 
-    Some(Record::Entry {
+    Some(Record::Version {
         agreement,
         model: ModelId::from_bytes(model),
         key: key.to_vec(),
+        stamp: Box::new(Stamp {
+            lamport: u64::from_be_bytes(*lamport),
+            author: Peer::from_bytes(author)?,
+        }),
     })
 }
 
@@ -174,10 +201,14 @@ fn take_id(bytes: &[u8]) -> Option<([u8; 32], &[u8])> {
 mod tests {
     use super::*;
     use crate::agreement::Genesis;
-    use crate::testing::peers::phone;
+    use crate::testing::peers::{laptop, phone};
 
     fn id() -> AgreementId {
         Genesis::new([1; 32], [phone().id()]).id()
+    }
+
+    fn stamp(lamport: u64, author: Peer) -> Stamp {
+        Stamp { lamport, author }
     }
 
     #[test]
@@ -197,11 +228,12 @@ mod tests {
             }),
         );
         assert_eq!(
-            parse(&entry(id(), model, b"color")),
-            Some(Record::Entry {
+            parse(&version(id(), model, b"color", stamp(3, phone()))),
+            Some(Record::Version {
                 agreement: id(),
                 model,
-                key: b"color".to_vec()
+                key: b"color".to_vec(),
+                stamp: Box::new(stamp(3, phone())),
             }),
         );
     }
@@ -219,10 +251,28 @@ mod tests {
             assert!(key.starts_with(&protocol(id())));
         }
 
-        assert!(entry(id(), model, b"").starts_with(&data(id())));
-        assert!(!entry(id(), model, b"").starts_with(&protocol(id())));
+        assert!(versions(id(), model, b"").starts_with(&data(id())));
+        assert!(!versions(id(), model, b"").starts_with(&protocol(id())));
         assert!(protocol(id()).starts_with(&agreement(id())));
         assert!(data(id()).starts_with(&agreement(id())));
+    }
+
+    #[test]
+    fn a_keys_versions_sort_by_stamp() {
+        let model = ModelId::new(id(), [2; 32]);
+        let mut stamps = [
+            stamp(1, phone()),
+            stamp(1, laptop()),
+            stamp(2, phone()),
+            stamp(256, laptop()),
+        ];
+        stamps.sort();
+
+        let stored = stamps.map(|stamp| version(id(), model, b"color", stamp));
+        assert!(stored.is_sorted());
+        for key in &stored {
+            assert!(key.starts_with(&versions(id(), model, b"color")));
+        }
     }
 
     #[test]

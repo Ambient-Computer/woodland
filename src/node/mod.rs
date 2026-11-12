@@ -19,7 +19,7 @@ use crate::agreement::AgreementId;
 use crate::encoding;
 use crate::group::{Group, VerifiedParts};
 use crate::io::{Action, Event, LocalEvent, NetworkEvent, StorageEvent};
-use crate::storage::keys::{self, Record};
+use crate::storage::keys;
 
 /// Represents this device. Applications should only create one.
 ///
@@ -130,8 +130,6 @@ impl Node {
                 }
             }
 
-            Event::Storage(StorageEvent::Got { entries }) => self.got(entries),
-
             Event::Local(LocalEvent::Join { genesis }) => {
                 let me = self.me();
                 if let Entry::Vacant(vacant) = self.groups.entry(genesis.id()) {
@@ -200,22 +198,6 @@ impl Node {
         }
     }
 
-    /// Hands each loaded model entry to the group that asked for it.
-    fn got(&mut self, entries: Vec<(Vec<u8>, Option<Vec<u8>>)>) {
-        for (key, value) in entries {
-            if let Some(Record::Entry {
-                agreement,
-                model,
-                key,
-            }) = keys::parse(&key)
-                && let Some(group) = self.groups.get_mut(&agreement)
-            {
-                let entry = value.and_then(|bytes| encoding::decode(&bytes));
-                group.loaded(model, key, entry);
-            }
-        }
-    }
-
     /// Keeps each group's peer list equal to the connected peers that
     /// replicate it.
     fn resubscribe(&mut self) {
@@ -261,6 +243,7 @@ mod tests {
     use crate::agreement::Genesis;
     use crate::lattice::Lattice;
     use crate::model::{ModelId, Query};
+    use crate::storage::keys::Record;
 
     use crate::testing::cluster::{Cluster, FRIEND, LAPTOP, NAS, PHONE};
 
@@ -531,10 +514,8 @@ mod tests {
 
         cluster.restart(PHONE);
 
-        // Protocol state comes back. Model data stays in storage until
-        // something needs it.
+        // Protocol state comes back. Model data stays in storage.
         assert_eq!(group(&cluster, PHONE).history().clock(), &clock);
-        assert_eq!(group(&cluster, PHONE).models().cached().count(), 0);
         assert_eq!(group(&cluster, PHONE).agreement().learned(), &learned);
         assert_eq!(
             group(&cluster, PHONE).agreement().attested(),
@@ -547,9 +528,9 @@ mod tests {
         assert_eq!(read(&cluster, LAPTOP, "size").as_deref(), Some("small"));
     }
 
-    /// Why integrating has to load first. After a restart nothing is in
-    /// memory, and an older write arrives for a key that already has a
-    /// newer value in storage. Applied blind, it would win.
+    /// Integrating never reads. After a restart nothing is in memory, and
+    /// an older write arrives for a key that already has a newer value in
+    /// storage. It's written anyway, behind the newer one in the timeline.
     #[test]
     fn an_older_write_still_loses_after_a_restart() {
         let mut cluster = household();
@@ -701,17 +682,6 @@ mod tests {
                         let author = VerifyingKey::from_bytes(&author).map(Peer::from);
                         prop_assert!(author.is_ok_and(|author| !floor.contains(author, seq)));
                     }
-                }
-            }
-
-            // Whatever is loaded matches storage. A stale cache would apply
-            // later writes against the wrong current value.
-            let agreement = genesis(&cluster).id();
-            for device in [PHONE, LAPTOP, NAS, FRIEND] {
-                let store = &cluster.devices[device].store;
-                for (model, key, entry) in group(&cluster, device).models().cached() {
-                    let stored = store.get(vec![keys::entry(agreement, model, key)]);
-                    prop_assert_eq!(&stored[0].1, &Some(encoding::encode(entry)));
                 }
             }
         }

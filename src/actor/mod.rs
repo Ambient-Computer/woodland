@@ -52,6 +52,11 @@ impl Peer {
     pub(crate) fn as_bytes(&self) -> &[u8; 32] {
         self.0.as_bytes()
     }
+
+    /// Reads a peer back from its key bytes. Not every 32 bytes are a key.
+    pub(crate) fn from_bytes(bytes: &[u8; 32]) -> Option<Self> {
+        VerifyingKey::from_bytes(bytes).ok().map(Self)
+    }
 }
 
 /// Peers are ordered by their key bytes.

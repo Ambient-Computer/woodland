@@ -2,7 +2,7 @@
 //!
 //! 1. [`start`]: scan the genesis records to find which agreements exist.
 //! 2. [`scanned`] with the genesis list: scan each agreement's protocol
-//!    state. Model entries aren't loaded: they load on demand.
+//!    state. Model data isn't loaded. The node only ever writes it.
 //! 3. [`scanned`] with an agreement's entries: rebuild that group.
 //!
 //! The node never waits. Each step returns scans as actions, and the

@@ -1,27 +1,22 @@
 //! Snapshots: model state for a peer that has fallen behind our floor. The
 //! transactions it needs are gone, so it gets their result instead.
 //!
-//! Model data isn't all in memory (see `models`), so both directions go
-//! through storage:
+//! Model data is never in memory, so sending goes through storage. A
+//! snapshot is a scan of the agreement's data range. Its floor and Lamport
+//! counter are taken when the scan is asked for. Writes come before reads,
+//! so the scan reflects at least that floor. Until the scan is back, the
+//! peer gets the previous snapshot, or nothing.
 //!
-//! - **Sending.** A snapshot is a scan of the agreement's data range. Its
-//!   floor and Lamport counter are taken when the scan is asked for. Writes
-//!   come before reads, so the scan reflects at least that floor. Until the
-//!   scan is back, the peer gets the previous snapshot, or nothing.
-//! - **Receiving.** Merging is last-writer-wins key by key, so every key in
-//!   the snapshot is loaded first. Until then the snapshot waits, much like
-//!   a transaction does.
-
-use std::collections::BTreeMap;
+//! Receiving doesn't read anything. Versions merge by union, so a
+//! snapshot's versions are written like a transaction's are.
 
 use serde::{Deserialize, Serialize};
 
 use super::history::History;
-use super::models::Models;
 use crate::agreement::AgreementId;
-use crate::clock::VersionVector;
+use crate::clock::{Stamp, VersionVector};
 use crate::encoding;
-use crate::model::{Entry, KvModel, ModelId};
+use crate::model::{ModelId, Version};
 use crate::node::Outbox;
 use crate::storage::keys::{self, Record};
 
@@ -29,13 +24,21 @@ use crate::storage::keys::{self, Record};
 ///
 /// It reflects every transaction we'd integrated when it was taken, not
 /// just those below the floor. That's fine: the transactions above the
-/// floor travel with it, and applying a last-writer-wins write twice
-/// changes nothing.
+/// floor travel with it, and writing a version twice changes nothing.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Snapshot {
     pub(crate) floor: VersionVector,
     pub(crate) lamport: u64,
-    pub(crate) models: BTreeMap<ModelId, KvModel>,
+    pub(crate) versions: Vec<Versioned>,
+}
+
+/// One version of one key, as a snapshot carries it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Versioned {
+    pub(crate) model: ModelId,
+    pub(crate) key: Vec<u8>,
+    pub(crate) stamp: Stamp,
+    pub(crate) version: Version,
 }
 
 #[derive(Debug, Default)]
@@ -44,8 +47,6 @@ pub(crate) struct Snapshots {
     prepared: Option<Snapshot>,
     /// The floor and Lamport counter of the scan in progress, if any.
     scanning: Option<(VersionVector, u64)>,
-    /// Snapshots from peers, waiting for their keys to load.
-    arriving: Vec<Snapshot>,
 }
 
 impl Snapshots {
@@ -76,48 +77,26 @@ impl Snapshots {
             return;
         };
 
-        let mut models: BTreeMap<ModelId, KvModel> = BTreeMap::new();
-        for (key, value) in entries {
-            if let (Some(Record::Entry { model, key, .. }), Some(entry)) =
-                (keys::parse(key), encoding::decode::<Entry>(value))
-            {
-                models.entry(model).or_default().restore(key, entry);
-            }
-        }
+        let versions = entries.iter().filter_map(|(key, value)| {
+            let Record::Version {
+                model, key, stamp, ..
+            } = keys::parse(key)?
+            else {
+                return None;
+            };
+
+            Some(Versioned {
+                model,
+                key,
+                stamp: *stamp,
+                version: encoding::decode(value)?,
+            })
+        });
 
         self.prepared = Some(Snapshot {
             floor,
             lamport,
-            models,
+            versions: versions.collect(),
         });
-    }
-
-    /// A peer sent a snapshot. It waits until every key in it is loaded.
-    pub(crate) fn arrived(
-        &mut self,
-        snapshot: Snapshot,
-        agreement: AgreementId,
-        models: &mut Models,
-        outbox: &mut Outbox,
-    ) {
-        for (&model, theirs) in &snapshot.models {
-            models.request(agreement, model, theirs.keys(), outbox);
-        }
-
-        self.arriving.push(snapshot);
-    }
-
-    /// Takes the arrived snapshots that can be merged now.
-    pub(crate) fn take_loaded(&mut self, models: &Models) -> Vec<Snapshot> {
-        let loaded = |snapshot: &Snapshot| {
-            (snapshot.models.iter()).all(|(&model, theirs)| models.has(model, theirs.keys()))
-        };
-
-        let (ready, waiting) = std::mem::take(&mut self.arriving)
-            .into_iter()
-            .partition(loaded);
-        self.arriving = waiting;
-
-        ready
     }
 }
