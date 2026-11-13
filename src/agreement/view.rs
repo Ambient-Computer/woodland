@@ -115,18 +115,6 @@ impl View {
         }
     }
 
-    /// Joins `other` into this view. Returns whether anything changed.
-    pub(crate) fn merge(&mut self, other: &View) -> bool {
-        let before = self.clone();
-        self.learned.join(&other.learned);
-        self.candidate.join(&other.candidate);
-        self.acknowledged.join(&other.acknowledged);
-        self.proposals.extend(other.proposals.iter().cloned());
-        self.forget_superseded();
-
-        *self != before
-    }
-
     /// Adds a proposed configuration, unless what's learned already
     /// includes it.
     pub(crate) fn propose(&mut self, configuration: Configuration) {

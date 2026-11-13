@@ -42,7 +42,6 @@ use verdicts::{Verdict, Verdicts};
 
 use crate::actor::{Identity, Peer, Signed};
 use crate::agreement::{Agreement, AgreementId, Change, Genesis};
-use crate::clock::Progress;
 use crate::io::Changed;
 use crate::lattice::Lattice;
 use crate::log::Log;
@@ -106,8 +105,10 @@ impl Group {
         }
     }
 
-    pub(crate) fn propose(&mut self, change: Change) {
-        self.agreement.propose_change(change);
+    pub(crate) fn propose(&mut self, identity: &Identity, change: Change) {
+        if !self.agreement.propose_change(identity, change) {
+            tracing::warn!("not a contributor, dropped a membership change");
+        }
     }
 
     /// Takes in what a peer sent. Its signed parts arrive already verified.
@@ -118,8 +119,9 @@ impl Group {
         signed: VerifiedParts,
         outbox: &mut Outbox,
     ) {
-        if let Some(view) = &message.view {
-            self.agreement.receive(view);
+        if let Some(gossip) = &message.gossip {
+            let (proposals, reports) = (signed.proposals, signed.reports);
+            self.agreement.receive(&gossip.learned, proposals, reports);
         }
 
         for attestation in signed.attestations {
@@ -169,9 +171,8 @@ impl Group {
         // configuration they knew of. That report is what eventually lets
         // everyone settle.
         if self.may_report() {
-            let report = Progress::report(self.me, self.log.integrated().clone());
-            self.agreement.propose_progress(&report);
-            self.agreement.acknowledge();
+            let integrated = self.log.integrated().clone();
+            self.agreement.report(identity, integrated);
         }
 
         self.agreement.try_learn();

@@ -12,10 +12,11 @@
 //!    lacks some that have settled here, they're gone, so send a
 //!    **snapshot** (our settled state) first, and nothing else until it
 //!    holds everything we've settled.
-//! 3. Send our agreement **view** whenever it changes, and every
-//!    **attestation** newer than what we last sent, whoever signed it.
-//!    That's all the agreement protocol needs: views merge, and matching
-//!    attestations are witnesses.
+//! 3. Send what our agreement **view** is made of whenever it changes,
+//!    and every **attestation** newer than what we last sent, whoever
+//!    signed it. That's all the agreement protocol needs: views merge,
+//!    and matching attestations are witnesses. Every part is signed by
+//!    whoever said it, so it doesn't matter who passes it on.
 //!
 //! A device that [rewinds] says so, and its peers forget what they thought
 //! it had.
@@ -31,7 +32,7 @@ use serde::{Deserialize, Serialize};
 
 use super::snapshot::Snapshot;
 use crate::actor::{Peer, Signed, Verified};
-use crate::agreement::{Agreement, Attestation, View};
+use crate::agreement::{Agreement, Attestation, Gossip, Proposal, Report, View};
 use crate::clock::VersionVector;
 use crate::lattice::Lattice;
 use crate::log::Log;
@@ -40,7 +41,8 @@ use crate::log::Transaction;
 /// One agreement's part of a message to a peer.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct GroupMessage {
-    pub(crate) view: Option<View>,
+    /// Everything the sender's view is made of.
+    pub(crate) gossip: Option<Gossip>,
     pub(crate) attestations: Vec<Signed<Attestation>>,
     /// The sender dropped what it had integrated. Its clock, in this
     /// message, replaces whatever it said before.
@@ -56,6 +58,8 @@ pub(crate) struct GroupMessage {
 #[derive(Debug, Default)]
 pub(crate) struct VerifiedParts {
     pub(crate) attestations: Vec<Verified<Attestation>>,
+    pub(crate) proposals: Vec<Verified<Proposal>>,
+    pub(crate) reports: Vec<Verified<Report>>,
     pub(crate) transactions: Vec<Verified<Transaction>>,
 }
 
@@ -110,7 +114,7 @@ impl PeerSync {
         let view = agreement.view();
         if self.sent_view.as_ref() != Some(view) {
             self.sent_view = Some(view.clone());
-            message.view = Some(view.clone());
+            message.gossip = Some(agreement.gossip());
         }
 
         // The peer's own attestations would only come back to it.

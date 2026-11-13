@@ -3,7 +3,8 @@
 //! What's stored, under the agreement's prefix (see [`keys`]):
 //!
 //! - the **genesis**, so the agreement ID can always be re-derived;
-//! - the agreement **view**, so learned decisions survive restarts, and
+//! - the agreement **view**, as the signed statements it's made of, so
+//!   learned decisions survive restarts and can still be passed on, and
 //!   this device's latest **attestation** of it, so revisions keep rising;
 //! - the **clock** (integrated version vector, Lamport counter, cut);
 //! - the **log** of signed transactions that haven't settled;
@@ -29,7 +30,7 @@ use super::admission::{self, Held};
 use super::snapshot::{Snapshot, Snapshots};
 use super::verdicts::Verdicts;
 use crate::actor::{Peer, Signed, Verified};
-use crate::agreement::{Agreement, AgreementId, Attestation, Genesis, View};
+use crate::agreement::{Agreement, AgreementId, Attestation, Genesis, Gossip, View};
 use crate::clock::Stamp;
 use crate::encoding;
 use crate::log::Transaction;
@@ -43,7 +44,8 @@ use crate::storage::keys::{self, Record};
 pub(crate) struct Restored {
     genesis: Genesis,
     me: Peer,
-    view: Option<View>,
+    /// Everything the agreement's view was made of.
+    gossip: Option<Gossip>,
     attested: Option<Verified<Attestation>>,
     clock: Clock,
     transactions: Vec<Verified<Transaction>>,
@@ -65,7 +67,7 @@ impl Restored {
         Self {
             genesis: genesis.clone(),
             me,
-            view: None,
+            gossip: None,
             attested: None,
             clock: Clock::default(),
             transactions: Vec::new(),
@@ -84,7 +86,7 @@ impl Restored {
         let mut restored = Self::fresh(genesis, me);
         for (key, value) in entries {
             match keys::parse(key) {
-                Some(Record::View(_)) => restored.view = encoding::decode(value),
+                Some(Record::View(_)) => restored.gossip = encoding::decode(value),
                 Some(Record::Attestation(_)) => {
                     // Only this device wrote it, and it signed it.
                     let signed = encoding::decode::<Signed<Attestation>>(value);
@@ -124,10 +126,12 @@ impl From<Restored> for Group {
     fn from(restored: Restored) -> Self {
         let id = restored.genesis.id();
         let attested = restored.attested.as_ref().map(|it| it.payload().revision);
-        let agreement = match restored.view.clone() {
-            Some(view) => Agreement::resume(id, view, restored.attested, restored.me),
+        let stored = restored.gossip.is_some();
+        let agreement = match restored.gossip {
+            Some(gossip) => Agreement::resume(id, gossip, restored.attested, restored.me),
             None => Agreement::new(&restored.genesis, restored.me),
         };
+        let view = stored.then(|| agreement.view().clone());
 
         // Founders never wait to be admitted (see `admission`).
         let mut log = Log::restore(restored.clock.clone(), restored.transactions, restored.me);
@@ -145,7 +149,7 @@ impl From<Restored> for Group {
             snapshots: Snapshots::default(),
             peers: BTreeMap::new(),
             persisted: Persisted {
-                view: restored.view,
+                view,
                 attested,
                 clock: Some(restored.clock),
             },
@@ -166,7 +170,7 @@ impl Persisted {
         outbox: &mut Outbox,
     ) {
         if self.view.as_ref() != Some(agreement.view()) {
-            outbox.put(keys::view(id), agreement.view());
+            outbox.put(keys::view(id), &agreement.gossip());
             self.view = Some(agreement.view().clone());
         }
 

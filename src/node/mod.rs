@@ -146,7 +146,7 @@ impl Node {
 
             Event::Local(LocalEvent::Reconfigure { agreement, change }) => {
                 if let Some(group) = self.groups.get_mut(&agreement) {
-                    group.propose(change);
+                    group.propose(&self.identity, change);
                 }
             }
 
@@ -190,9 +190,14 @@ impl Node {
         // One batch per payload type. Sharing a single batch would need one
         // signed type for both, which isn't worth it for one fewer call.
         let (mut attestations, mut transactions) = (Vec::new(), Vec::new());
+        let (mut proposals, mut reports) = (Vec::new(), Vec::new());
         for part in message.groups.values_mut() {
             attestations.append(&mut part.attestations);
             transactions.append(&mut part.transactions);
+            if let Some(gossip) = &mut part.gossip {
+                proposals.append(&mut gossip.proposals);
+                reports.append(&mut gossip.reports);
+            }
         }
 
         let mut verified: BTreeMap<AgreementId, VerifiedParts> = BTreeMap::new();
@@ -200,6 +205,20 @@ impl Node {
             let agreement = attestation.payload().agreement;
             let part = verified.entry(agreement).or_default();
             part.attestations.push(attestation);
+        }
+
+        for proposal in actor::verify_all(proposals) {
+            let agreement = proposal.payload().agreement;
+            verified
+                .entry(agreement)
+                .or_default()
+                .proposals
+                .push(proposal);
+        }
+
+        for report in actor::verify_all(reports) {
+            let agreement = report.payload().agreement;
+            verified.entry(agreement).or_default().reports.push(report);
         }
 
         for transaction in actor::verify_all(transactions) {
