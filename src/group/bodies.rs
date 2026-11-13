@@ -13,8 +13,12 @@
 //! gets, what's in memory and what goes in one message stay bounded.
 //!
 //! A transaction is also in hand during the batch that integrates it,
-//! which is when most of them are sent and shown. Nothing is kept
-//! between batches.
+//! which is when most of them are sent and shown.
+//!
+//! Between batches, only the ones waiting on a verdict are kept, and
+//! no more than a page of them. A verdict waits on one read of storage,
+//! so they're about to be shown, and reading them back as well would
+//! make that two reads in a row.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -76,9 +80,15 @@ impl Bodies {
         }
     }
 
-    /// The batch is over.
-    pub(super) fn clear(&mut self) {
-        self.held.clear();
+    /// The batch is over. Lets go of everything but the first page of
+    /// transactions that are `awaited`.
+    pub(super) fn clear(&mut self, awaited: impl Fn((Peer, u64)) -> bool) {
+        let mut kept = 0;
+        self.held.retain(|key, held| {
+            let keep = held.is_some() && kept < PAGE && awaited(*key);
+            kept += usize::from(keep);
+            keep
+        });
         self.asked.clear();
     }
 }

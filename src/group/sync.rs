@@ -268,7 +268,7 @@ mod tests {
         assert_eq!(asked(outbox), pages[0]);
 
         // Nothing more is asked for while that's on its way.
-        bodies.clear();
+        bodies.clear(|_| false);
         let mut outbox = Outbox::default();
         sync.outgoing(laptop(), &agreement, &log, None, &mut bodies, &mut outbox);
         assert_eq!(asked(outbox), Vec::<Vec<u8>>::new());

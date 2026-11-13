@@ -112,3 +112,19 @@ fn a_long_unsettled_log_comes_back_after_a_restart() {
 
     assert_eq!(stored_log_len(&cluster, PHONE), 0);
 }
+
+/// A claim can't be shown until storage says whether the name is taken.
+/// The transaction stays in hand while that's read, so it shows as soon
+/// as the answer is back, not a second read later.
+#[test]
+fn a_write_that_waits_on_one_read_shows_after_it() {
+    let mut cluster = household();
+    cluster.disconnect_everyone();
+    cluster.settle();
+
+    claim(&mut cluster, LAPTOP, "grace", "laptop");
+    assert_eq!(holder(&cluster, LAPTOP, "grace"), None);
+
+    cluster.deliver(LAPTOP);
+    assert_eq!(holder(&cluster, LAPTOP, "grace").as_deref(), Some("laptop"));
+}

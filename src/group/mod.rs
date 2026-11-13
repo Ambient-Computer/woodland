@@ -164,9 +164,12 @@ impl Group {
         self.bodies.read(key, stored);
     }
 
-    /// The batch is over, and so is whatever was in hand for it.
+    /// The batch is over, and so is whatever was in hand for it, apart
+    /// from transactions whose verdict is still out (see `bodies`).
     pub(crate) fn finish(&mut self) {
-        self.bodies.clear();
+        let (log, verdicts) = (&self.log, &self.verdicts);
+        self.bodies
+            .clear(|key| log.holds(key.0, key.1) && verdicts.awaits(key));
     }
 
     /// Our scan of the settled range is back, for a snapshot.

@@ -183,6 +183,11 @@ impl Verdicts {
         !matches!(verdict, Some(Verdict::Live | Verdict::Pruned))
     }
 
+    /// Whether a transaction has a verdict that's waiting on storage.
+    pub(super) fn awaits(&self, transaction: (Peer, u64)) -> bool {
+        self.reached.get(&transaction) == Some(&Verdict::Pending)
+    }
+
     pub(super) fn is_live(&self, transaction: &Outline) -> bool {
         self.reached.get(&transaction.key()) == Some(&Verdict::Live)
     }
