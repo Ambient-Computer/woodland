@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use proptest::prelude::*;
 
+use super::tables::unique;
 use super::*;
 use crate::agreement::Decision;
 use crate::lattice::Lattice;
@@ -50,6 +51,26 @@ enum Step {
         table: u8,
         row: u8,
     },
+    /// Creates the table of accounts. Addresses are unique in it.
+    OpenAccounts {
+        device: usize,
+    },
+    SignUp {
+        device: usize,
+        row: u8,
+        address: u8,
+    },
+    /// Changes an account's address, going by the row as the device
+    /// reads it now.
+    Readdress {
+        device: usize,
+        row: u8,
+        address: u8,
+    },
+    CloseAccount {
+        device: usize,
+        row: u8,
+    },
     Connect {
         left: usize,
         right: usize,
@@ -93,6 +114,13 @@ fn step() -> impl Strategy<Value = Step> {
             .prop_map(|(device, table)| Step::CreateTable { device, table }),
         3 => (device.clone(), 1..3u8, 0..3u8)
             .prop_map(|(device, table, row)| Step::Insert { device, table, row }),
+        1 => device.clone().prop_map(|device| Step::OpenAccounts { device }),
+        3 => (device.clone(), 0..3u8, 0..3u8)
+            .prop_map(|(device, row, address)| Step::SignUp { device, row, address }),
+        3 => (device.clone(), 0..3u8, 0..3u8)
+            .prop_map(|(device, row, address)| Step::Readdress { device, row, address }),
+        2 => (device.clone(), 0..3u8)
+            .prop_map(|(device, row)| Step::CloseAccount { device, row }),
         2 => (device.clone(), device.clone())
             .prop_map(|(left, right)| Step::Connect { left, right }),
         2 => (device.clone(), device.clone())
@@ -143,6 +171,33 @@ fn run(cluster: &mut Cluster, step: Step) {
         Step::Insert { device, table, row } => {
             let table = tables::people(cluster, table);
             tables::insert(cluster, device, table, &row.to_string(), i64::from(row));
+        }
+        Step::OpenAccounts { device } => {
+            unique::open(cluster, device);
+        }
+        Step::SignUp {
+            device,
+            row,
+            address,
+        } => {
+            // Address zero is no address.
+            let address = (address > 0).then(|| address.to_string());
+            unique::sign_up(cluster, device, &row.to_string(), address.as_deref());
+        }
+        Step::Readdress {
+            device,
+            row,
+            address,
+        } => {
+            if let Some(row) = unique::account(cluster, device, &row.to_string()) {
+                let email = unique::email(unique::accounts(cluster));
+                unique::update(cluster, device, &row, email, &address.to_string());
+            }
+        }
+        Step::CloseAccount { device, row } => {
+            if let Some(row) = unique::account(cluster, device, &row.to_string()) {
+                unique::close(cluster, device, &row);
+            }
         }
         Step::Connect { left, right } => cluster.connect(left, right),
         Step::Disconnect { left, right } => cluster.disconnect(left, right),
@@ -274,6 +329,11 @@ proptest! {
                 prop_assert_eq!(tables::read_table(&cluster, PHONE, table), None);
             }
         }
+
+        // No two accounts have one address, and an address is taken
+        // exactly while an account has it.
+        let [by_row, by_key] = unique::taken(&cluster, PHONE);
+        prop_assert_eq!(by_row, by_key);
 
         // Settling really forgets: nothing settled stays in the log.
         for device in [PHONE, LAPTOP, NAS, FRIEND] {

@@ -44,6 +44,9 @@ pub(crate) enum Type {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ColumnId([u8; 8]);
 
+/// Set in the first byte of the ID of a unique column.
+const UNIQUE: u8 = 0x80;
+
 impl Value {
     fn kind(&self) -> Option<Type> {
         match self {
@@ -139,6 +142,19 @@ impl ColumnId {
         Self::new(Type::Bytes, table, nonce)
     }
 
+    /// The same column, but unique: no two rows can hold the same value
+    /// in it, other than none. Like the type, that's part of the ID and
+    /// can't change, so decide before the column is added.
+    #[must_use]
+    pub fn unique(mut self) -> Self {
+        self.0[0] |= UNIQUE;
+        self
+    }
+
+    pub(crate) fn is_unique(self) -> bool {
+        self.0[0] & UNIQUE != 0
+    }
+
     /// Whether the column takes `value`: one of its type, or none.
     pub(crate) fn takes(self, value: &Value) -> bool {
         let kind = self.kind();
@@ -156,7 +172,9 @@ impl ColumnId {
             Type::Bytes,
         ];
 
-        types.into_iter().find(|&kind| kind as u8 == self.0[0])
+        types
+            .into_iter()
+            .find(|&kind| kind as u8 == self.0[0] & !UNIQUE)
     }
 
     fn new(kind: Type, table: ModelId, nonce: [u8; 32]) -> Self {

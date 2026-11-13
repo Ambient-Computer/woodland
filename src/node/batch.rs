@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use ed25519_dalek::VerifyingKey;
 
 use super::Node;
@@ -279,7 +281,55 @@ impl<'a> TransactionBuilder<'a> {
     /// isn't there does nothing, but the table has to exist.
     pub fn delete(mut self, table: ModelId, key: impl Into<Vec<u8>>) -> Self {
         self.operations
-            .push(Operation::delete_row(table, key.into()));
+            .push(Operation::delete_row(table, key.into(), None));
+        self
+    }
+
+    /// Changes `row` of `table`, as it was read: each of these columns
+    /// gets its new value, and the rest stay as they were. The whole
+    /// transaction is dropped, on every device, if at its place in the
+    /// timeline the row has been written to or deleted since it was
+    /// read, or a [unique] column would hold a value another row has.
+    ///
+    /// Nothing is read when the transaction is applied: what the row
+    /// becomes is worked out here, from `row`. That's why it has to be
+    /// unchanged, and it's what a table with a unique column needs to
+    /// keep track of which values are taken. [`replace`] and [`upsert`]
+    /// don't say what the row was, and such a table doesn't take them.
+    ///
+    /// [unique]: ColumnId::unique
+    /// [`replace`]: Self::replace
+    /// [`upsert`]: Self::upsert
+    pub fn update(
+        mut self,
+        table: ModelId,
+        row: &Row,
+        changes: impl IntoIterator<Item = (ColumnId, Value)>,
+    ) -> Self {
+        let mut cells: BTreeMap<_, _> = row.cells().into_iter().collect();
+        cells.extend(changes);
+        let (key, cells) = (row.key().to_vec(), cells.into_iter().collect());
+        self.operations.push(Operation::put_row(
+            table,
+            key,
+            cells,
+            Rule::Replace,
+            Some(row),
+        ));
+        self
+    }
+
+    /// Removes `row` of `table`, as it was read. The whole transaction
+    /// is dropped, on every device, if at its place in the timeline the
+    /// row has been written to or deleted since. A table with a
+    /// [unique] column doesn't take [`delete`], only this.
+    ///
+    /// [unique]: ColumnId::unique
+    /// [`delete`]: Self::delete
+    pub fn delete_row(mut self, table: ModelId, row: &Row) -> Self {
+        let key = row.key().to_vec();
+        self.operations
+            .push(Operation::delete_row(table, key, Some(row)));
         self
     }
 
@@ -323,7 +373,7 @@ impl<'a> TransactionBuilder<'a> {
     ) -> Self {
         let cells = cells.into_iter().collect();
         self.operations
-            .push(Operation::put_row(table, key.into(), cells, rule));
+            .push(Operation::put_row(table, key.into(), cells, rule, None));
         self
     }
 

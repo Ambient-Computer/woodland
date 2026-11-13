@@ -42,6 +42,12 @@
 //! rows. A dropped column can't be added again, so that never
 //! resurfaces.
 //!
+//! # Unique columns
+//!
+//! A column can be unique: no two rows hold the same value in it. See
+//! [`unique`] for how, and for why a table with one only takes changes
+//! to rows from whoever read them.
+//!
 //! # What's stored
 //!
 //! A few kinds of key (see [`Place`]): one that says the table exists,
@@ -64,12 +70,14 @@
 //! reading, and write to the rows found.
 
 mod read;
+mod unique;
 mod value;
 
 use std::collections::BTreeSet;
 
 pub use read::{Row, Table};
 use serde::{Deserialize, Serialize};
+pub(crate) use unique::Prior;
 pub use value::{ColumnId, Value};
 
 use super::Requirement;
@@ -84,9 +92,15 @@ pub(crate) enum Operation {
         key: Vec<u8>,
         cells: Vec<(ColumnId, Value)>,
         rule: Rule,
+        /// The row this replaces, if its author read it.
+        prior: Option<Prior>,
     },
     /// Removes a row, if there is one.
-    Delete { key: Vec<u8> },
+    Delete {
+        key: Vec<u8>,
+        /// The row, if its author read it.
+        prior: Option<Prior>,
+    },
     /// Adds a column, or renames one.
     NameColumn {
         column: ColumnId,
@@ -122,12 +136,19 @@ pub(crate) enum Place {
     Added(ColumnId),
     /// Holds a row's cells.
     Row(Vec<u8>),
+    /// Holds the key of the row that has a value in a unique column.
+    /// What follows the column is the value, encoded.
+    Unique(ColumnId, Vec<u8>),
+    /// Holds a value once the table has had a unique column, for good.
+    Indexed,
 }
 
 const TABLE: u8 = 0;
 const COLUMN: u8 = 1;
 const ROW: u8 = 2;
 const ADDED: u8 = 3;
+const UNIQUE: u8 = 4;
+const INDEXED: u8 = 5;
 
 impl Operation {
     /// Whether a table takes the operation: every value is of its
@@ -138,37 +159,64 @@ impl Operation {
             Self::Create { columns } => columns
                 .iter()
                 .all(|(column, _)| column.takes(&Value::Null) && seen.insert(column)),
-            Self::Put { cells, .. } => cells
-                .iter()
-                .all(|(column, value)| column.takes(value) && seen.insert(column)),
+            Self::Put {
+                cells, rule, prior, ..
+            } => {
+                let typed = cells
+                    .iter()
+                    .all(|(column, value)| column.takes(value) && seen.insert(column));
+                let read = match prior {
+                    Some(prior) => *rule == Rule::Replace && prior.belongs(),
+                    None => true,
+                };
+
+                typed && read
+            }
             Self::NameColumn { column, .. } => column.takes(&Value::Null),
-            Self::Delete { .. } | Self::DropColumn { .. } => true,
+            Self::Delete { prior, .. } => prior.as_ref().is_none_or(Prior::belongs),
+            Self::DropColumn { .. } => true,
         }
     }
 
     pub(crate) fn requires(&self) -> Vec<(Vec<u8>, Requirement)> {
         match self {
             Self::Create { .. } => vec![(Place::Table.key(), Requirement::Vacant)],
-            Self::Put { key, cells, rule } => {
+            Self::Put {
+                key,
+                cells,
+                rule,
+                prior,
+            } => {
                 let table = (Place::Table.key(), Requirement::Present);
                 let columns = cells
                     .iter()
                     .map(|(column, _)| (Place::Column(*column).key(), Requirement::Present));
                 let row = Place::Row(key.clone()).key();
-                let row = match rule {
-                    Rule::Insert => Some((row, Requirement::Vacant)),
-                    Rule::Replace => Some((row, Requirement::Present)),
-                    Rule::Upsert => None,
+                let row = match (prior, rule) {
+                    (Some(prior), _) => vec![prior.requires(key)],
+                    (None, Rule::Insert) => vec![(row, Requirement::Vacant)],
+                    (None, Rule::Replace) => vec![(row, Requirement::Present), Self::unread()],
+                    (None, Rule::Upsert) => vec![Self::unread()],
                 };
 
-                std::iter::once(table).chain(columns).chain(row).collect()
+                let unique = unique::requires(cells, prior.as_ref());
+                let all = std::iter::once(table).chain(columns).chain(row);
+
+                all.chain(unique).collect()
             }
 
             // Deleting a row that's already gone isn't a failure. Two
             // devices that delete the same row both got what they wanted.
-            Self::Delete { .. } | Self::DropColumn { .. } => {
-                vec![(Place::Table.key(), Requirement::Present)]
+            Self::Delete { key, prior } => {
+                let row = match prior {
+                    Some(prior) => prior.requires(key),
+                    None => Self::unread(),
+                };
+
+                vec![(Place::Table.key(), Requirement::Present), row]
             }
+
+            Self::DropColumn { .. } => vec![(Place::Table.key(), Requirement::Present)],
 
             Self::NameColumn { column, add, .. } => {
                 let table = (Place::Table.key(), Requirement::Present);
@@ -195,15 +243,25 @@ impl Operation {
                 std::iter::once(table).chain(columns).collect()
             }
 
-            Self::Put { key, cells, .. } => {
+            Self::Put {
+                key, cells, prior, ..
+            } => {
+                let mut writes = unique::writes(key, cells, prior.as_ref());
                 let cells: std::collections::BTreeMap<_, _> = cells.iter().cloned().collect();
                 let row = encoding::encode(&cells);
+                writes.push((Place::Row(key.clone()).key(), Some(row)));
 
-                vec![(Place::Row(key.clone()).key(), Some(row))]
+                writes
             }
 
-            Self::Delete { key } => vec![(Place::Row(key.clone()).key(), None)],
-            Self::NameColumn { column, name, .. } => Self::named(*column, name).into(),
+            Self::Delete { key, prior } => {
+                let mut writes = unique::writes(key, &[], prior.as_ref());
+                writes.push((Place::Row(key.clone()).key(), None));
+
+                writes
+            }
+
+            Self::NameColumn { column, name, .. } => Self::named(*column, name),
             Self::DropColumn { column } => vec![(Place::Column(*column).key(), None)],
         }
     }
@@ -211,13 +269,21 @@ impl Operation {
 
 impl Operation {
     /// What a column with a name leaves behind.
-    fn named(column: ColumnId, name: &str) -> [(Vec<u8>, Option<Vec<u8>>); 2] {
+    fn named(column: ColumnId, name: &str) -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
         let name = name.to_owned().into_bytes();
+        let indexed = column.is_unique().then(|| Place::Indexed.key());
+        let places = [Place::Added(column).key()].into_iter().chain(indexed);
+        let marks = places.map(|place| (place, Some(Vec::new())));
 
-        [
-            (Place::Added(column).key(), Some(Vec::new())),
-            (Place::Column(column).key(), Some(name)),
-        ]
+        marks
+            .chain([(Place::Column(column).key(), Some(name))])
+            .collect()
+    }
+
+    /// What a write to a row requires if its author didn't say what the
+    /// row was: that the table never had a unique column.
+    fn unread() -> (Vec<u8>, Requirement) {
+        (Place::Indexed.key(), Requirement::Vacant)
     }
 }
 
@@ -228,7 +294,14 @@ impl Place {
             Self::Column(column) => [&[COLUMN][..], column.as_bytes()].concat(),
             Self::Added(column) => [&[ADDED][..], column.as_bytes()].concat(),
             Self::Row(key) => [&[ROW][..], key].concat(),
+            Self::Unique(column, value) => [&[UNIQUE][..], column.as_bytes(), value].concat(),
+            Self::Indexed => vec![INDEXED],
         }
+    }
+
+    /// The key that holds whichever row has `value` in `column`.
+    pub(crate) fn unique(column: ColumnId, value: &Value) -> Vec<u8> {
+        Self::Unique(column, encoding::encode(value)).key()
     }
 
     pub(crate) fn parse(key: &[u8]) -> Option<Self> {
@@ -238,6 +311,12 @@ impl Place {
             COLUMN => Some(Self::Column(ColumnId::from_bytes(rest.try_into().ok()?))),
             ROW => Some(Self::Row(rest.to_vec())),
             ADDED => Some(Self::Added(ColumnId::from_bytes(rest.try_into().ok()?))),
+            UNIQUE => {
+                let (column, value) = rest.split_first_chunk()?;
+
+                Some(Self::Unique(ColumnId::from_bytes(*column), value.to_vec()))
+            }
+            INDEXED if rest.is_empty() => Some(Self::Indexed),
             _ => None,
         }
     }

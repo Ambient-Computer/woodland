@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use super::{ColumnId, Place, Value};
+use super::{ColumnId, Place, Prior, Value, unique};
 use crate::encoding;
 use crate::model::{Fingerprint, Requirement};
 
@@ -47,7 +47,7 @@ impl Table {
                         rows.push(Row { key, cells, stored });
                     }
                 }
-                Some(Place::Added(_)) | None => {}
+                Some(Place::Added(_) | Place::Unique(..) | Place::Indexed) | None => {}
             }
         }
 
@@ -76,6 +76,15 @@ impl Table {
     pub fn row(&self, key: &[u8]) -> Option<&Row> {
         self.rows.iter().find(|row| row.key == key)
     }
+
+    /// The first row that holds `value` in `column`. If the column is
+    /// [unique], the only one.
+    ///
+    /// [unique]: ColumnId::unique
+    #[must_use]
+    pub fn find(&self, column: ColumnId, value: &Value) -> Option<&Row> {
+        self.rows.iter().find(|row| row.get(column) == value)
+    }
 }
 
 impl Row {
@@ -89,6 +98,22 @@ impl Row {
     #[must_use]
     pub fn get(&self, column: ColumnId) -> &Value {
         self.cells.get(&column).unwrap_or(&Value::Null)
+    }
+}
+
+impl Row {
+    /// The row as an operation that replaces or deletes it names it.
+    pub(crate) fn prior(&self) -> Prior {
+        let cells = self.cells();
+
+        Prior {
+            was: self.stored,
+            held: unique::taken(&cells).cloned().collect(),
+        }
+    }
+
+    pub(crate) fn cells(&self) -> Vec<(ColumnId, Value)> {
+        self.cells.clone().into_iter().collect()
     }
 
     /// The row's key in its model, and the requirement that it's still

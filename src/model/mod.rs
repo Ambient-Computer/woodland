@@ -8,9 +8,9 @@
 //!   ([`Write`]);
 //! - what it **requires** of the model's state at its transaction's place
 //!   in the timeline: that a key is vacant, that it's present, or that
-//!   it holds a certain value ([`Requirement`]). A transaction with a requirement that doesn't
-//!   hold is **pruned**: it stays in the log, and none of its operations
-//!   happen.
+//!   it holds a certain value ([`Requirement`]). A transaction with a
+//!   requirement that doesn't hold is **pruned**: it stays in the log,
+//!   and none of its operations happen.
 //!
 //! And about itself: whether readers may see writes that **haven't
 //! settled** ([`Kind::shows_unsettled`]).
@@ -21,7 +21,12 @@
 //! - `kv` requires nothing, so the last writer wins.
 //! - `claims` requires the key to be vacant, so the first writer wins.
 //! - A `table` requires what keeps rows and schema coherent: a row's
-//!   table and columns must be present, and its key vacant.
+//!   table and columns must be present, its key vacant, and the values
+//!   it has in unique columns free.
+//!
+//! Any transaction can also require a key to hold what its author read
+//! (`Change::Expect`), whatever the model. That's what makes a write
+//! conditional, and a claim a lock.
 //! - A **threshold** map takes the same operations as `kv`, but only
 //!   shows what has settled. A reader never sees a value that some
 //!   contributor might not have, or one that an earlier write could
@@ -71,7 +76,7 @@
 mod claims;
 mod kv;
 mod query;
-mod table;
+pub(crate) mod table;
 
 use serde::{Deserialize, Serialize};
 
@@ -217,8 +222,15 @@ impl Operation {
         key: Vec<u8>,
         cells: Vec<(ColumnId, Value)>,
         rule: Rule,
+        prior: Option<&Row>,
     ) -> Self {
-        let change = Change::Table(table::Operation::Put { key, cells, rule });
+        let prior = prior.map(Row::prior);
+        let change = Change::Table(table::Operation::Put {
+            key,
+            cells,
+            rule,
+            prior,
+        });
 
         Self { model, change }
     }
@@ -235,8 +247,9 @@ impl Operation {
         Self { model, change }
     }
 
-    pub(crate) fn delete_row(model: ModelId, key: Vec<u8>) -> Self {
-        let change = Change::Table(table::Operation::Delete { key });
+    pub(crate) fn delete_row(model: ModelId, key: Vec<u8>, prior: Option<&Row>) -> Self {
+        let prior = prior.map(Row::prior);
+        let change = Change::Table(table::Operation::Delete { key, prior });
 
         Self { model, change }
     }

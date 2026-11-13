@@ -14,7 +14,8 @@
 //! 4. `log/`: signed transactions, delivered in causal order, and the
 //!    timeline they sort into.
 //! 5. `model/`: what operations write and require. A key-value map,
-//!    a map of claims, and a map that only shows what has settled.
+//!    a map of claims, a map that only shows what has settled, and
+//!    tables (`model/table/`).
 //! 6. `clock/`: version vectors, the stamps that order the timeline, and
 //!    the greatest lower bound that settling starts from.
 //! 7. `storage/`: the key-value contract and the key layout.
@@ -77,6 +78,13 @@
 //!   in code that never looks inside an operation (`group/verdicts.rs`).
 //!   Last-writer-wins is "requires nothing". First-writer-wins is
 //!   "requires the key to be vacant" (`model/claims.rs`).
+//! - A database out of three requirements. Vacant, present and "holds
+//!   this value", each about one key, are enough for tables with a
+//!   schema that changes, rows that go with the table they were written
+//!   to, unique columns, compare-and-set, and locks held across
+//!   transactions (`model/table/`). Nothing is worked out when a
+//!   transaction is applied: its author reads, and writes down the
+//!   result and what it depended on.
 //! - Everything that travels is signed by whoever said it: transactions,
 //!   progress reports, proposals, attestations. A decision travels with
 //!   the attestations that prove it (`agreement/certificate.rs`). So sync
@@ -129,6 +137,12 @@
 //!   settled is only in storage, so the point read came back, and with
 //!   it a third verdict: pending. It only costs a round trip the first
 //!   time a key is asked about (`group/verdicts.rs`).
+//! - No "every row where". What a transaction requires has to be a
+//!   list of keys, known when it's written. A write that depends on a
+//!   scan, a cascade, or a merge with whatever is under it would have
+//!   to read at its place in the timeline, on every device. So rows
+//!   are replaced whole, and a change to one that someone else changed
+//!   first is pruned, not merged.
 //! - An offline contributor and memory. Nothing settles past what it
 //!   has, so the frontier grows for as long as it's away. Values stay in
 //!   storage, but an outline per transaction is still in memory, and

@@ -2,9 +2,11 @@
 //! each transaction requires.
 
 mod schema;
+pub(super) mod unique;
 
 use super::*;
-use crate::model::{ColumnId, Table, Value};
+use crate::agreement::AgreementId;
+use crate::model::{ColumnId, Row, Table, Value};
 
 /// A table of people, created with a nonce, so that two devices can
 /// each create one without knowing of the other's.
@@ -60,7 +62,7 @@ pub(super) fn read_table(cluster: &Cluster, device: usize, table: ModelId) -> Op
 fn ages(cluster: &Cluster, device: usize, table: ModelId) -> Vec<(String, Value)> {
     let table_read = read_table(cluster, device, table);
     let rows = table_read.iter().flat_map(Table::rows);
-    let row = |row: &crate::Row| {
+    let row = |row: &Row| {
         let key = String::from_utf8_lossy(row.key()).into_owned();
 
         (key, row.get(age(table)).clone())
