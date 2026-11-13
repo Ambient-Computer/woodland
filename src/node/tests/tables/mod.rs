@@ -1,6 +1,8 @@
 //! Tables: schema and rows in the same timeline, held together by what
 //! each transaction requires.
 
+mod schema;
+
 use super::*;
 use crate::model::{ColumnId, Table, Value};
 

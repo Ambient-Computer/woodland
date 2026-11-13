@@ -218,6 +218,37 @@ impl<'a> TransactionBuilder<'a> {
         self
     }
 
+    /// Adds `column` to `table` under `name`. The whole transaction is
+    /// dropped, on every device, if at its place in the timeline the
+    /// table doesn't exist or the column was ever added before. A
+    /// column that was dropped can't come back: make a new one.
+    pub fn add_column(mut self, table: ModelId, column: ColumnId, name: impl Into<String>) -> Self {
+        let operation = Operation::name_column(table, column, name.into(), true);
+        self.operations.push(operation);
+        self
+    }
+
+    /// Changes the name of `column`, which the table has to have.
+    /// Rows aren't touched: they know the column by its ID.
+    pub fn rename_column(
+        mut self,
+        table: ModelId,
+        column: ColumnId,
+        name: impl Into<String>,
+    ) -> Self {
+        let operation = Operation::name_column(table, column, name.into(), false);
+        self.operations.push(operation);
+        self
+    }
+
+    /// Removes `column` from `table`. Transactions that write to the
+    /// column later in the timeline are dropped whole, on every device.
+    /// What rows already held in it is no longer read.
+    pub fn drop_column(mut self, table: ModelId, column: ColumnId) -> Self {
+        self.operations.push(Operation::drop_column(table, column));
+        self
+    }
+
     fn put_row(
         mut self,
         table: ModelId,

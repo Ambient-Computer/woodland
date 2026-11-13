@@ -43,7 +43,7 @@ impl Table {
                         rows.push(Row { key, cells });
                     }
                 }
-                None => {}
+                Some(Place::Added(_)) | None => {}
             }
         }
 

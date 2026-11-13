@@ -29,9 +29,22 @@
 //! of it is final until it settles. Until then it either all stands, or
 //! goes together.
 //!
+//! # Schema
+//!
+//! Columns are added, renamed and dropped by operations, like rows are
+//! written. Each column is its own key, so two devices that each add a
+//! column both succeed, and a write that names a column depends on
+//! exactly that column: one written after the column was dropped, in
+//! the timeline, is pruned.
+//!
+//! A row written before a column was dropped keeps what it was given
+//! for it, and readers leave that out. Nothing goes back to rewrite
+//! rows. A dropped column can't be added again, so that never
+//! resurfaces.
+//!
 //! # What's stored
 //!
-//! Three kinds of key (see [`Place`]): one that says the table exists,
+//! A few kinds of key (see [`Place`]): one that says the table exists,
 //! one per column holding its name, and one per row holding its cells.
 //! A requirement is about one key, which is why each of those is one.
 //!
@@ -74,6 +87,15 @@ pub(crate) enum Operation {
     },
     /// Removes a row, if there is one.
     Delete { key: Vec<u8> },
+    /// Adds a column, or renames one.
+    NameColumn {
+        column: ColumnId,
+        name: String,
+        /// Whether the column is new.
+        add: bool,
+    },
+    /// Removes a column, if the table has it.
+    DropColumn { column: ColumnId },
 }
 
 /// What a row's key must hold for a row to be written there.
@@ -94,6 +116,10 @@ pub(crate) enum Place {
     Table,
     /// Holds a column's name while the table has that column.
     Column(ColumnId),
+    /// Holds a value once a column has been added, for good. A dropped
+    /// column can't be added again: rows may still hold what they were
+    /// given for it, and that mustn't come back.
+    Added(ColumnId),
     /// Holds a row's cells.
     Row(Vec<u8>),
 }
@@ -101,6 +127,7 @@ pub(crate) enum Place {
 const TABLE: u8 = 0;
 const COLUMN: u8 = 1;
 const ROW: u8 = 2;
+const ADDED: u8 = 3;
 
 impl Operation {
     /// Whether a table takes the operation: every value is of its
@@ -114,7 +141,8 @@ impl Operation {
             Self::Put { cells, .. } => cells
                 .iter()
                 .all(|(column, value)| column.takes(value) && seen.insert(column)),
-            Self::Delete { .. } => true,
+            Self::NameColumn { column, .. } => column.takes(&Value::Null),
+            Self::Delete { .. } | Self::DropColumn { .. } => true,
         }
     }
 
@@ -138,7 +166,20 @@ impl Operation {
 
             // Deleting a row that's already gone isn't a failure. Two
             // devices that delete the same row both got what they wanted.
-            Self::Delete { .. } => vec![(Place::Table.key(), Requirement::Present)],
+            Self::Delete { .. } | Self::DropColumn { .. } => {
+                vec![(Place::Table.key(), Requirement::Present)]
+            }
+
+            Self::NameColumn { column, add, .. } => {
+                let table = (Place::Table.key(), Requirement::Present);
+                let column = if *add {
+                    (Place::Added(*column).key(), Requirement::Vacant)
+                } else {
+                    (Place::Column(*column).key(), Requirement::Present)
+                };
+
+                vec![table, column]
+            }
         }
     }
 
@@ -147,11 +188,9 @@ impl Operation {
         match self {
             Self::Create { columns } => {
                 let table = (Place::Table.key(), Some(Vec::new()));
-                let columns = columns.iter().map(|(column, name)| {
-                    let name = name.clone().into_bytes();
-
-                    (Place::Column(*column).key(), Some(name))
-                });
+                let columns = columns
+                    .iter()
+                    .flat_map(|(column, name)| Self::named(*column, name));
 
                 std::iter::once(table).chain(columns).collect()
             }
@@ -164,7 +203,21 @@ impl Operation {
             }
 
             Self::Delete { key } => vec![(Place::Row(key.clone()).key(), None)],
+            Self::NameColumn { column, name, .. } => Self::named(*column, name).into(),
+            Self::DropColumn { column } => vec![(Place::Column(*column).key(), None)],
         }
+    }
+}
+
+impl Operation {
+    /// What a column with a name leaves behind.
+    fn named(column: ColumnId, name: &str) -> [(Vec<u8>, Option<Vec<u8>>); 2] {
+        let name = name.to_owned().into_bytes();
+
+        [
+            (Place::Added(column).key(), Some(Vec::new())),
+            (Place::Column(column).key(), Some(name)),
+        ]
     }
 }
 
@@ -173,6 +226,7 @@ impl Place {
         match self {
             Self::Table => vec![TABLE],
             Self::Column(column) => [&[COLUMN][..], column.as_bytes()].concat(),
+            Self::Added(column) => [&[ADDED][..], column.as_bytes()].concat(),
             Self::Row(key) => [&[ROW][..], key].concat(),
         }
     }
@@ -183,6 +237,7 @@ impl Place {
             TABLE if rest.is_empty() => Some(Self::Table),
             COLUMN => Some(Self::Column(ColumnId::from_bytes(rest.try_into().ok()?))),
             ROW => Some(Self::Row(rest.to_vec())),
+            ADDED => Some(Self::Added(ColumnId::from_bytes(rest.try_into().ok()?))),
             _ => None,
         }
     }

@@ -198,6 +198,18 @@ impl Operation {
         Self { model, change }
     }
 
+    pub(crate) fn name_column(model: ModelId, column: ColumnId, name: String, add: bool) -> Self {
+        let change = Change::Table(table::Operation::NameColumn { column, name, add });
+
+        Self { model, change }
+    }
+
+    pub(crate) fn drop_column(model: ModelId, column: ColumnId) -> Self {
+        let change = Change::Table(table::Operation::DropColumn { column });
+
+        Self { model, change }
+    }
+
     pub(crate) fn delete_row(model: ModelId, key: Vec<u8>) -> Self {
         let change = Change::Table(table::Operation::Delete { key });
 
