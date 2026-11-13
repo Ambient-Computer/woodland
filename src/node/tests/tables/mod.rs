@@ -1,6 +1,7 @@
 //! Tables: schema and rows in the same timeline, held together by what
 //! each transaction requires.
 
+mod indexes;
 mod schema;
 pub(super) mod unique;
 
@@ -52,10 +53,8 @@ pub(super) fn insert(cluster: &mut Cluster, device: usize, table: ModelId, key: 
 pub(super) fn read_table(cluster: &Cluster, device: usize, table: ModelId) -> Option<Table> {
     let query = Query::table(genesis(cluster).id(), table);
     let store = &cluster.devices[device].store;
-    let prefixes = query.storage_prefixes();
-    let scanned: Vec<_> = prefixes.flat_map(|prefix| store.scan(prefix)).collect();
 
-    Table::read(&query.results(&scanned))
+    Table::read(&store.read(&query))
 }
 
 /// The ages in a table, by row key. Empty if there's no table.
@@ -158,9 +157,7 @@ fn rows_go_with_the_table_they_were_written_to() {
 pub(super) fn holder_bytes(cluster: &Cluster, device: usize, name: &str) -> Vec<u8> {
     let query = Query::key(genesis(cluster).id(), names(cluster), name.as_bytes());
     let store = &cluster.devices[device].store;
-    let prefixes = query.storage_prefixes();
-    let scanned: Vec<_> = prefixes.flat_map(|prefix| store.scan(prefix)).collect();
-    let held = query.results(&scanned).pop();
+    let held = store.read(&query).pop();
 
     held.map(|(_, value)| value).unwrap_or_default()
 }

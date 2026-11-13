@@ -1,8 +1,11 @@
 //! The keys a table keeps in its model.
 
-use super::ColumnId;
-use crate::encoding;
+use std::ops::Bound;
+
+use super::order::{self, escape, unescape};
+use super::{ColumnId, Value};
 use crate::model::Fingerprint;
+use crate::model::query::Range;
 
 /// Tells one row that had a key from the next one that has it. See
 /// the module's notes on rows.
@@ -26,8 +29,12 @@ pub(crate) enum Place {
     /// Holds what one incarnation of a row has in one column.
     Cell(Vec<u8>, Incarnation, ColumnId),
     /// Holds the key of the row that has a value in a unique column.
-    /// What follows the column is the value, encoded.
+    /// What follows the column is the value, in a form that sorts the
+    /// way values do (see [`order`]).
     Unique(ColumnId, Vec<u8>),
+    /// Holds a value while a row has a value in an indexed column: the
+    /// column, the value as in [`Place::Unique`], and the row's key.
+    Index(ColumnId, Vec<u8>, Vec<u8>),
 }
 
 const TABLE: u8 = 0;
@@ -35,6 +42,7 @@ const COLUMN: u8 = 1;
 const ROW: u8 = 2;
 const ADDED: u8 = 3;
 const UNIQUE: u8 = 4;
+const INDEX: u8 = 5;
 
 /// What follows a row's key, in the keys of its parts.
 const KEYS: u8 = 1;
@@ -57,12 +65,38 @@ impl Place {
                 [&[ROW][..], &row, &[CELL], incarnation, column.as_bytes()].concat()
             }
             Self::Unique(column, value) => [&[UNIQUE][..], column.as_bytes(), value].concat(),
+            Self::Index(column, value, row) => {
+                [&[INDEX][..], column.as_bytes(), value, row].concat()
+            }
         }
     }
 
     /// The key that holds whichever row has `value` in `column`.
-    pub(crate) fn unique(column: ColumnId, value: &super::Value) -> Vec<u8> {
-        Self::Unique(column, encoding::encode(value)).key()
+    pub(crate) fn unique(column: ColumnId, value: &Value) -> Vec<u8> {
+        Self::Unique(column, order::ordered(value)).key()
+    }
+
+    /// The key that says the row under `row` has `value` in `column`.
+    pub(crate) fn index(column: ColumnId, value: &Value, row: &[u8]) -> Vec<u8> {
+        Self::Index(column, order::ordered(value), row.to_vec()).key()
+    }
+
+    /// Where the values of a column are looked up: every key that
+    /// starts with this is for one of them, in the order of the
+    /// values. `None` if the column is neither unique nor indexed.
+    pub(crate) fn lookup(column: ColumnId) -> Option<Vec<u8>> {
+        let kind = match (column.is_unique(), column.is_indexed()) {
+            (true, _) => UNIQUE,
+            (false, true) => INDEX,
+            (false, false) => return None,
+        };
+
+        Some([&[kind][..], column.as_bytes()].concat())
+    }
+
+    /// Where the rows are, and where they end.
+    pub(crate) fn rows() -> (Vec<u8>, Vec<u8>) {
+        (vec![ROW], vec![ROW + 1])
     }
 
     pub(crate) fn parse(key: &[u8]) -> Option<Self> {
@@ -90,9 +124,67 @@ impl Place {
 
                 Some(Self::Unique(ColumnId::from_bytes(*column), value.to_vec()))
             }
+            INDEX => {
+                let (column, entry) = rest.split_first_chunk()?;
+                let column = ColumnId::from_bytes(*column);
+                let row = order::after(column, entry)?;
+                let value = &entry[..entry.len() - row.len()];
+
+                Some(Self::Index(column, value.to_vec(), row.to_vec()))
+            }
             _ => None,
         }
     }
+}
+
+/// Where the table says it exists and what its columns are: what any
+/// read of its rows needs to make sense of them.
+pub(crate) fn schema() -> Range {
+    (vec![TABLE], Some(vec![COLUMN + 1]))
+}
+
+/// Where the rows with keys between two bounds are. Everything about a
+/// row starts with its key, and no row's key starts another's, so
+/// it's one range.
+pub(crate) fn rows(start: Bound<Vec<u8>>, end: Bound<Vec<u8>>) -> Range {
+    let (first, last) = Place::rows();
+    let row = |key: &[u8]| Place::Row(key.to_vec()).key();
+    let past = |key: &[u8]| order::successor(&row(key)).unwrap_or(last.clone());
+    let start = match start {
+        Bound::Included(key) => row(&key),
+        Bound::Excluded(key) => past(&key),
+        Bound::Unbounded => first,
+    };
+
+    let end = match end {
+        Bound::Included(key) => past(&key),
+        Bound::Excluded(key) => row(&key),
+        Bound::Unbounded => last.clone(),
+    };
+
+    (start, Some(end))
+}
+
+/// Where it says which rows hold a value between two bounds in a
+/// column. `None` if the column is neither unique nor indexed.
+pub(crate) fn values(column: ColumnId, start: Bound<&Value>, end: Bound<&Value>) -> Option<Range> {
+    let first = Place::lookup(column)?;
+    let last = order::successor(&first)?;
+    let at = |value: &Value| [&first[..], &order::ordered(value)].concat();
+    let past = |value: &Value| order::successor(&at(value)).unwrap_or(last.clone());
+    let start = match start {
+        Bound::Included(value) => at(value),
+        Bound::Excluded(value) => past(value),
+        Bound::Unbounded => first.clone(),
+    };
+
+    let end = match end {
+        Bound::Included(value) => past(value),
+        Bound::Excluded(value) => at(value),
+        Bound::Unbounded => last.clone(),
+    };
+
+    Some((start, Some(end)))
 }
 
 /// The incarnation an insert has before its transaction is written.
@@ -103,73 +195,9 @@ pub(crate) fn incarnate(incarnation: Incarnation) -> (Vec<u8>, Fingerprint) {
     (incarnation.to_vec(), Fingerprint::of(&incarnation))
 }
 
-/// Writes bytes so that they can be followed by more, and still sort
-/// the way they did: a zero becomes a zero and `0xFF`, and two zeroes
-/// end it. Nothing written this way is the start of anything else
-/// written this way.
-pub(crate) fn escape(bytes: &[u8]) -> Vec<u8> {
-    let mut escaped = Vec::with_capacity(bytes.len() + 2);
-    for &byte in bytes {
-        escaped.push(byte);
-        if byte == 0 {
-            escaped.push(0xFF);
-        }
-    }
-
-    escaped.extend([0, 0]);
-    escaped
-}
-
-/// Reads back what [`escape`] wrote, and whatever follows it.
-pub(crate) fn unescape(escaped: &[u8]) -> Option<(Vec<u8>, &[u8])> {
-    let mut bytes = Vec::new();
-    let mut rest = escaped;
-    loop {
-        match rest {
-            [0, 0, after @ ..] => return Some((bytes, after)),
-            [0, 0xFF, after @ ..] => {
-                bytes.push(0);
-                rest = after;
-            }
-            [0, ..] | [] => return None,
-            [byte, after @ ..] => {
-                bytes.push(*byte);
-                rest = after;
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn escaped_bytes_come_back() {
-        for bytes in [&b""[..], b"ada", b"\0", b"a\0\0b", b"\0\xFF", b"\xFF\0"] {
-            let mut escaped = escape(bytes);
-            escaped.extend(b"more");
-
-            assert_eq!(unescape(&escaped), Some((bytes.to_vec(), &b"more"[..])));
-        }
-    }
-
-    #[test]
-    fn escaped_bytes_sort_like_the_bytes() {
-        let keys = [
-            &b""[..],
-            b"\0",
-            b"\0\0",
-            b"\0a",
-            b"a",
-            b"a\0",
-            b"a\0b",
-            b"ab",
-        ];
-        let escaped: Vec<_> = keys.iter().map(|key| escape(key)).collect();
-
-        assert!(escaped.is_sorted());
-    }
 
     #[test]
     fn a_row_key_is_never_part_of_another_rows() {
@@ -186,6 +214,7 @@ mod tests {
     #[test]
     fn every_place_parses() {
         let column = ColumnId::from_bytes([3; 8]);
+        let indexed = ColumnId::text(crate::model::ModelId::from_bytes([0; 32]), [1; 32]).indexed();
         let places = [
             Place::Table,
             Place::Column(column),
@@ -194,6 +223,7 @@ mod tests {
             Place::Keys(b"".to_vec()),
             Place::Cell(b"ada".to_vec(), [9; 16], column),
             Place::Unique(column, b"value".to_vec()),
+            Place::Index(indexed, order::ordered(&"a\0b".into()), b"row".to_vec()),
         ];
 
         for place in places {

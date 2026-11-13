@@ -31,43 +31,54 @@
 //! [affects]: Query::is_affected_by
 //! [threshold]: ModelId::threshold
 
-use super::kv;
-use super::{Kind, ModelId};
+use std::ops::{Bound, RangeBounds};
+
+use super::table::{self, ColumnId, Value};
+use super::{Kind, ModelId, kv};
 use crate::agreement::AgreementId;
 use crate::encoding;
 use crate::io::Changed;
 use crate::storage::keys::{self, Record};
 
-/// A read of one model's entries: a single key, or every key that starts
-/// with a prefix.
+/// A read of some of one model's entries: a single key, every key that
+/// starts with a prefix, or some of a [table]'s rows.
 ///
-/// Scan storage for each of [`Query::storage_prefixes`], then decode
+/// Scan storage for each of [`Query::storage_ranges`], then decode
 /// everything they return with [`Query::results`].
+///
+/// [table]: ModelId::table
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Query {
-    /// Where the settled values are.
-    settled: Vec<u8>,
-    /// Where the versions that haven't settled are, if they're wanted.
-    frontier: Option<Vec<u8>>,
-    /// Where it says whether the model was dropped, if that hasn't
-    /// settled. Read along with the frontier.
-    drops: Vec<u8>,
+    agreement: AgreementId,
+    model: ModelId,
+    /// The parts of the model that are wanted.
+    ranges: Vec<Range>,
+    /// Whether writes that haven't settled are wanted.
+    optimistic: bool,
     /// A single-key query also scans keys that extend it, and drops them.
     exact: Option<Vec<u8>>,
 }
+
+/// Some of a model's keys: from the first, up to the second. `None` is
+/// the end of the model.
+pub(crate) type Range = (Vec<u8>, Option<Vec<u8>>);
 
 impl Query {
     /// The value of one key.
     #[must_use]
     pub fn key(agreement: AgreementId, model: ModelId, key: &[u8]) -> Self {
-        Self::new(agreement, model, key, true)
+        let mut query = Self::prefix(agreement, model, key);
+        query.exact = Some(key.to_vec());
+        query
     }
 
     /// Every key starting with `prefix`, in key order. An empty prefix reads
     /// the whole model.
     #[must_use]
     pub fn prefix(agreement: AgreementId, model: ModelId, prefix: &[u8]) -> Self {
-        Self::new(agreement, model, prefix, false)
+        let range = (prefix.to_vec(), table::successor(prefix));
+
+        Self::ranges(agreement, model, vec![range])
     }
 
     /// All of a [table]: decode the results with [`Table::read`].
@@ -79,23 +90,103 @@ impl Query {
         Self::prefix(agreement, table, b"")
     }
 
+    /// The rows of a [table] whose keys are in a range, such as
+    /// `"a".."b"`, and the table's columns. Decode the results with
+    /// [`Table::read`]: it's the table, with only those rows.
+    ///
+    /// [table]: ModelId::table
+    /// [`Table::read`]: crate::Table::read
+    #[must_use]
+    pub fn rows<K: AsRef<[u8]>>(
+        agreement: AgreementId,
+        table: ModelId,
+        keys: impl RangeBounds<K>,
+    ) -> Self {
+        let bound = |bound: Bound<&K>| bound.map(|key| key.as_ref().to_vec());
+        let rows = table::rows(bound(keys.start_bound()), bound(keys.end_bound()));
+
+        Self::ranges(agreement, table, vec![table::schema(), rows])
+    }
+
+    /// One row of a [table], and the table's columns. Like
+    /// [`Query::rows`], for a single key.
+    ///
+    /// [table]: ModelId::table
+    #[must_use]
+    pub fn row(agreement: AgreementId, table: ModelId, key: &[u8]) -> Self {
+        Self::rows(agreement, table, key..=key)
+    }
+
+    /// Which rows of a [table] hold a value in a range, such as
+    /// `Value::from(18)..Value::from(65)`, in a column that's [indexed]
+    /// or [unique]. Decode the results with [`Table::row_keys`], and
+    /// read the rows themselves with [`Query::row`]. A column that's
+    /// neither finds nothing.
+    ///
+    /// [table]: ModelId::table
+    /// [indexed]: ColumnId::indexed
+    /// [unique]: ColumnId::unique
+    /// [`Table::row_keys`]: crate::Table::row_keys
+    #[must_use]
+    pub fn index(
+        agreement: AgreementId,
+        table: ModelId,
+        column: ColumnId,
+        values: impl RangeBounds<Value>,
+    ) -> Self {
+        let range = table::values(column, values.start_bound(), values.end_bound());
+
+        Self::ranges(agreement, table, range.into_iter().collect())
+    }
+
+    /// Which rows of a [table] hold exactly `value` in a column. Like
+    /// [`Query::index`], for a single value.
+    ///
+    /// [table]: ModelId::table
+    #[must_use]
+    pub fn lookup(agreement: AgreementId, table: ModelId, column: ColumnId, value: &Value) -> Self {
+        Self::index(agreement, table, column, value..=value)
+    }
+
     /// Reads only what has settled, leaving out writes that could still be
     /// reordered.
     #[must_use]
     pub fn committed(mut self) -> Self {
-        self.frontier = None;
+        self.optimistic = false;
         self
     }
 
-    /// The storage prefixes to scan: one for a committed read, three for
-    /// an optimistic one.
-    pub fn storage_prefixes(&self) -> impl Iterator<Item = &[u8]> {
-        let frontier = self.frontier.as_deref();
-        let drops = frontier.map(|_| self.drops.as_slice());
+    /// The ranges of storage keys to scan, each from its first key up
+    /// to its second. A committed read scans one for each part of the
+    /// model it wants. An optimistic one scans two, and one more.
+    #[must_use]
+    pub fn storage_ranges(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let (agreement, model) = (self.agreement, self.model);
+        let stored = |within: fn(AgreementId, ModelId, &[u8]) -> Vec<u8>| {
+            let (_, model_end) = keys::range(within(agreement, model, b""));
+            let range = move |(start, end): &Range| {
+                let end = end.as_ref().map(|end| within(agreement, model, end));
 
-        std::iter::once(self.settled.as_slice())
-            .chain(frontier)
-            .chain(drops)
+                (
+                    within(agreement, model, start),
+                    end.unwrap_or(model_end.clone()),
+                )
+            };
+
+            self.ranges.iter().map(range)
+        };
+
+        let settled = stored(keys::settled_value);
+        if !self.optimistic {
+            return settled.collect();
+        }
+
+        let drops = keys::range(keys::drops(agreement, model));
+
+        settled
+            .chain(stored(keys::versions))
+            .chain([drops])
+            .collect()
     }
 
     /// Whether `change` could alter what this query returns. If so, scan
@@ -103,19 +194,16 @@ impl Query {
     #[must_use]
     pub fn is_affected_by(&self, change: &Changed) -> bool {
         match change {
-            Changed::Everything { agreement } => {
-                self.settled.starts_with(&keys::agreement(*agreement))
-            }
+            Changed::Everything { agreement } => *agreement == self.agreement,
             Changed::Key {
                 agreement,
                 model,
                 key,
                 committed,
             } => {
-                let stored = keys::settled_value(*agreement, *model, key);
-                let wanted = self.exact.as_ref().is_none_or(|exact| exact == key);
+                let ours = *agreement == self.agreement && *model == self.model;
 
-                *committed == self.frontier.is_none() && wanted && stored.starts_with(&self.settled)
+                ours && *committed != self.optimistic && self.wants(key)
             }
         }
     }
@@ -126,20 +214,30 @@ impl Query {
     #[must_use]
     pub fn results(&self, scanned: &[(Vec<u8>, Vec<u8>)]) -> Vec<(Vec<u8>, Vec<u8>)> {
         // A dropped model is empty, whatever it still holds in storage.
-        let dropped = |(stored, _): &(Vec<u8>, Vec<u8>)| stored.starts_with(&self.drops);
-        if self.frontier.is_some() && scanned.iter().any(dropped) {
+        let drops = keys::drops(self.agreement, self.model);
+        let dropped = |(stored, _): &(Vec<u8>, Vec<u8>)| stored.starts_with(&drops);
+        if self.optimistic && scanned.iter().any(dropped) {
             return Vec::new();
         }
 
-        let wanted = |key: &Vec<u8>| self.exact.as_ref().is_none_or(|exact| exact == key);
+        let ours = |agreement, model| agreement == self.agreement && model == self.model;
         let mut settled = Vec::new();
         let mut versions = Vec::new();
-        for (stored, value) in scanned.iter().filter(|(key, _)| self.scans(key)) {
+        for (stored, value) in scanned {
             match keys::parse(stored) {
-                Some(Record::Settled { key, .. }) if wanted(&key) => {
+                Some(Record::Settled {
+                    agreement,
+                    model,
+                    key,
+                }) if ours(agreement, model) && self.wants(&key) => {
                     settled.push((key, value.clone()));
                 }
-                Some(Record::Version { key, stamp, .. }) if wanted(&key) => {
+                Some(Record::Version {
+                    agreement,
+                    model,
+                    key,
+                    stamp,
+                }) if self.optimistic && ours(agreement, model) && self.wants(&key) => {
                     if let Some(value) = encoding::decode(value) {
                         versions.push((key, *stamp, value));
                     }
@@ -151,21 +249,22 @@ impl Query {
         kv::current(settled, versions).into_iter().collect()
     }
 
-    /// Whether a stored key is one this query asked for.
-    fn scans(&self, stored: &[u8]) -> bool {
-        self.storage_prefixes()
-            .any(|prefix| stored.starts_with(prefix))
+    /// Whether a key of the model is one this query asked for.
+    fn wants(&self, key: &[u8]) -> bool {
+        let within = |(start, end): &Range| {
+            start.as_slice() <= key && end.as_ref().is_none_or(|end| key < end.as_slice())
+        };
+
+        self.exact.as_ref().is_none_or(|exact| exact == key) && self.ranges.iter().any(within)
     }
 
-    fn new(agreement: AgreementId, model: ModelId, key: &[u8], exact: bool) -> Self {
-        let shows_unsettled = model.kind().is_some_and(Kind::shows_unsettled);
-        let frontier = shows_unsettled.then(|| keys::versions(agreement, model, key));
-
+    fn ranges(agreement: AgreementId, model: ModelId, ranges: Vec<Range>) -> Self {
         Self {
-            settled: keys::settled_value(agreement, model, key),
-            frontier,
-            drops: keys::drops(agreement, model),
-            exact: exact.then(|| key.to_vec()),
+            agreement,
+            model,
+            ranges,
+            optimistic: model.kind().is_some_and(Kind::shows_unsettled),
+            exact: None,
         }
     }
 }
@@ -257,7 +356,7 @@ mod tests {
         ];
         let query = Query::prefix(agreement(), model(), b"").committed();
 
-        assert_eq!(query.storage_prefixes().count(), 1);
+        assert_eq!(query.storage_ranges().len(), 1);
         assert_eq!(query.results(&scanned), [result("color", "red")]);
     }
 

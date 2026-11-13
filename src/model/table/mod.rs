@@ -64,6 +64,23 @@
 //! two devices that change a row's unique columns at once can't both
 //! happen.
 //!
+//! # Indexes
+//!
+//! A column can be indexed instead: any number of rows can hold a
+//! value, and each is found under the column, the value and its own
+//! key ([`Place::Index`]). Values are written so that they sort the
+//! way they compare (see [`order`]), and a range of them is a range of
+//! keys. A unique column is found the same way.
+//!
+//! An index has to take back what a row held, like a unique column
+//! does, so indexed columns are kept with the unique ones and follow
+//! their rule: changes to them go by what was read, and exclude each
+//! other. Being found without reading the table is paid for in merges.
+//!
+//! Rows are a range of keys too. A row's key is written so that no
+//! key starts another (see [`order::escape`]), everything about a row
+//! starts with it, and rows sort by it.
+//!
 //! # Schema
 //!
 //! Columns are added, renamed and dropped by operations, like rows are
@@ -89,15 +106,17 @@
 //! Operations name the rows they change. There's no "every row where":
 //! what that touches depends on the table's state at the transaction's
 //! place in the timeline, which is a scan, and nothing that decides
-//! whether transactions happen reads more than keys. Filter when
-//! reading, and write to the rows found.
+//! whether transactions happen reads more than keys. Find the rows
+//! when reading, by key or through an index, and write to those.
 
+mod order;
 mod place;
 mod read;
 mod rows;
 mod value;
 
-pub(crate) use place::{Place, UNSEALED};
+pub(crate) use order::successor;
+pub(crate) use place::{Place, UNSEALED, rows, schema, values};
 pub use read::{Row, Table};
 pub(crate) use rows::{Rekey, Target};
 use serde::{Deserialize, Serialize};

@@ -12,15 +12,24 @@ pub(in crate::node::tests) fn email(table: ModelId) -> ColumnId {
     ColumnId::text(table, [1; 32]).unique()
 }
 
-fn plan(table: ModelId) -> ColumnId {
+pub(super) fn plan(table: ModelId) -> ColumnId {
     ColumnId::text(table, [2; 32])
+}
+
+/// How much an account pays for. Accounts can be found by it.
+pub(in crate::node::tests) fn tier(table: ModelId) -> ColumnId {
+    ColumnId::integer(table, [3; 32]).indexed()
 }
 
 pub(in crate::node::tests) fn open(cluster: &mut Cluster, device: usize) -> ModelId {
     let (agreement, table) = (genesis(cluster).id(), accounts(cluster));
     cluster.run(device, |batch| {
         let transaction = batch.transaction(agreement);
-        let columns = [(email(table), "email"), (plan(table), "plan")];
+        let columns = [
+            (email(table), "email"),
+            (plan(table), "plan"),
+            (tier(table), "tier"),
+        ];
 
         transaction.create_table(table, columns).commit()
     });
@@ -28,15 +37,15 @@ pub(in crate::node::tests) fn open(cluster: &mut Cluster, device: usize) -> Mode
     table
 }
 
-fn create_accounts(cluster: &mut Cluster, device: usize) -> ModelId {
+pub(super) fn create_accounts(cluster: &mut Cluster, device: usize) -> ModelId {
     let table = open(cluster, device);
     cluster.settle();
     table
 }
 
-/// What the table's storage says about who has which address, on a
-/// device: first going by the rows, then by the keys that take the
-/// addresses. They should say the same thing.
+/// What the table's storage says about who has which address and
+/// tier, on a device: first going by the rows, then by the keys they're
+/// looked up under. They should say the same thing.
 pub(in crate::node::tests) fn taken(
     cluster: &Cluster,
     device: usize,
@@ -44,23 +53,28 @@ pub(in crate::node::tests) fn taken(
     let table = accounts(cluster);
     let query = Query::table(genesis(cluster).id(), table);
     let store = &cluster.devices[device].store;
-    let prefixes = query.storage_prefixes();
-    let scanned: Vec<_> = prefixes.flat_map(|prefix| store.scan(prefix)).collect();
-    let results = query.results(&scanned);
+    let results = store.read(&query);
 
     let read = Table::read(&results);
     let rows = read.iter().flat_map(Table::rows);
-    let addressed = rows.filter(|row| row.get(email(table)) != &Value::Null);
-    let by_row = addressed.map(|row| {
-        let place = Place::unique(email(table), row.get(email(table)));
+    let by_row = rows.flat_map(|row| {
+        let (address, paid) = (row.get(email(table)), row.get(tier(table)));
+        let address = (address != &Value::Null)
+            .then(|| (Place::unique(email(table), address), row.key().to_vec()));
+        let paid = (paid != &Value::Null)
+            .then(|| (Place::index(tier(table), paid, row.key()), Vec::new()));
 
-        (place, row.key().to_vec())
+        address.into_iter().chain(paid)
     });
 
     let mut by_row: Vec<_> = by_row.collect();
     by_row.sort();
-    let unique =
-        |(key, _): &(Vec<u8>, Vec<u8>)| matches!(Place::parse(key), Some(Place::Unique(..)));
+    let unique = |(key, _): &(Vec<u8>, Vec<u8>)| {
+        matches!(
+            Place::parse(key),
+            Some(Place::Unique(..) | Place::Index(..))
+        )
+    };
     let by_key = results.iter().filter(|it| unique(it)).cloned().collect();
 
     [by_row, by_key]
@@ -95,10 +109,10 @@ pub(in crate::node::tests) fn update(
     device: usize,
     row: &Row,
     column: ColumnId,
-    value: &str,
+    value: impl Into<Value>,
 ) {
     let (agreement, table) = (genesis(cluster).id(), accounts(cluster));
-    let changes = [(column, Value::from(value))];
+    let changes = [(column, value.into())];
     cluster.run(device, |batch| {
         batch
             .transaction(agreement)
@@ -115,7 +129,7 @@ pub(in crate::node::tests) fn close(cluster: &mut Cluster, device: usize, row: &
 }
 
 /// Who has an address, on a device: the keys of every row that does.
-fn holders(cluster: &Cluster, device: usize, address: &str) -> Vec<String> {
+pub(super) fn holders(cluster: &Cluster, device: usize, address: &str) -> Vec<String> {
     let table = accounts(cluster);
     let read = read_table(cluster, device, table);
     let rows = read.iter().flat_map(Table::rows);

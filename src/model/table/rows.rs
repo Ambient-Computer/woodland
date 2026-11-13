@@ -55,23 +55,25 @@ pub(crate) fn typed(cells: &[(ColumnId, Value)]) -> bool {
         .all(|(column, value)| column.takes(value) && seen.insert(column))
 }
 
-/// Whether these could be everything a row holds in unique columns.
+/// Whether these could be everything a row holds in unique and indexed
+/// columns.
 pub(crate) fn keyed(cells: &[(ColumnId, Value)]) -> bool {
-    let unique = |(column, value): &(ColumnId, Value)| column.is_unique() && *value != Value::Null;
+    let keyed = |(column, value): &(ColumnId, Value)| column.is_keyed() && *value != Value::Null;
 
-    typed(cells) && cells.iter().all(unique)
+    typed(cells) && cells.iter().all(keyed)
 }
 
-/// Whether these could be cells of columns that aren't unique.
+/// Whether these could be cells of columns that are neither.
 pub(crate) fn plain(cells: &[(ColumnId, Value)]) -> bool {
-    typed(cells) && cells.iter().all(|(column, _)| !column.is_unique())
+    typed(cells) && cells.iter().all(|(column, _)| !column.is_keyed())
 }
 
-/// The cells that go under the row's unique values.
+/// The cells that go under the row's keys: what it holds in unique and
+/// indexed columns.
 fn keys(cells: &[(ColumnId, Value)]) -> Cells {
-    let unique = |(column, value): &&(ColumnId, Value)| column.is_unique() && *value != Value::Null;
+    let keyed = |(column, value): &&(ColumnId, Value)| column.is_keyed() && *value != Value::Null;
 
-    cells.iter().filter(unique).cloned().collect()
+    cells.iter().filter(keyed).cloned().collect()
 }
 
 /// What the key of a row's unique values holds: nothing, if it has
@@ -97,10 +99,10 @@ fn unchanged(row: &[u8], keys: &[(ColumnId, Value)]) -> (Vec<u8>, Requirement) {
 fn rekey_requires(from: &[(ColumnId, Value)], to: &[(ColumnId, Value)]) -> Required {
     let taken = to.iter().filter(|cell| !from.contains(cell));
     let taken = taken.flat_map(|(column, value)| {
-        [
-            (Place::Column(*column).key(), Requirement::Present),
-            (Place::unique(*column, value), Requirement::Vacant),
-        ]
+        let column_exists = (Place::Column(*column).key(), Requirement::Present);
+        let free = (Place::unique(*column, value), Requirement::Vacant);
+
+        std::iter::once(column_exists).chain(column.is_unique().then_some(free))
     });
 
     taken.collect()
@@ -110,16 +112,31 @@ fn rekey_requires(from: &[(ColumnId, Value)], to: &[(ColumnId, Value)]) -> Requi
 /// back each value the row no longer holds, takes each it didn't.
 fn rekey_writes(row: &[u8], from: &[(ColumnId, Value)], to: &[(ColumnId, Value)]) -> Written {
     let freed = from.iter().filter(|cell| !to.contains(cell));
-    let freed = freed.map(|(column, value)| (Place::unique(*column, value), None));
+    let freed = freed.map(|(column, value)| (lookup(row, *column, value).0, None));
     let taken = to.iter().filter(|cell| !from.contains(cell));
-    let taken = taken.map(|(column, value)| (Place::unique(*column, value), Some(row.to_vec())));
+    let taken = taken.map(|(column, value)| {
+        let (key, holds) = lookup(row, *column, value);
+
+        (key, Some(holds))
+    });
     let held = (stored(from) != stored(to)).then(|| (Place::Keys(row.to_vec()).key(), stored(to)));
 
     freed.chain(taken).chain(held).collect()
 }
 
+/// Where a row's value in a unique or indexed column is looked up, and
+/// what's kept there: the row's key if only one row can have the
+/// value, and nothing if the row's key is part of where.
+fn lookup(row: &[u8], column: ColumnId, value: &Value) -> (Vec<u8>, Vec<u8>) {
+    if column.is_unique() {
+        (Place::unique(column, value), row.to_vec())
+    } else {
+        (Place::index(column, value, row), Vec::new())
+    }
+}
+
 fn cell_writes(target: &Target, cells: &[(ColumnId, Value)]) -> Written {
-    let plain = cells.iter().filter(|(column, _)| !column.is_unique());
+    let plain = cells.iter().filter(|(column, _)| !column.is_keyed());
     let write = |(column, value): &(ColumnId, Value)| {
         let value = (*value != Value::Null).then(|| encoding::encode(value));
 
@@ -138,6 +155,7 @@ pub(crate) fn insert_requires(key: &[u8], cells: &[(ColumnId, Value)]) -> Requir
     let unique = keys(cells);
     let unique = unique
         .iter()
+        .filter(|(column, _)| column.is_unique())
         .map(|(column, value)| (Place::unique(*column, value), Requirement::Vacant));
 
     [table, row]

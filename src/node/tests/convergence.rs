@@ -7,6 +7,7 @@ use super::*;
 use crate::agreement::Decision;
 use crate::lattice::Lattice;
 use crate::log::Cut;
+use crate::model::Value;
 
 #[derive(Clone, Copy, Debug)]
 enum Step {
@@ -66,6 +67,12 @@ enum Step {
         device: usize,
         row: u8,
         address: u8,
+    },
+    /// Changes an account's tier, which accounts are found by.
+    Retier {
+        device: usize,
+        row: u8,
+        tier: u8,
     },
     CloseAccount {
         device: usize,
@@ -137,6 +144,8 @@ fn step() -> impl Strategy<Value = Step> {
             .prop_map(|(device, row, address)| Step::SignUp { device, row, address }),
         3 => (device.clone(), 0..3u8, 0..3u8)
             .prop_map(|(device, row, address)| Step::Readdress { device, row, address }),
+        3 => (device.clone(), 0..3u8, 0..3u8)
+            .prop_map(|(device, row, tier)| Step::Retier { device, row, tier }),
         2 => (device.clone(), 0..3u8)
             .prop_map(|(device, row)| Step::CloseAccount { device, row }),
         2 => (device.clone(), device.clone())
@@ -209,6 +218,29 @@ fn run(cluster: &mut Cluster, step: Step) {
             let table = tables::people(cluster, table);
             tables::delete(cluster, device, table, &row.to_string());
         }
+        Step::OpenAccounts { .. }
+        | Step::SignUp { .. }
+        | Step::Readdress { .. }
+        | Step::Retier { .. }
+        | Step::CloseAccount { .. } => run_account(cluster, step),
+        Step::Connect { left, right } => cluster.connect(left, right),
+        Step::Disconnect { left, right } => cluster.disconnect(left, right),
+        Step::Deliver { device } => cluster.deliver(device),
+        Step::Restart { device } => cluster.restart(device),
+        Step::AddFriend { device } => {
+            let friend = cluster.key(FRIEND);
+            cluster.run(device, |batch| batch.add_contributor(agreement, friend));
+        }
+        Step::RemoveNas { device } => {
+            let nas = cluster.key(NAS);
+            cluster.run(device, |batch| batch.remove_contributor(agreement, nas));
+        }
+    }
+}
+
+/// The steps that are about the table of accounts.
+fn run_account(cluster: &mut Cluster, step: Step) {
+    match step {
         Step::OpenAccounts { device } => {
             unique::open(cluster, device);
         }
@@ -228,7 +260,19 @@ fn run(cluster: &mut Cluster, step: Step) {
         } => {
             if let Some(row) = unique::account(cluster, device, &row.to_string()) {
                 let email = unique::email(unique::accounts(cluster));
-                unique::update(cluster, device, &row, email, &address.to_string());
+                unique::update(cluster, device, &row, email, address.to_string());
+            }
+        }
+        Step::Retier { device, row, tier } => {
+            if let Some(row) = unique::account(cluster, device, &row.to_string()) {
+                // Tier zero is no tier.
+                let paid = if tier > 0 {
+                    i64::from(tier).into()
+                } else {
+                    Value::Null
+                };
+                let column = unique::tier(unique::accounts(cluster));
+                unique::update(cluster, device, &row, column, paid);
             }
         }
         Step::CloseAccount { device, row } => {
@@ -236,18 +280,7 @@ fn run(cluster: &mut Cluster, step: Step) {
                 unique::close(cluster, device, &row);
             }
         }
-        Step::Connect { left, right } => cluster.connect(left, right),
-        Step::Disconnect { left, right } => cluster.disconnect(left, right),
-        Step::Deliver { device } => cluster.deliver(device),
-        Step::Restart { device } => cluster.restart(device),
-        Step::AddFriend { device } => {
-            let friend = cluster.key(FRIEND);
-            cluster.run(device, |batch| batch.add_contributor(agreement, friend));
-        }
-        Step::RemoveNas { device } => {
-            let nas = cluster.key(NAS);
-            cluster.run(device, |batch| batch.remove_contributor(agreement, nas));
-        }
+        _ => {}
     }
 }
 
@@ -367,8 +400,8 @@ proptest! {
             }
         }
 
-        // No two accounts have one address, and an address is taken
-        // exactly while an account has it.
+        // No two accounts have one address, and an address or a tier
+        // is found exactly while an account has it.
         let [by_row, by_key] = unique::taken(&cluster, PHONE);
         prop_assert_eq!(by_row, by_key);
 

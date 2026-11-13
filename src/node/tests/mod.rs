@@ -86,9 +86,7 @@ fn read_committed(cluster: &Cluster, device: usize, key: &str) -> Option<String>
 
 fn run_query(cluster: &Cluster, device: usize, query: &Query) -> Option<String> {
     let store = &cluster.devices[device].store;
-    let prefixes = query.storage_prefixes();
-    let scanned: Vec<_> = prefixes.flat_map(|prefix| store.scan(prefix)).collect();
-    let (_, value) = query.results(&scanned).pop()?;
+    let (_, value) = store.read(query).pop()?;
 
     Some(String::from_utf8_lossy(&value).into_owned())
 }

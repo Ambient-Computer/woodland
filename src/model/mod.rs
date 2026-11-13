@@ -76,7 +76,7 @@
 
 mod claims;
 mod kv;
-mod query;
+pub(crate) mod query;
 pub(crate) mod table;
 
 use serde::{Deserialize, Serialize};

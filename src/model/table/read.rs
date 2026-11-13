@@ -77,7 +77,7 @@ impl Table {
                     let cells = parts.cells.entry((key, incarnation)).or_default();
                     cells.push((column, value.clone()));
                 }
-                Some(Place::Added(_) | Place::Unique(..)) | None => {}
+                Some(Place::Added(_) | Place::Unique(..) | Place::Index(..)) | None => {}
             }
         }
 
@@ -101,6 +101,21 @@ impl Table {
     #[must_use]
     pub fn row(&self, key: &[u8]) -> Option<&Row> {
         self.rows.iter().find(|row| row.key == key)
+    }
+
+    /// Decodes the keys of the rows an index query found, in the order
+    /// of the values they hold in its column. See [`Query::index`].
+    ///
+    /// [`Query::index`]: crate::Query::index
+    #[must_use]
+    pub fn row_keys(results: &[(Vec<u8>, Vec<u8>)]) -> Vec<Vec<u8>> {
+        let row = |(key, value): &(Vec<u8>, Vec<u8>)| match Place::parse(key)? {
+            Place::Unique(..) => Some(value.clone()),
+            Place::Index(_, _, row) => Some(row),
+            _ => None,
+        };
+
+        results.iter().filter_map(row).collect()
     }
 
     /// The first row that holds `value` in `column`. If the column is
@@ -178,7 +193,7 @@ impl Row {
     pub(crate) fn set(&self, changes: impl IntoIterator<Item = (ColumnId, Value)>) -> Operation {
         let (unique, cells): (Vec<_>, Vec<_>) = changes
             .into_iter()
-            .partition(|(column, _)| column.is_unique());
+            .partition(|(column, _)| column.is_keyed());
 
         let rekey = (!unique.is_empty()).then(|| {
             let mut to: BTreeMap<_, _> = self.keys.iter().cloned().collect();
@@ -217,7 +232,7 @@ impl Row {
     /// the same incarnation, and the same thing, or nothing, in every
     /// column the table had.
     pub(crate) fn unchanged(&self) -> Vec<(Vec<u8>, Requirement)> {
-        let plain = self.columns.iter().filter(|column| !column.is_unique());
+        let plain = self.columns.iter().filter(|column| !column.is_keyed());
         let cells = plain.map(|column| {
             let key = Place::Cell(self.key.clone(), self.incarnation, *column).key();
             let requirement = match self.stored.get(column) {

@@ -59,6 +59,16 @@ impl MemoryStore {
             .collect()
     }
 
+    /// Runs a query the way an application would: scans what it asks
+    /// for, and decodes that.
+    pub(crate) fn read(&self, query: &crate::Query) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let ranges = query.storage_ranges();
+        let scan = |(start, end): &(Vec<u8>, Vec<u8>)| self.scan_range(start, end, None);
+        let scanned: Vec<_> = ranges.iter().flat_map(scan).collect();
+
+        query.results(&scanned)
+    }
+
     pub(crate) fn get(&self, keys: Vec<Vec<u8>>) -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
         let read = |key: Vec<u8>| {
             let value = self.entries.get(&key).cloned();
