@@ -71,6 +71,19 @@ enum Step {
         device: usize,
         row: u8,
     },
+    /// Changes one column of a row, going by the row as the device
+    /// reads it now.
+    SetCell {
+        device: usize,
+        table: u8,
+        row: u8,
+        named: bool,
+    },
+    DeleteRow {
+        device: usize,
+        table: u8,
+        row: u8,
+    },
     Connect {
         left: usize,
         right: usize,
@@ -114,6 +127,11 @@ fn step() -> impl Strategy<Value = Step> {
             .prop_map(|(device, table)| Step::CreateTable { device, table }),
         3 => (device.clone(), 1..3u8, 0..3u8)
             .prop_map(|(device, table, row)| Step::Insert { device, table, row }),
+        3 => (device.clone(), 1..3u8, 0..3u8, any::<bool>()).prop_map(
+            |(device, table, row, named)| Step::SetCell { device, table, row, named }
+        ),
+        2 => (device.clone(), 1..3u8, 0..3u8)
+            .prop_map(|(device, table, row)| Step::DeleteRow { device, table, row }),
         1 => device.clone().prop_map(|device| Step::OpenAccounts { device }),
         3 => (device.clone(), 0..3u8, 0..3u8)
             .prop_map(|(device, row, address)| Step::SignUp { device, row, address }),
@@ -171,6 +189,25 @@ fn run(cluster: &mut Cluster, step: Step) {
         Step::Insert { device, table, row } => {
             let table = tables::people(cluster, table);
             tables::insert(cluster, device, table, &row.to_string(), i64::from(row));
+        }
+        Step::SetCell {
+            device,
+            table,
+            row,
+            named,
+        } => {
+            let table = tables::people(cluster, table);
+            let change = if named {
+                (tables::name(table), device.to_string().into())
+            } else {
+                (tables::age(table), i64::from(row).into())
+            };
+
+            tables::set(cluster, device, table, &row.to_string(), change);
+        }
+        Step::DeleteRow { device, table, row } => {
+            let table = tables::people(cluster, table);
+            tables::delete(cluster, device, table, &row.to_string());
         }
         Step::OpenAccounts { device } => {
             unique::open(cluster, device);

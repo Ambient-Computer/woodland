@@ -196,18 +196,17 @@ fn a_released_lock_can_be_taken_again() {
     }
 }
 
-/// Replaces a row with an older person, if the row is still as it was
-/// read.
+/// Makes the person in a row older, if nothing about the row has
+/// changed since it was read.
 fn age_row(cluster: &mut Cluster, device: usize, table: ModelId, row: &crate::Row, years: i64) {
     let agreement = genesis(cluster).id();
     let cells = [(tables::age(table), Value::from(years))];
-    let key = row.key().to_vec();
     cluster.run(device, |batch| {
         let transaction = batch.transaction(agreement);
 
         transaction
             .expect_unchanged(table, row)
-            .replace(table, key, cells)
+            .update(table, row, cells)
             .commit()
     });
 }
@@ -218,11 +217,11 @@ fn ada(cluster: &Cluster, device: usize, table: ModelId) -> crate::Row {
     table.row(b"ada").expect("the row exists").clone()
 }
 
-/// A row is read, changed in memory and written back. If someone else
-/// wrote to it in between, the write would undo theirs, so it doesn't
-/// happen.
+/// Changes to a row don't mind each other unless they're asked to.
+/// This one is: if someone else wrote to the row in between, in any
+/// column, it doesn't happen.
 #[test]
-fn a_row_is_only_replaced_if_its_what_was_read() {
+fn a_row_can_be_changed_only_if_its_what_was_read() {
     let mut cluster = household();
     let table = tables::people(&cluster, 1);
     tables::create(&mut cluster, PHONE, table);

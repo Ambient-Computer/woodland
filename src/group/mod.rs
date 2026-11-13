@@ -290,7 +290,12 @@ impl Group {
     /// Signs a transaction on top of everything integrated here. The stored
     /// and sent bytes are final from now on.
     fn sign(&mut self, identity: &Identity, operations: Vec<Operation>, outbox: &mut Outbox) {
-        let transaction = self.log.author(self.id, operations);
+        let mut transaction = self.log.author(self.id, operations);
+        let seq = transaction.seq;
+        for (index, operation) in transaction.operations.iter_mut().enumerate() {
+            operation.seal(self.me, seq, index);
+        }
+
         let signed = Signed::sign(identity, transaction);
         persistence::save_transaction(self.id, signed.signed(), outbox);
 

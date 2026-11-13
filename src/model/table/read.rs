@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use super::{ColumnId, Place, Prior, Value, unique};
+use super::place::{Incarnation, Place};
+use super::rows;
+use super::{ColumnId, Operation, Rekey, Target, Value};
 use crate::encoding;
 use crate::model::{Fingerprint, Requirement};
 
@@ -17,13 +19,33 @@ pub struct Table {
     rows: Vec<Row>,
 }
 
-/// One row of a [`Table`].
+/// One row of a [`Table`], as it was when it was read. Changing or
+/// deleting a row starts from one of these.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
     key: Vec<u8>,
+    incarnation: Incarnation,
+    /// What it holds in the table's columns.
     cells: BTreeMap<ColumnId, Value>,
-    /// Stands for the row exactly as it was stored.
-    stored: Fingerprint,
+    /// What it holds in unique columns, dropped ones included, exactly
+    /// as stored.
+    keys: Vec<(ColumnId, Value)>,
+    /// What it's stored under each cell it has, dropped columns
+    /// included.
+    stored: BTreeMap<ColumnId, Fingerprint>,
+    /// The columns the table had.
+    columns: Vec<ColumnId>,
+}
+
+/// A row's cells, as stored.
+type Stored = Vec<(ColumnId, Vec<u8>)>;
+
+/// The parts of a table's rows, as they come out of storage.
+#[derive(Default)]
+struct Parts {
+    rows: BTreeMap<Vec<u8>, Incarnation>,
+    keys: BTreeMap<Vec<u8>, Vec<(ColumnId, Value)>>,
+    cells: BTreeMap<(Vec<u8>, Incarnation), Stored>,
 }
 
 impl Table {
@@ -34,7 +56,7 @@ impl Table {
     pub fn read(results: &[(Vec<u8>, Vec<u8>)]) -> Option<Self> {
         let mut exists = false;
         let mut columns = BTreeMap::new();
-        let mut rows = Vec::new();
+        let mut parts = Parts::default();
         for (key, value) in results {
             match Place::parse(key) {
                 Some(Place::Table) => exists = true,
@@ -42,20 +64,24 @@ impl Table {
                     columns.insert(id, String::from_utf8_lossy(value).into_owned());
                 }
                 Some(Place::Row(key)) => {
-                    if let Some(cells) = encoding::decode(value) {
-                        let stored = Fingerprint::of(value);
-                        rows.push(Row { key, cells, stored });
+                    if let Ok(incarnation) = value.as_slice().try_into() {
+                        parts.rows.insert(key, incarnation);
                     }
                 }
-                Some(Place::Added(_) | Place::Unique(..) | Place::Indexed) | None => {}
+                Some(Place::Keys(key)) => {
+                    let keys: Option<BTreeMap<ColumnId, Value>> = encoding::decode(value);
+                    let keys = keys.unwrap_or_default();
+                    parts.keys.insert(key, keys.into_iter().collect());
+                }
+                Some(Place::Cell(key, incarnation, column)) => {
+                    let cells = parts.cells.entry((key, incarnation)).or_default();
+                    cells.push((column, value.clone()));
+                }
+                Some(Place::Added(_) | Place::Unique(..)) | None => {}
             }
         }
 
-        // A row keeps what it was given for a column that's since been
-        // dropped. Nobody should see it.
-        for row in &mut rows {
-            row.cells.retain(|column, _| columns.contains_key(column));
-        }
+        let rows = parts.rows(&columns);
 
         exists.then_some(Self { columns, rows })
     }
@@ -87,6 +113,45 @@ impl Table {
     }
 }
 
+impl Parts {
+    /// Puts each row together: the cells of the incarnation that
+    /// exists, and what it holds in unique columns. A cell of a column
+    /// that's since been dropped is still stored, and nobody should
+    /// see it.
+    fn rows(mut self, columns: &BTreeMap<ColumnId, String>) -> Vec<Row> {
+        let rows = std::mem::take(&mut self.rows);
+        let row = |(key, incarnation): (Vec<u8>, Incarnation)| {
+            let keys = self.keys.remove(&key).unwrap_or_default();
+            let raw = self.cells.remove(&(key.clone(), incarnation));
+            let raw = raw.unwrap_or_default();
+            let stored = raw
+                .iter()
+                .map(|(column, value)| (*column, Fingerprint::of(value)));
+            let stored = stored.collect();
+
+            let plain = raw.iter().filter_map(|(column, value)| {
+                let value = encoding::decode::<Value>(value)?;
+
+                Some((*column, value))
+            });
+
+            let mut cells: BTreeMap<_, _> = plain.chain(keys.iter().cloned()).collect();
+            cells.retain(|column, _| columns.contains_key(column));
+
+            Row {
+                key,
+                incarnation,
+                cells,
+                keys,
+                stored,
+                columns: columns.keys().copied().collect(),
+            }
+        };
+
+        rows.into_iter().map(row).collect()
+    }
+}
+
 impl Row {
     #[must_use]
     pub fn key(&self) -> &[u8] {
@@ -99,28 +164,72 @@ impl Row {
     pub fn get(&self, column: ColumnId) -> &Value {
         self.cells.get(&column).unwrap_or(&Value::Null)
     }
-}
 
-impl Row {
-    /// The row as an operation that replaces or deletes it names it.
-    pub(crate) fn prior(&self) -> Prior {
-        let cells = self.cells();
-
-        Prior {
-            was: self.stored,
-            held: unique::taken(&cells).cloned().collect(),
+    fn target(&self) -> Target {
+        Target {
+            key: self.key.clone(),
+            incarnation: self.incarnation,
         }
     }
 
-    pub(crate) fn cells(&self) -> Vec<(ColumnId, Value)> {
-        self.cells.clone().into_iter().collect()
+    /// The operation that gives some of the row's columns new values.
+    /// A unique column's change goes with everything the row held in
+    /// unique columns, as it was read.
+    pub(crate) fn set(&self, changes: impl IntoIterator<Item = (ColumnId, Value)>) -> Operation {
+        let (unique, cells): (Vec<_>, Vec<_>) = changes
+            .into_iter()
+            .partition(|(column, _)| column.is_unique());
+
+        let rekey = (!unique.is_empty()).then(|| {
+            let mut to: BTreeMap<_, _> = self.keys.iter().cloned().collect();
+            for (column, value) in unique {
+                if value == Value::Null {
+                    to.remove(&column);
+                } else {
+                    to.insert(column, value);
+                }
+            }
+
+            Rekey {
+                from: self.keys.clone(),
+                to: to.into_iter().collect(),
+            }
+        });
+
+        Operation::Set {
+            row: self.target(),
+            cells,
+            rekey,
+        }
     }
 
-    /// The row's key in its model, and the requirement that it's still
-    /// what was read.
-    pub(crate) fn unchanged(&self) -> (Vec<u8>, Requirement) {
-        let key = Place::Row(self.key.clone()).key();
+    /// The operation that removes the row, and everything it was read
+    /// to hold.
+    pub(crate) fn delete(&self) -> Operation {
+        Operation::Delete {
+            row: self.target(),
+            cells: self.stored.keys().copied().collect(),
+            keys: self.keys.clone(),
+        }
+    }
 
-        (key, Requirement::Is(self.stored))
+    /// What it takes for the row to still be exactly what was read:
+    /// the same incarnation, and the same thing, or nothing, in every
+    /// column the table had.
+    pub(crate) fn unchanged(&self) -> Vec<(Vec<u8>, Requirement)> {
+        let plain = self.columns.iter().filter(|column| !column.is_unique());
+        let cells = plain.map(|column| {
+            let key = Place::Cell(self.key.clone(), self.incarnation, *column).key();
+            let requirement = match self.stored.get(column) {
+                Some(stored) => Requirement::Is(*stored),
+                None => Requirement::Vacant,
+            };
+
+            (key, requirement)
+        });
+
+        let mut requires = rows::delete_requires(&self.target(), &self.keys);
+        requires.extend(cells);
+        requires
     }
 }

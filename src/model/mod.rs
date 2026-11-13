@@ -20,9 +20,10 @@
 //!
 //! - `kv` requires nothing, so the last writer wins.
 //! - `claims` requires the key to be vacant, so the first writer wins.
-//! - A `table` requires what keeps rows and schema coherent: a row's
-//!   table and columns must be present, its key vacant, and the values
-//!   it has in unique columns free.
+//! - A `table` requires what keeps rows and schema coherent: a new
+//!   row's table and columns must be present, its key vacant, and the
+//!   values it has in unique columns free. A change to a row requires
+//!   it to be the row its author read.
 //!
 //! Any transaction can also require a key to hold what its author read
 //! (`Change::Expect`), whatever the model. That's what makes a write
@@ -81,9 +82,9 @@ pub(crate) mod table;
 use serde::{Deserialize, Serialize};
 
 pub use query::Query;
-pub(crate) use table::Rule;
 pub use table::{ColumnId, Row, Table, Value};
 
+use crate::actor::Peer;
 use crate::agreement::AgreementId;
 use crate::encoding;
 
@@ -217,22 +218,26 @@ impl Operation {
         Self { model, change }
     }
 
-    pub(crate) fn put_row(
-        model: ModelId,
-        key: Vec<u8>,
-        cells: Vec<(ColumnId, Value)>,
-        rule: Rule,
-        prior: Option<&Row>,
-    ) -> Self {
-        let prior = prior.map(Row::prior);
-        let change = Change::Table(table::Operation::Put {
-            key,
-            cells,
-            rule,
-            prior,
-        });
+    pub(crate) fn insert_row(model: ModelId, key: Vec<u8>, cells: Vec<(ColumnId, Value)>) -> Self {
+        let incarnation = table::UNSEALED;
+        let row = table::Target { key, incarnation };
+        let change = Change::Table(table::Operation::Insert { row, cells });
 
         Self { model, change }
+    }
+
+    pub(crate) fn table(model: ModelId, operation: table::Operation) -> Self {
+        let change = Change::Table(operation);
+
+        Self { model, change }
+    }
+
+    /// Fills in what only the transaction's author can work out, now
+    /// that it's known which of its transactions this is part of.
+    pub(crate) fn seal(&mut self, author: Peer, seq: u64, index: usize) {
+        if let Change::Table(operation) = &mut self.change {
+            operation.seal(author, seq, index);
+        }
     }
 
     pub(crate) fn name_column(model: ModelId, column: ColumnId, name: String, add: bool) -> Self {
@@ -243,13 +248,6 @@ impl Operation {
 
     pub(crate) fn drop_column(model: ModelId, column: ColumnId) -> Self {
         let change = Change::Table(table::Operation::DropColumn { column });
-
-        Self { model, change }
-    }
-
-    pub(crate) fn delete_row(model: ModelId, key: Vec<u8>, prior: Option<&Row>) -> Self {
-        let prior = prior.map(Row::prior);
-        let change = Change::Table(table::Operation::Delete { key, prior });
 
         Self { model, change }
     }

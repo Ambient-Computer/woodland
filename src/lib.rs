@@ -140,9 +140,9 @@
 //! - No "every row where". What a transaction requires has to be a
 //!   list of keys, known when it's written. A write that depends on a
 //!   scan, a cascade, or a merge with whatever is under it would have
-//!   to read at its place in the timeline, on every device. So rows
-//!   are replaced whole, and a change to one that someone else changed
-//!   first is pruned, not merged.
+//!   to read at its place in the timeline, on every device. What can
+//!   be merged is what never shared a key: a row's columns are a key
+//!   each, so changes to different ones both happen.
 //! - An offline contributor and memory. Nothing settles past what it
 //!   has, so the frontier grows for as long as it's away. Values stay in
 //!   storage, but an outline per transaction is still in memory, and

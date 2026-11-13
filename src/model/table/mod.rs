@@ -3,31 +3,66 @@
 //! A table is a model like any other. Everything about it is in the
 //! timeline: creating it, its columns, and its rows are all written by
 //! operations, in transactions, and the rules that keep it coherent are
-//! the two requirements every model has (see [`Requirement`]):
+//! the requirements every model has (see [`Requirement`]):
 //!
 //! - **Vacant** is how only one transaction gets something. Creating a
 //!   table requires that it doesn't exist. Inserting a row requires that
 //!   no row has its key. Of two transactions that try, the first in the
 //!   timeline happens and the other is pruned, on every device.
 //! - **Present** is how a transaction depends on another. Writing a
-//!   row requires its table, and every column it has a value for.
-//!   Replacing a row requires the row. If the transaction that created
-//!   the table was pruned, then so is every transaction that wrote to
-//!   it, however many there were and whoever wrote them.
-//!
-//! # Rows
-//!
-//! A row is one value: all of its cells. Writing one replaces whatever
-//! was there, and of two transactions that write the same row, the
-//! later in the timeline is what's read. So changing one column means
-//! writing the row again with the others as they were read, and a
-//! concurrent change to another column is lost to it, or wins over it.
-//! Merging the two would take a write that depends on the value under
-//! it, which nothing here has yet.
+//!   cell requires its column, and inserting a row requires its table.
+//!   If the transaction that created the table was pruned, then so is
+//!   every transaction that wrote to it, however many there were and
+//!   whoever wrote them.
+//! - **Is** is how a transaction depends on what its author read.
+//!   Changing a row requires it to be the row that was read, and not
+//!   another that has since taken its key.
 //!
 //! So a device can create a table and fill it while offline, and none
 //! of it is final until it settles. Until then it either all stands, or
 //! goes together.
+//!
+//! # Rows
+//!
+//! A row is several keys: one that says it exists, and one for each
+//! cell. Changing a column writes that cell and nothing else. Two
+//! devices that change different columns of a row both do, and of two
+//! that change the same column, the later in the timeline is what's
+//! read. Nothing is merged when a transaction is applied, because
+//! nothing has to be: the columns never shared a value.
+//!
+//! A change says which row it's for, and a row's key isn't enough. A
+//! row can be deleted and another inserted under its key, and a change
+//! written for the first, placed between the two in the timeline, must
+//! not show up in the second. So each insert makes a new **incarnation**
+//! of its key: an ID nothing else has, worked out from the transaction
+//! when it's written (see [`Operation::seal`]). Cells are kept under
+//! it, and every change requires the row to still hold it. A change
+//! for an incarnation that's gone is pruned. One that was placed just
+//! before it went leaves a cell nothing reads.
+//!
+//! That's why a row has to be read before it's changed or deleted, and
+//! why there's no "write this row, whatever is there": the incarnation
+//! is what was there.
+//!
+//! # Unique columns
+//!
+//! A column can be unique: no two rows hold the same value in it.
+//! Whether it is is part of its ID, like its type, so an operation
+//! knows what it has to require without reading anything.
+//!
+//! Each value a row holds in a unique column is taken, under a key of
+//! its own ([`Place::Unique`]), the way a claim takes a name: writing
+//! it requires that key to be vacant, and of two rows that want one
+//! value, the first in the timeline gets it.
+//!
+//! Changing or deleting the row has to give its values back, and an
+//! operation can't look them up. So everything a row holds in unique
+//! columns is one value ([`Place::Keys`]), and an operation that
+//! changes any of it, or deletes the row, says what it was and
+//! requires it to be exactly that. Unlike the other columns, then,
+//! two devices that change a row's unique columns at once can't both
+//! happen.
 //!
 //! # Schema
 //!
@@ -41,18 +76,6 @@
 //! for it, and readers leave that out. Nothing goes back to rewrite
 //! rows. A dropped column can't be added again, so that never
 //! resurfaces.
-//!
-//! # Unique columns
-//!
-//! A column can be unique: no two rows hold the same value in it. See
-//! [`unique`] for how, and for why a table with one only takes changes
-//! to rows from whoever read them.
-//!
-//! # What's stored
-//!
-//! A few kinds of key (see [`Place`]): one that says the table exists,
-//! one per column holding its name, and one per row holding its cells.
-//! A requirement is about one key, which is why each of those is one.
 //!
 //! # Types
 //!
@@ -69,37 +92,46 @@
 //! whether transactions happen reads more than keys. Filter when
 //! reading, and write to the rows found.
 
+mod place;
 mod read;
-mod unique;
+mod rows;
 mod value;
 
-use std::collections::BTreeSet;
-
+pub(crate) use place::{Place, UNSEALED};
 pub use read::{Row, Table};
+pub(crate) use rows::{Rekey, Target};
 use serde::{Deserialize, Serialize};
-pub(crate) use unique::Prior;
 pub use value::{ColumnId, Value};
 
 use super::Requirement;
+use crate::actor::Peer;
 use crate::encoding;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Operation {
     /// Creates the table, with these columns and their names.
     Create { columns: Vec<(ColumnId, String)> },
-    /// Writes a row. What must be true of its key first is the rule.
-    Put {
-        key: Vec<u8>,
+    /// Adds a row. Its incarnation is filled in when the transaction
+    /// is written.
+    Insert {
+        row: Target,
         cells: Vec<(ColumnId, Value)>,
-        rule: Rule,
-        /// The row this replaces, if its author read it.
-        prior: Option<Prior>,
     },
-    /// Removes a row, if there is one.
+    /// Changes some of a row's cells.
+    Set {
+        row: Target,
+        /// The new values of columns that aren't unique.
+        cells: Vec<(ColumnId, Value)>,
+        /// The change to its unique columns, if there is one.
+        rekey: Option<Rekey>,
+    },
+    /// Removes a row.
     Delete {
-        key: Vec<u8>,
-        /// The row, if its author read it.
-        prior: Option<Prior>,
+        row: Target,
+        /// The columns it has cells in, as its author read it.
+        cells: Vec<ColumnId>,
+        /// What it holds in unique columns, as its author read it.
+        keys: Vec<(ColumnId, Value)>,
     },
     /// Adds a column, or renames one.
     NameColumn {
@@ -112,112 +144,46 @@ pub(crate) enum Operation {
     DropColumn { column: ColumnId },
 }
 
-/// What a row's key must hold for a row to be written there.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum Rule {
-    /// Nothing: the row is new.
-    Insert,
-    /// A row, which this one replaces.
-    Replace,
-    /// Either.
-    Upsert,
-}
-
-/// What a key in a table's model is for.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Place {
-    /// Holds a value while the table exists.
-    Table,
-    /// Holds a column's name while the table has that column.
-    Column(ColumnId),
-    /// Holds a value once a column has been added, for good. A dropped
-    /// column can't be added again: rows may still hold what they were
-    /// given for it, and that mustn't come back.
-    Added(ColumnId),
-    /// Holds a row's cells.
-    Row(Vec<u8>),
-    /// Holds the key of the row that has a value in a unique column.
-    /// What follows the column is the value, encoded.
-    Unique(ColumnId, Vec<u8>),
-    /// Holds a value once the table has had a unique column, for good.
-    Indexed,
-}
-
-const TABLE: u8 = 0;
-const COLUMN: u8 = 1;
-const ROW: u8 = 2;
-const ADDED: u8 = 3;
-const UNIQUE: u8 = 4;
-const INDEXED: u8 = 5;
-
 impl Operation {
     /// Whether a table takes the operation: every value is of its
     /// column's type, and no column is named twice.
     pub(crate) fn belongs(&self) -> bool {
-        let mut seen = BTreeSet::new();
         match self {
-            Self::Create { columns } => columns
-                .iter()
-                .all(|(column, _)| column.takes(&Value::Null) && seen.insert(column)),
-            Self::Put {
-                cells, rule, prior, ..
-            } => {
-                let typed = cells
-                    .iter()
-                    .all(|(column, value)| column.takes(value) && seen.insert(column));
-                let read = match prior {
-                    Some(prior) => *rule == Rule::Replace && prior.belongs(),
-                    None => true,
-                };
+            Self::Create { columns } => {
+                let cells: Vec<_> = columns.iter().map(|(id, _)| (*id, Value::Null)).collect();
 
-                typed && read
+                rows::typed(&cells)
             }
+            Self::Insert { cells, .. } => rows::typed(cells),
+            Self::Set { cells, rekey, .. } => {
+                let keyed = |rekey: &Rekey| rows::keyed(&rekey.from) && rows::keyed(&rekey.to);
+
+                rows::plain(cells) && rekey.as_ref().is_none_or(keyed)
+            }
+            Self::Delete { keys, .. } => rows::keyed(keys),
             Self::NameColumn { column, .. } => column.takes(&Value::Null),
-            Self::Delete { prior, .. } => prior.as_ref().is_none_or(Prior::belongs),
             Self::DropColumn { .. } => true,
+        }
+    }
+
+    /// Gives an insert the incarnation of its row: one that no other
+    /// insert has, because no other is this operation of this
+    /// transaction. It's the author who works it out, once, like
+    /// everything else a transaction can't be left to decide.
+    pub(crate) fn seal(&mut self, author: Peer, seq: u64, index: usize) {
+        if let Self::Insert { row, .. } = self {
+            let hash = encoding::hash("woodland/row", &(author, seq, index));
+            row.incarnation.copy_from_slice(&hash[..16]);
         }
     }
 
     pub(crate) fn requires(&self) -> Vec<(Vec<u8>, Requirement)> {
         match self {
             Self::Create { .. } => vec![(Place::Table.key(), Requirement::Vacant)],
-            Self::Put {
-                key,
-                cells,
-                rule,
-                prior,
-            } => {
-                let table = (Place::Table.key(), Requirement::Present);
-                let columns = cells
-                    .iter()
-                    .map(|(column, _)| (Place::Column(*column).key(), Requirement::Present));
-                let row = Place::Row(key.clone()).key();
-                let row = match (prior, rule) {
-                    (Some(prior), _) => vec![prior.requires(key)],
-                    (None, Rule::Insert) => vec![(row, Requirement::Vacant)],
-                    (None, Rule::Replace) => vec![(row, Requirement::Present), Self::unread()],
-                    (None, Rule::Upsert) => vec![Self::unread()],
-                };
-
-                let unique = unique::requires(cells, prior.as_ref());
-                let all = std::iter::once(table).chain(columns).chain(row);
-
-                all.chain(unique).collect()
-            }
-
-            // Deleting a row that's already gone isn't a failure. Two
-            // devices that delete the same row both got what they wanted.
-            Self::Delete { key, prior } => {
-                let row = match prior {
-                    Some(prior) => prior.requires(key),
-                    None => Self::unread(),
-                };
-
-                vec![(Place::Table.key(), Requirement::Present), row]
-            }
-
+            Self::Insert { row, cells } => rows::insert_requires(&row.key, cells),
+            Self::Set { row, cells, rekey } => rows::set_requires(row, cells, rekey.as_ref()),
+            Self::Delete { row, keys, .. } => rows::delete_requires(row, keys),
             Self::DropColumn { .. } => vec![(Place::Table.key(), Requirement::Present)],
-
             Self::NameColumn { column, add, .. } => {
                 let table = (Place::Table.key(), Requirement::Present);
                 let column = if *add {
@@ -243,81 +209,21 @@ impl Operation {
                 std::iter::once(table).chain(columns).collect()
             }
 
-            Self::Put {
-                key, cells, prior, ..
-            } => {
-                let mut writes = unique::writes(key, cells, prior.as_ref());
-                let cells: std::collections::BTreeMap<_, _> = cells.iter().cloned().collect();
-                let row = encoding::encode(&cells);
-                writes.push((Place::Row(key.clone()).key(), Some(row)));
-
-                writes
-            }
-
-            Self::Delete { key, prior } => {
-                let mut writes = unique::writes(key, &[], prior.as_ref());
-                writes.push((Place::Row(key.clone()).key(), None));
-
-                writes
-            }
-
-            Self::NameColumn { column, name, .. } => Self::named(*column, name),
+            Self::Insert { row, cells } => rows::insert_writes(row, cells),
+            Self::Set { row, cells, rekey } => rows::set_writes(row, cells, rekey.as_ref()),
+            Self::Delete { row, cells, keys } => rows::delete_writes(row, cells, keys),
+            Self::NameColumn { column, name, .. } => Self::named(*column, name).into(),
             Self::DropColumn { column } => vec![(Place::Column(*column).key(), None)],
         }
     }
-}
 
-impl Operation {
     /// What a column with a name leaves behind.
-    fn named(column: ColumnId, name: &str) -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
+    fn named(column: ColumnId, name: &str) -> [(Vec<u8>, Option<Vec<u8>>); 2] {
         let name = name.to_owned().into_bytes();
-        let indexed = column.is_unique().then(|| Place::Indexed.key());
-        let places = [Place::Added(column).key()].into_iter().chain(indexed);
-        let marks = places.map(|place| (place, Some(Vec::new())));
 
-        marks
-            .chain([(Place::Column(column).key(), Some(name))])
-            .collect()
-    }
-
-    /// What a write to a row requires if its author didn't say what the
-    /// row was: that the table never had a unique column.
-    fn unread() -> (Vec<u8>, Requirement) {
-        (Place::Indexed.key(), Requirement::Vacant)
-    }
-}
-
-impl Place {
-    pub(crate) fn key(&self) -> Vec<u8> {
-        match self {
-            Self::Table => vec![TABLE],
-            Self::Column(column) => [&[COLUMN][..], column.as_bytes()].concat(),
-            Self::Added(column) => [&[ADDED][..], column.as_bytes()].concat(),
-            Self::Row(key) => [&[ROW][..], key].concat(),
-            Self::Unique(column, value) => [&[UNIQUE][..], column.as_bytes(), value].concat(),
-            Self::Indexed => vec![INDEXED],
-        }
-    }
-
-    /// The key that holds whichever row has `value` in `column`.
-    pub(crate) fn unique(column: ColumnId, value: &Value) -> Vec<u8> {
-        Self::Unique(column, encoding::encode(value)).key()
-    }
-
-    pub(crate) fn parse(key: &[u8]) -> Option<Self> {
-        let (&kind, rest) = key.split_first()?;
-        match kind {
-            TABLE if rest.is_empty() => Some(Self::Table),
-            COLUMN => Some(Self::Column(ColumnId::from_bytes(rest.try_into().ok()?))),
-            ROW => Some(Self::Row(rest.to_vec())),
-            ADDED => Some(Self::Added(ColumnId::from_bytes(rest.try_into().ok()?))),
-            UNIQUE => {
-                let (column, value) = rest.split_first_chunk()?;
-
-                Some(Self::Unique(ColumnId::from_bytes(*column), value.to_vec()))
-            }
-            INDEXED if rest.is_empty() => Some(Self::Indexed),
-            _ => None,
-        }
+        [
+            (Place::Added(column).key(), Some(Vec::new())),
+            (Place::Column(column).key(), Some(name)),
+        ]
     }
 }

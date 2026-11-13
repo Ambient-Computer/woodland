@@ -1,11 +1,9 @@
-use std::collections::BTreeMap;
-
 use ed25519_dalek::VerifyingKey;
 
 use super::Node;
 use crate::agreement::{AgreementId, Change, Genesis};
 use crate::io::{Action, Event, LocalEvent, NetworkEvent, StorageEvent};
-use crate::model::{ColumnId, Fingerprint, ModelId, Operation, Requirement, Row, Rule, Value};
+use crate::model::{ColumnId, Fingerprint, ModelId, Operation, Requirement, Row, Value};
 
 /// Events to process together. Start one with [`Node::batch`].
 ///
@@ -210,13 +208,14 @@ impl<'a> TransactionBuilder<'a> {
 
     /// Like [`expect`], for a row of `table` as it was read. The whole
     /// transaction is dropped, on every device, if at its place in the
-    /// timeline the row has been written to or deleted since.
+    /// timeline the row has been deleted, or any of its columns has
+    /// been written to since.
     ///
     /// [`expect`]: Self::expect
     pub fn expect_unchanged(mut self, table: ModelId, row: &Row) -> Self {
-        let (key, requirement) = row.unchanged();
+        let expect = |(key, requirement)| Operation::expect(table, key, requirement);
         self.operations
-            .push(Operation::expect(table, key, requirement));
+            .extend(row.unchanged().into_iter().map(expect));
         self
     }
 
@@ -239,97 +238,64 @@ impl<'a> TransactionBuilder<'a> {
     /// Adds a row to `table` under `key`, with a value for each of
     /// these columns. The whole transaction is dropped, on every
     /// device, unless at its place in the timeline the table and each
-    /// of the columns exist, and no row has the key.
+    /// of the columns exist, no row has the key, and no row has any of
+    /// its values in a [unique] column.
     ///
     /// The table may have been created by a transaction that hasn't
     /// settled, this one included. If that one ends up dropped, so does
     /// this.
+    ///
+    /// [unique]: ColumnId::unique
     pub fn insert(
-        self,
+        mut self,
         table: ModelId,
         key: impl Into<Vec<u8>>,
         cells: impl IntoIterator<Item = (ColumnId, Value)>,
     ) -> Self {
-        self.put_row(table, key, cells, Rule::Insert)
-    }
-
-    /// Replaces the row of `table` under `key` with these cells. A
-    /// column that isn't given a value is left without one. The whole
-    /// transaction is dropped, on every device, unless at its place in
-    /// the timeline the table, the columns and the row exist.
-    pub fn replace(
-        self,
-        table: ModelId,
-        key: impl Into<Vec<u8>>,
-        cells: impl IntoIterator<Item = (ColumnId, Value)>,
-    ) -> Self {
-        self.put_row(table, key, cells, Rule::Replace)
-    }
-
-    /// Writes the row of `table` under `key`, whether or not there is
-    /// one already. The table and the columns still have to exist.
-    pub fn upsert(
-        self,
-        table: ModelId,
-        key: impl Into<Vec<u8>>,
-        cells: impl IntoIterator<Item = (ColumnId, Value)>,
-    ) -> Self {
-        self.put_row(table, key, cells, Rule::Upsert)
-    }
-
-    /// Removes the row of `table` under `key`. Removing a row that
-    /// isn't there does nothing, but the table has to exist.
-    pub fn delete(mut self, table: ModelId, key: impl Into<Vec<u8>>) -> Self {
+        let cells = cells.into_iter().collect();
         self.operations
-            .push(Operation::delete_row(table, key.into(), None));
+            .push(Operation::insert_row(table, key.into(), cells));
         self
     }
 
-    /// Changes `row` of `table`, as it was read: each of these columns
-    /// gets its new value, and the rest stay as they were. The whole
-    /// transaction is dropped, on every device, if at its place in the
-    /// timeline the row has been written to or deleted since it was
-    /// read, or a [unique] column would hold a value another row has.
+    /// Changes `row` of `table`: each of these columns gets its new
+    /// value, and the rest are left alone. Another device that changes
+    /// other columns of the row at the same time changes those, and
+    /// both happen. If both change the same column, the later in the
+    /// timeline is what's read.
     ///
-    /// Nothing is read when the transaction is applied: what the row
-    /// becomes is worked out here, from `row`. That's why it has to be
-    /// unchanged, and it's what a table with a unique column needs to
-    /// keep track of which values are taken. [`replace`] and [`upsert`]
-    /// don't say what the row was, and such a table doesn't take them.
+    /// The whole transaction is dropped, on every device, if at its
+    /// place in the timeline the row has been deleted, or a column
+    /// given a value is gone.
+    ///
+    /// A [unique] column is stricter. The transaction is also dropped
+    /// if another row has the new value, or if any of the row's unique
+    /// columns have changed since it was read.
+    ///
+    /// To change the row only if nothing at all has changed, add
+    /// [`expect_unchanged`].
     ///
     /// [unique]: ColumnId::unique
-    /// [`replace`]: Self::replace
-    /// [`upsert`]: Self::upsert
+    /// [`expect_unchanged`]: Self::expect_unchanged
     pub fn update(
         mut self,
         table: ModelId,
         row: &Row,
         changes: impl IntoIterator<Item = (ColumnId, Value)>,
     ) -> Self {
-        let mut cells: BTreeMap<_, _> = row.cells().into_iter().collect();
-        cells.extend(changes);
-        let (key, cells) = (row.key().to_vec(), cells.into_iter().collect());
-        self.operations.push(Operation::put_row(
-            table,
-            key,
-            cells,
-            Rule::Replace,
-            Some(row),
-        ));
+        self.operations
+            .push(Operation::table(table, row.set(changes)));
         self
     }
 
-    /// Removes `row` of `table`, as it was read. The whole transaction
-    /// is dropped, on every device, if at its place in the timeline the
-    /// row has been written to or deleted since. A table with a
-    /// [unique] column doesn't take [`delete`], only this.
+    /// Removes `row` of `table`. The whole transaction is dropped, on
+    /// every device, if at its place in the timeline the row is
+    /// already gone, or its [unique] columns have changed since it was
+    /// read.
     ///
     /// [unique]: ColumnId::unique
-    /// [`delete`]: Self::delete
     pub fn delete_row(mut self, table: ModelId, row: &Row) -> Self {
-        let key = row.key().to_vec();
-        self.operations
-            .push(Operation::delete_row(table, key, Some(row)));
+        self.operations.push(Operation::table(table, row.delete()));
         self
     }
 
@@ -361,19 +327,6 @@ impl<'a> TransactionBuilder<'a> {
     /// What rows already held in it is no longer read.
     pub fn drop_column(mut self, table: ModelId, column: ColumnId) -> Self {
         self.operations.push(Operation::drop_column(table, column));
-        self
-    }
-
-    fn put_row(
-        mut self,
-        table: ModelId,
-        key: impl Into<Vec<u8>>,
-        cells: impl IntoIterator<Item = (ColumnId, Value)>,
-        rule: Rule,
-    ) -> Self {
-        let cells = cells.into_iter().collect();
-        self.operations
-            .push(Operation::put_row(table, key.into(), cells, rule, None));
         self
     }
 

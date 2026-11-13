@@ -14,7 +14,7 @@ pub(super) fn people(cluster: &Cluster, nonce: u8) -> ModelId {
     ModelId::table(genesis(cluster).id(), [nonce; 32])
 }
 
-fn name(table: ModelId) -> ColumnId {
+pub(super) fn name(table: ModelId) -> ColumnId {
     ColumnId::text(table, [1; 32])
 }
 
@@ -248,28 +248,58 @@ fn a_dropped_table_takes_its_rows() {
     }
 }
 
-fn replace(cluster: &mut Cluster, device: usize, table: ModelId, key: &str, years: i64) {
+pub(super) fn row(cluster: &Cluster, device: usize, table: ModelId, key: &str) -> Option<Row> {
+    let table = read_table(cluster, device, table)?;
+
+    table.row(key.as_bytes()).cloned()
+}
+
+/// Changes one column of a row, as the device reads it now. Does
+/// nothing if the device has no such row.
+pub(super) fn set(
+    cluster: &mut Cluster,
+    device: usize,
+    table: ModelId,
+    key: &str,
+    change: (ColumnId, Value),
+) {
     let agreement = genesis(cluster).id();
-    let cells = [(name(table), Value::from(key)), (age(table), years.into())];
-    let key = key.to_owned();
+    let Some(row) = row(cluster, device, table, key) else {
+        return;
+    };
+
     cluster.run(device, |batch| {
         batch
             .transaction(agreement)
-            .replace(table, key, cells)
+            .update(table, &row, [change])
             .commit()
     });
 }
 
-fn delete(cluster: &mut Cluster, device: usize, table: ModelId, key: &str) {
+/// Deletes a row, as the device reads it now.
+pub(super) fn delete(cluster: &mut Cluster, device: usize, table: ModelId, key: &str) {
     let agreement = genesis(cluster).id();
-    let key = key.to_owned();
+    let Some(row) = row(cluster, device, table, key) else {
+        return;
+    };
+
     cluster.run(device, |batch| {
-        batch.transaction(agreement).delete(table, key).commit()
+        batch
+            .transaction(agreement)
+            .delete_row(table, &row)
+            .commit()
     });
 }
 
+/// A row's name and age.
+fn person(cluster: &Cluster, device: usize, table: ModelId, key: &str) -> Option<(Value, Value)> {
+    let row = row(cluster, device, table, key)?;
+
+    Some((row.get(name(table)).clone(), row.get(age(table)).clone()))
+}
+
 #[test]
-fn a_row_can_be_replaced_and_deleted() {
+fn a_row_can_be_changed_and_deleted() {
     let mut cluster = household();
     let table = people(&cluster, 1);
     create(&mut cluster, PHONE, table);
@@ -277,21 +307,104 @@ fn a_row_can_be_replaced_and_deleted() {
     insert(&mut cluster, PHONE, table, "grace", 85);
     cluster.settle();
 
-    replace(&mut cluster, LAPTOP, table, "ada", 37);
+    set(&mut cluster, LAPTOP, table, "ada", (age(table), 37.into()));
     delete(&mut cluster, NAS, table, "grace");
     cluster.settle();
 
     for device in [PHONE, LAPTOP, NAS, FRIEND] {
         let expected = [("ada".to_owned(), Value::Integer(37))];
         assert_eq!(ages(&cluster, device, table), expected, "device {device}");
+        let ada = person(&cluster, device, table, "ada");
+        assert_eq!(ada, Some(("ada".into(), 37.into())), "device {device}");
+        assert_eq!(stored_log_len(&cluster, device), 0, "device {device}");
     }
 }
 
-/// The laptop deletes a row while the phone, apart from it, replaces
-/// it. Whichever comes first in the timeline, they end up agreeing: a
-/// replacement that finds no row doesn't happen.
+/// The phone changes a row's age while the laptop, apart from it,
+/// changes its name. Neither wrote over the other: a column is its
+/// own key.
 #[test]
-fn replacing_a_deleted_row_doesnt_bring_it_back() {
+fn changes_to_different_columns_both_happen() {
+    let mut cluster = household();
+    let table = people(&cluster, 1);
+    create(&mut cluster, PHONE, table);
+    insert(&mut cluster, PHONE, table, "ada", 36);
+    cluster.settle();
+    cluster.disconnect_everyone();
+    cluster.settle();
+
+    set(&mut cluster, PHONE, table, "ada", (age(table), 37.into()));
+    set(
+        &mut cluster,
+        LAPTOP,
+        table,
+        "ada",
+        (name(table), "Ada".into()),
+    );
+    cluster.settle();
+    let apart = person(&cluster, PHONE, table, "ada");
+    assert_eq!(apart, Some(("ada".into(), 37.into())));
+
+    cluster.connect_everyone();
+    cluster.settle();
+
+    for device in [PHONE, LAPTOP, NAS, FRIEND] {
+        let ada = person(&cluster, device, table, "ada");
+        assert_eq!(ada, Some(("Ada".into(), 37.into())), "device {device}");
+        assert_eq!(stored_frontier(&cluster, device), [], "device {device}");
+    }
+}
+
+#[test]
+fn of_two_changes_to_one_column_the_later_is_read() {
+    let mut cluster = household();
+    let table = people(&cluster, 1);
+    create(&mut cluster, PHONE, table);
+    insert(&mut cluster, PHONE, table, "ada", 36);
+    cluster.settle();
+    cluster.disconnect_everyone();
+    cluster.settle();
+
+    set(&mut cluster, PHONE, table, "ada", (age(table), 37.into()));
+    set(&mut cluster, LAPTOP, table, "ada", (age(table), 38.into()));
+    cluster.connect_everyone();
+    cluster.settle();
+
+    let ada = person(&cluster, PHONE, table, "ada");
+    let (_, years) = ada.clone().expect("the row exists");
+    assert!([Value::Integer(37), Value::Integer(38)].contains(&years));
+    for device in [LAPTOP, NAS, FRIEND] {
+        assert_eq!(person(&cluster, device, table, "ada"), ada);
+    }
+}
+
+#[test]
+fn a_cell_can_be_cleared() {
+    let mut cluster = household();
+    let table = people(&cluster, 1);
+    create(&mut cluster, PHONE, table);
+    insert(&mut cluster, PHONE, table, "ada", 36);
+    cluster.settle();
+
+    set(
+        &mut cluster,
+        LAPTOP,
+        table,
+        "ada",
+        (age(table), Value::Null),
+    );
+    cluster.settle();
+
+    let ada = person(&cluster, NAS, table, "ada");
+    assert_eq!(ada, Some(("ada".into(), Value::Null)));
+}
+
+/// The laptop deletes a row while the phone, apart from it, changes
+/// it. Whichever comes first in the timeline, the row is gone: a
+/// change that finds no row doesn't happen, and a delete doesn't mind
+/// what was changed.
+#[test]
+fn changing_a_deleted_row_doesnt_bring_it_back() {
     let mut cluster = household();
     let table = people(&cluster, 1);
     create(&mut cluster, PHONE, table);
@@ -301,64 +414,84 @@ fn replacing_a_deleted_row_doesnt_bring_it_back() {
     cluster.settle();
 
     delete(&mut cluster, LAPTOP, table, "ada");
-    cluster.settle();
-    replace(&mut cluster, PHONE, table, "ada", 37);
-    replace(&mut cluster, PHONE, table, "ada", 38);
+    set(&mut cluster, PHONE, table, "ada", (age(table), 37.into()));
+    set(&mut cluster, PHONE, table, "ada", (age(table), 38.into()));
     cluster.connect_everyone();
     cluster.settle();
 
-    let rows = ages(&cluster, PHONE, table);
-    for device in [LAPTOP, NAS, FRIEND] {
-        assert_eq!(ages(&cluster, device, table), rows, "device {device}");
+    for device in [PHONE, LAPTOP, NAS, FRIEND] {
+        assert_eq!(ages(&cluster, device, table), [], "device {device}");
+        assert_eq!(stored_frontier(&cluster, device), [], "device {device}");
     }
-
-    // The phone's second replacement is after the delete in the
-    // timeline, wherever its first one fell.
-    assert_eq!(rows, []);
 }
 
+/// A row is deleted, and another is inserted under its key. A change
+/// written for the first one, by a device that hadn't heard, falls
+/// before the delete in the timeline. It was for a row that's gone,
+/// and the new one doesn't get it.
 #[test]
-fn an_upsert_writes_the_row_either_way() {
+fn a_new_row_doesnt_inherit_from_the_last_one_with_its_key() {
     let mut cluster = household();
     let (agreement, table) = (genesis(&cluster).id(), people(&cluster, 1));
     create(&mut cluster, PHONE, table);
-    for years in [36, 37] {
-        cluster.run(PHONE, |batch| {
-            let cells = [(age(table), Value::Integer(years))];
+    cluster.run(PHONE, |batch| {
+        let cells = [(name(table), Value::from("ada"))];
 
-            batch
-                .transaction(agreement)
-                .upsert(table, "ada", cells)
-                .commit()
-        });
-    }
-
-    cluster.settle();
-    let expected = [("ada".to_owned(), Value::Integer(37))];
-    assert_eq!(ages(&cluster, LAPTOP, table), expected);
-}
-
-/// Deleting twice is fine, and takes nothing else down with it.
-#[test]
-fn deleting_a_row_thats_gone_does_nothing() {
-    let mut cluster = household();
-    let (agreement, table) = (genesis(&cluster).id(), people(&cluster, 1));
-    create(&mut cluster, PHONE, table);
-    insert(&mut cluster, PHONE, table, "ada", 36);
-    cluster.settle();
-
-    delete(&mut cluster, LAPTOP, table, "ada");
-    cluster.run(NAS, |batch| {
-        let cells = [(age(table), Value::Integer(85))];
-        let transaction = batch.transaction(agreement);
-
-        transaction
-            .delete(table, "ada")
-            .insert(table, "grace", cells)
+        batch
+            .transaction(agreement)
+            .insert(table, "ada", cells)
             .commit()
     });
     cluster.settle();
+    cluster.disconnect_everyone();
+    cluster.settle();
+
+    // The phone's change is written first. The laptop's delete comes
+    // after a few other writes, so it's later in the timeline.
+    set(&mut cluster, PHONE, table, "ada", (age(table), 36.into()));
+    for value in ["one", "two", "three"] {
+        write(&mut cluster, LAPTOP, "busy", value);
+    }
+
+    delete(&mut cluster, LAPTOP, table, "ada");
+    cluster.run(LAPTOP, |batch| {
+        let cells = [(name(table), Value::from("Ada"))];
+
+        batch
+            .transaction(agreement)
+            .insert(table, "ada", cells)
+            .commit()
+    });
+    cluster.connect_everyone();
+    cluster.settle();
+
+    for device in [PHONE, LAPTOP, NAS, FRIEND] {
+        let ada = person(&cluster, device, table, "ada");
+        assert_eq!(ada, Some(("Ada".into(), Value::Null)), "device {device}");
+        assert_eq!(stored_frontier(&cluster, device), [], "device {device}");
+    }
+}
+
+/// Two devices delete the same row while apart. It's gone either way.
+#[test]
+fn a_row_deleted_twice_is_gone() {
+    let mut cluster = household();
+    let table = people(&cluster, 1);
+    create(&mut cluster, PHONE, table);
+    insert(&mut cluster, PHONE, table, "ada", 36);
+    insert(&mut cluster, PHONE, table, "grace", 85);
+    cluster.settle();
+    cluster.disconnect_everyone();
+    cluster.settle();
+
+    delete(&mut cluster, LAPTOP, table, "ada");
+    delete(&mut cluster, NAS, table, "ada");
+    cluster.connect_everyone();
+    cluster.settle();
 
     let expected = [("grace".to_owned(), Value::Integer(85))];
-    assert_eq!(ages(&cluster, PHONE, table), expected);
+    for device in [PHONE, LAPTOP, NAS, FRIEND] {
+        assert_eq!(ages(&cluster, device, table), expected, "device {device}");
+        assert_eq!(stored_log_len(&cluster, device), 0, "device {device}");
+    }
 }

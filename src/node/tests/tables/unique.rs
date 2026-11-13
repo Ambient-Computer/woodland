@@ -304,35 +304,53 @@ fn a_change_to_a_row_thats_since_changed_never_happens() {
     }
 }
 
-/// A write that doesn't say what the row was can't give its values
-/// back, so a table with a unique column doesn't take it.
+/// A change to a unique column doesn't get in the way of a change to
+/// another column.
 #[test]
-fn a_table_with_a_unique_column_only_takes_changes_to_rows_that_were_read() {
+fn changes_to_a_unique_column_and_another_both_happen() {
     let mut cluster = household();
-    let (agreement, table) = (genesis(&cluster).id(), create_accounts(&mut cluster, PHONE));
+    let table = create_accounts(&mut cluster, PHONE);
     sign_up(&mut cluster, PHONE, "ada", Some("a@example.com"));
     cluster.settle();
+    cluster.disconnect_everyone();
+    cluster.settle();
 
-    let cells = || [(email(table), Value::from("other@example.com"))];
-    cluster.run(LAPTOP, |batch| {
-        let transaction = batch.transaction(agreement);
-
-        transaction.replace(table, "ada", cells()).commit()
-    });
-    cluster.run(LAPTOP, |batch| {
-        let transaction = batch.transaction(agreement);
-
-        transaction.upsert(table, "ada", cells()).commit()
-    });
-    cluster.run(LAPTOP, |batch| {
-        batch.transaction(agreement).delete(table, "ada").commit()
-    });
+    let ada = account(&cluster, PHONE, "ada").expect("signed up");
+    update(&mut cluster, PHONE, &ada, email(table), "ada@example.com");
+    update(&mut cluster, LAPTOP, &ada, plan(table), "paid");
+    cluster.connect_everyone();
     cluster.settle();
 
     for device in [PHONE, LAPTOP, NAS, FRIEND] {
-        assert_eq!(holders(&cluster, device, "a@example.com"), ["ada"]);
-        assert_eq!(holders(&cluster, device, "other@example.com"), [""; 0]);
-        assert_eq!(stored_log_len(&cluster, device), 0, "device {device}");
+        let ada = account(&cluster, device, "ada").expect("signed up");
+        assert_eq!(ada.get(plan(table)), &Value::from("paid"));
+        assert_eq!(ada.get(email(table)), &Value::from("ada@example.com"));
+        assert_eq!(stored_frontier(&cluster, device), [], "device {device}");
+    }
+}
+
+/// Two devices each give a row a new address while apart. Only one
+/// does: the other was working from addresses the row no longer has.
+#[test]
+fn only_one_of_two_changes_to_a_rows_unique_columns_happens() {
+    let mut cluster = household();
+    let table = create_accounts(&mut cluster, PHONE);
+    sign_up(&mut cluster, PHONE, "ada", Some("a@example.com"));
+    cluster.settle();
+    cluster.disconnect_everyone();
+    cluster.settle();
+
+    let ada = account(&cluster, PHONE, "ada").expect("signed up");
+    update(&mut cluster, PHONE, &ada, email(table), "one@example.com");
+    update(&mut cluster, LAPTOP, &ada, email(table), "two@example.com");
+    cluster.connect_everyone();
+    cluster.settle();
+
+    let [by_row, by_key] = taken(&cluster, NAS);
+    assert_eq!(by_row.len(), 1);
+    for device in [PHONE, LAPTOP, NAS, FRIEND] {
+        assert_eq!(taken(&cluster, device), [by_row.clone(), by_key.clone()]);
+        assert_eq!(holders(&cluster, device, "a@example.com"), [""; 0]);
     }
 }
 

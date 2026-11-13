@@ -14,7 +14,7 @@ fn write_email(cluster: &mut Cluster, device: usize, table: ModelId, key: &str) 
     cluster.run(device, |batch| {
         batch
             .transaction(agreement)
-            .upsert(table, key, cells)
+            .insert(table, key, cells)
             .commit()
     });
 }
