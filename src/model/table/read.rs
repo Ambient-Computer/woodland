@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::place::{Incarnation, Place};
 use super::rows;
@@ -35,6 +35,9 @@ pub struct Row {
     stored: BTreeMap<ColumnId, Fingerprint>,
     /// The columns the table had.
     columns: Vec<ColumnId>,
+    referred: bool,
+    /// Stands for the retirement it's in, if it's retired.
+    retired: Option<Fingerprint>,
 }
 
 /// A row's cells, as stored.
@@ -46,6 +49,8 @@ struct Parts {
     rows: BTreeMap<Vec<u8>, Incarnation>,
     keys: BTreeMap<Vec<u8>, Vec<(ColumnId, Value)>>,
     cells: BTreeMap<(Vec<u8>, Incarnation), Stored>,
+    referred: BTreeSet<Vec<u8>>,
+    retired: BTreeMap<Vec<u8>, Fingerprint>,
 }
 
 impl Table {
@@ -76,6 +81,12 @@ impl Table {
                 Some(Place::Cell(key, incarnation, column)) => {
                     let cells = parts.cells.entry((key, incarnation)).or_default();
                     cells.push((column, value.clone()));
+                }
+                Some(Place::Referred(key)) => {
+                    parts.referred.insert(key);
+                }
+                Some(Place::Retired(key)) => {
+                    parts.retired.insert(key, Fingerprint::of(value));
                 }
                 Some(Place::Added(_) | Place::Unique(..) | Place::Index(..)) | None => {}
             }
@@ -154,6 +165,8 @@ impl Parts {
             cells.retain(|column, _| columns.contains_key(column));
 
             Row {
+                referred: self.referred.contains(&key),
+                retired: self.retired.get(&key).copied(),
                 key,
                 incarnation,
                 cells,
@@ -178,6 +191,40 @@ impl Row {
     #[must_use]
     pub fn get(&self, column: ColumnId) -> &Value {
         self.cells.get(&column).unwrap_or(&Value::Null)
+    }
+
+    /// Whether anything has ever [referred] to the row. If so, it has
+    /// to be [retired] before it can be deleted.
+    ///
+    /// [referred]: crate::TransactionBuilder::refer
+    /// [retired]: crate::TransactionBuilder::retire
+    #[must_use]
+    pub fn is_referred(&self) -> bool {
+        self.referred
+    }
+
+    /// Whether the row is [retired]: nothing can refer to it.
+    ///
+    /// [retired]: crate::TransactionBuilder::retire
+    #[must_use]
+    pub fn is_retired(&self) -> bool {
+        self.retired.is_some()
+    }
+
+    /// The operation that depends on the row, and marks it.
+    pub(crate) fn refer(&self) -> Operation {
+        Operation::Refer { row: self.target() }
+    }
+
+    pub(crate) fn retire(&self) -> Operation {
+        Operation::Retire {
+            row: self.target(),
+            token: super::UNSEALED,
+        }
+    }
+
+    pub(crate) fn restore(&self) -> Operation {
+        Operation::Restore { row: self.target() }
     }
 
     fn target(&self) -> Target {
@@ -225,6 +272,7 @@ impl Row {
             row: self.target(),
             cells: self.stored.keys().copied().collect(),
             keys: self.keys.clone(),
+            retired: self.retired,
         }
     }
 
@@ -243,7 +291,8 @@ impl Row {
             (key, requirement)
         });
 
-        let mut requires = rows::delete_requires(&self.target(), &self.keys);
+        let (row, keys) = (self.target(), &self.keys);
+        let mut requires = vec![rows::target(&row), rows::unchanged(&row.key, keys)];
         requires.extend(cells);
         requires
     }

@@ -84,8 +84,13 @@ fn stored(keys: &[(ColumnId, Value)]) -> Option<Vec<u8>> {
     (!keys.is_empty()).then(|| encoding::encode(&keys))
 }
 
+/// The row is still the one that was read.
+pub(crate) fn target(target: &Target) -> (Vec<u8>, Requirement) {
+    target.requires()
+}
+
 /// The row's unique values are still what was read.
-fn unchanged(row: &[u8], keys: &[(ColumnId, Value)]) -> (Vec<u8>, Requirement) {
+pub(crate) fn unchanged(row: &[u8], keys: &[(ColumnId, Value)]) -> (Vec<u8>, Requirement) {
     let requirement = match stored(keys) {
         Some(stored) => Requirement::Is(Fingerprint::of(&stored)),
         None => Requirement::Vacant,
@@ -210,17 +215,77 @@ pub(crate) fn set_writes(
     writes
 }
 
-pub(crate) fn delete_requires(target: &Target, keys: &[(ColumnId, Value)]) -> Required {
-    vec![target.requires(), unchanged(&target.key, keys)]
+/// What deleting a row requires: that it's the row that was read, with
+/// the keys that were read, and that nothing refers to it that its
+/// author didn't know of (see the module's notes on references).
+///
+/// - A row that isn't retired must never have been referred to. A
+///   reference its author hadn't heard of, placed before the delete,
+///   stops it.
+/// - A retired row must still be in the retirement that was read.
+///   Nothing has referred to it since that began.
+pub(crate) fn delete_requires(
+    target: &Target,
+    keys: &[(ColumnId, Value)],
+    retired: Option<Fingerprint>,
+) -> Required {
+    let row = target.key.clone();
+    let mut requires = vec![target.requires(), unchanged(&target.key, keys)];
+    match retired {
+        Some(retired) => requires.push((Place::Retired(row).key(), Requirement::Is(retired))),
+        None => requires.extend([
+            (Place::Referred(row.clone()).key(), Requirement::Vacant),
+            (Place::Retired(row).key(), Requirement::Vacant),
+        ]),
+    }
+
+    requires
 }
 
 pub(crate) fn delete_writes(
     target: &Target,
     cells: &[ColumnId],
     keys: &[(ColumnId, Value)],
+    retired: bool,
 ) -> Written {
+    let row = target.key.clone();
     let mut writes = rekey_writes(&target.key, keys, &[]);
     writes.extend(cells.iter().map(|column| (target.cell(*column), None)));
-    writes.push((Place::Row(target.key.clone()).key(), None));
+    if retired {
+        writes.push((Place::Referred(row.clone()).key(), None));
+        writes.push((Place::Retired(row.clone()).key(), None));
+    }
+
+    writes.push((Place::Row(row).key(), None));
     writes
+}
+
+/// A reference requires the row to be there, and not retired.
+pub(crate) fn refer_requires(target: &Target) -> Required {
+    let retired = Place::Retired(target.key.clone()).key();
+
+    vec![target.requires(), (retired, Requirement::Vacant)]
+}
+
+/// Every reference leaves the same thing, so it doesn't matter which
+/// came last, and none of them gets in another's way.
+pub(crate) fn refer_writes(target: &Target) -> Written {
+    vec![(Place::Referred(target.key.clone()).key(), Some(Vec::new()))]
+}
+
+pub(crate) fn retire_writes(target: &Target, token: Incarnation) -> Written {
+    vec![(
+        Place::Retired(target.key.clone()).key(),
+        Some(token.to_vec()),
+    )]
+}
+
+pub(crate) fn restore_requires(target: &Target) -> Required {
+    let retired = Place::Retired(target.key.clone()).key();
+
+    vec![target.requires(), (retired, Requirement::Present)]
+}
+
+pub(crate) fn restore_writes(target: &Target) -> Written {
+    vec![(Place::Retired(target.key.clone()).key(), None)]
 }

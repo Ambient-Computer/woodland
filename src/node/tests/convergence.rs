@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use proptest::prelude::*;
 
-use super::tables::unique;
+use super::tables::{references, unique};
 use super::*;
 use crate::agreement::Decision;
 use crate::lattice::Lattice;
@@ -74,7 +74,23 @@ enum Step {
         row: u8,
         tier: u8,
     },
+    /// Closes an account, going by what has settled: only if nothing
+    /// refers to it, or it's retired, and then with all of its orders.
     CloseAccount {
+        device: usize,
+        row: u8,
+    },
+    /// Places an order, which refers to an account.
+    Order {
+        device: usize,
+        row: u8,
+        order: u8,
+    },
+    RetireAccount {
+        device: usize,
+        row: u8,
+    },
+    RestoreAccount {
         device: usize,
         row: u8,
     },
@@ -139,15 +155,21 @@ fn step() -> impl Strategy<Value = Step> {
         ),
         2 => (device.clone(), 1..3u8, 0..3u8)
             .prop_map(|(device, table, row)| Step::DeleteRow { device, table, row }),
-        1 => device.clone().prop_map(|device| Step::OpenAccounts { device }),
+        2 => device.clone().prop_map(|device| Step::OpenAccounts { device }),
         3 => (device.clone(), 0..3u8, 0..3u8)
             .prop_map(|(device, row, address)| Step::SignUp { device, row, address }),
         3 => (device.clone(), 0..3u8, 0..3u8)
             .prop_map(|(device, row, address)| Step::Readdress { device, row, address }),
         3 => (device.clone(), 0..3u8, 0..3u8)
             .prop_map(|(device, row, tier)| Step::Retier { device, row, tier }),
-        2 => (device.clone(), 0..3u8)
+        3 => (device.clone(), 0..3u8)
             .prop_map(|(device, row)| Step::CloseAccount { device, row }),
+        3 => (device.clone(), 0..3u8, 0..4u8)
+            .prop_map(|(device, row, order)| Step::Order { device, row, order }),
+        2 => (device.clone(), 0..3u8)
+            .prop_map(|(device, row)| Step::RetireAccount { device, row }),
+        1 => (device.clone(), 0..3u8)
+            .prop_map(|(device, row)| Step::RestoreAccount { device, row }),
         2 => (device.clone(), device.clone())
             .prop_map(|(left, right)| Step::Connect { left, right }),
         2 => (device.clone(), device.clone())
@@ -222,7 +244,10 @@ fn run(cluster: &mut Cluster, step: Step) {
         | Step::SignUp { .. }
         | Step::Readdress { .. }
         | Step::Retier { .. }
-        | Step::CloseAccount { .. } => run_account(cluster, step),
+        | Step::CloseAccount { .. }
+        | Step::Order { .. }
+        | Step::RetireAccount { .. }
+        | Step::RestoreAccount { .. } => run_account(cluster, step),
         Step::Connect { left, right } => cluster.connect(left, right),
         Step::Disconnect { left, right } => cluster.disconnect(left, right),
         Step::Deliver { device } => cluster.deliver(device),
@@ -243,6 +268,25 @@ fn run_account(cluster: &mut Cluster, step: Step) {
     match step {
         Step::OpenAccounts { device } => {
             unique::open(cluster, device);
+            references::open_orders(cluster, device);
+        }
+        Step::Order { device, row, order } => {
+            if let Some(row) = unique::account(cluster, device, &row.to_string()) {
+                references::order(cluster, device, &order.to_string(), &row);
+            }
+        }
+        Step::RetireAccount { device, row } => {
+            if let Some(row) = unique::account(cluster, device, &row.to_string()) {
+                references::retire(cluster, device, &row);
+            }
+        }
+        Step::RestoreAccount { device, row } => {
+            let (agreement, table) = (genesis(cluster).id(), unique::accounts(cluster));
+            if let Some(row) = unique::account(cluster, device, &row.to_string()) {
+                cluster.run(device, |batch| {
+                    batch.transaction(agreement).restore(table, &row).commit()
+                });
+            }
         }
         Step::SignUp {
             device,
@@ -276,9 +320,7 @@ fn run_account(cluster: &mut Cluster, step: Step) {
             }
         }
         Step::CloseAccount { device, row } => {
-            if let Some(row) = unique::account(cluster, device, &row.to_string()) {
-                unique::close(cluster, device, &row);
-            }
+            references::close_with_orders(cluster, device, &row.to_string());
         }
         _ => {}
     }
@@ -404,6 +446,13 @@ proptest! {
         // is found exactly while an account has it.
         let [by_row, by_key] = unique::taken(&cluster, PHONE);
         prop_assert_eq!(by_row, by_key);
+
+        // There's never an order for an account that isn't there,
+        // however the two were written and deleted.
+        for device in [PHONE, LAPTOP, NAS, FRIEND] {
+            let orders = references::orders_with_accounts(&cluster, device);
+            prop_assert!(orders.iter().all(|&has_account| has_account), "device {}", device);
+        }
 
         // Settling really forgets: nothing settled stays in the log.
         for device in [PHONE, LAPTOP, NAS, FRIEND] {

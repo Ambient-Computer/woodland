@@ -28,6 +28,12 @@ pub(crate) enum Place {
     Keys(Vec<u8>),
     /// Holds what one incarnation of a row has in one column.
     Cell(Vec<u8>, Incarnation, ColumnId),
+    /// Holds a value once something has referred to a row, until the
+    /// row is deleted.
+    Referred(Vec<u8>),
+    /// Holds a token while a row is retired: it takes no more
+    /// references.
+    Retired(Vec<u8>),
     /// Holds the key of the row that has a value in a unique column.
     /// What follows the column is the value, in a form that sorts the
     /// way values do (see [`order`]).
@@ -47,6 +53,8 @@ const INDEX: u8 = 5;
 /// What follows a row's key, in the keys of its parts.
 const KEYS: u8 = 1;
 const CELL: u8 = 2;
+const REFERRED: u8 = 3;
+const RETIRED: u8 = 4;
 
 impl Place {
     /// Everything about a row sorts together, and rows sort by key: the
@@ -59,6 +67,8 @@ impl Place {
             Self::Added(column) => [&[ADDED][..], column.as_bytes()].concat(),
             Self::Row(key) => [&[ROW][..], &escape(key)].concat(),
             Self::Keys(key) => [&[ROW][..], &escape(key), &[KEYS]].concat(),
+            Self::Referred(key) => [&[ROW][..], &escape(key), &[REFERRED]].concat(),
+            Self::Retired(key) => [&[ROW][..], &escape(key), &[RETIRED]].concat(),
             Self::Cell(key, incarnation, column) => {
                 let row = escape(key);
 
@@ -110,6 +120,8 @@ impl Place {
                 match part.split_first() {
                     None => Some(Self::Row(row)),
                     Some((&KEYS, [])) => Some(Self::Keys(row)),
+                    Some((&REFERRED, [])) => Some(Self::Referred(row)),
+                    Some((&RETIRED, [])) => Some(Self::Retired(row)),
                     Some((&CELL, cell)) => {
                         let (incarnation, column) = cell.split_first_chunk()?;
                         let column = ColumnId::from_bytes(column.try_into().ok()?);
@@ -221,6 +233,8 @@ mod tests {
             Place::Added(column),
             Place::Row(b"a\0b".to_vec()),
             Place::Keys(b"".to_vec()),
+            Place::Referred(b"ada".to_vec()),
+            Place::Retired(b"ada".to_vec()),
             Place::Cell(b"ada".to_vec(), [9; 16], column),
             Place::Unique(column, b"value".to_vec()),
             Place::Index(indexed, order::ordered(&"a\0b".into()), b"row".to_vec()),

@@ -81,6 +81,35 @@
 //! key starts another (see [`order::escape`]), everything about a row
 //! starts with it, and rows sort by it.
 //!
+//! # References
+//!
+//! A transaction can refer to a row: it depends on the row being
+//! there, and is pruned if it isn't. That's half of what a foreign key
+//! promises. The other half is that the row isn't deleted from under
+//! what refers to it, and a delete written on a device that hasn't
+//! heard of a reference can't know to stop.
+//!
+//! So a reference leaves a mark on the row, and a row with the mark
+//! can't simply be deleted. A delete and a reference written apart
+//! can't both happen: whichever comes second in the timeline is
+//! pruned, the reference because the row is gone, or the delete
+//! because the mark is there.
+//!
+//! A row that has been referred to is deleted in two steps. First
+//! it's **retired**: it takes no more references, from there on in
+//! the timeline. Once that has settled, nothing can be placed before
+//! it, so every reference there will ever be has settled too, and a
+//! committed read finds all of them. Then whoever is deleting the row
+//! deals with what refers to it, and deletes it, in one transaction.
+//! Whether that means deleting those rows too, or giving up and
+//! restoring the row, is the application's choice. A delete names the
+//! retirement it read, so one written before the row was restored
+//! doesn't happen after.
+//!
+//! Waiting for the retirement to settle is the price: it takes every
+//! contributor. A rule about what doesn't exist anywhere can't be
+//! checked by a device on its own.
+//!
 //! # Schema
 //!
 //! Columns are added, renamed and dropped by operations, like rows are
@@ -116,13 +145,14 @@ mod rows;
 mod value;
 
 pub(crate) use order::successor;
+use place::Incarnation;
 pub(crate) use place::{Place, UNSEALED, rows, schema, values};
 pub use read::{Row, Table};
 pub(crate) use rows::{Rekey, Target};
 use serde::{Deserialize, Serialize};
 pub use value::{ColumnId, Value};
 
-use super::Requirement;
+use super::{Fingerprint, Requirement};
 use crate::actor::Peer;
 use crate::encoding;
 
@@ -149,9 +179,19 @@ pub(crate) enum Operation {
         row: Target,
         /// The columns it has cells in, as its author read it.
         cells: Vec<ColumnId>,
-        /// What it holds in unique columns, as its author read it.
+        /// What it holds in unique and indexed columns, as its author
+        /// read it.
         keys: Vec<(ColumnId, Value)>,
+        /// The retirement it's in, as its author read it.
+        retired: Option<Fingerprint>,
     },
+    /// Depends on a row, and lets whoever deletes it know.
+    Refer { row: Target },
+    /// Stops a row taking references. The token is filled in when the
+    /// transaction is written.
+    Retire { row: Target, token: Incarnation },
+    /// Lets a retired row take references again.
+    Restore { row: Target },
     /// Adds a column, or renames one.
     NameColumn {
         column: ColumnId,
@@ -181,19 +221,27 @@ impl Operation {
             }
             Self::Delete { keys, .. } => rows::keyed(keys),
             Self::NameColumn { column, .. } => column.takes(&Value::Null),
-            Self::DropColumn { .. } => true,
+            Self::DropColumn { .. }
+            | Self::Refer { .. }
+            | Self::Retire { .. }
+            | Self::Restore { .. } => true,
         }
     }
 
-    /// Gives an insert the incarnation of its row: one that no other
-    /// insert has, because no other is this operation of this
-    /// transaction. It's the author who works it out, once, like
-    /// everything else a transaction can't be left to decide.
+    /// Gives an insert the incarnation of its row, and a retirement
+    /// its token: one that no other has, because no other is this
+    /// operation of this transaction. It's the author who works it
+    /// out, once, like everything else a transaction can't be left to
+    /// decide.
     pub(crate) fn seal(&mut self, author: Peer, seq: u64, index: usize) {
-        if let Self::Insert { row, .. } = self {
-            let hash = encoding::hash("woodland/row", &(author, seq, index));
-            row.incarnation.copy_from_slice(&hash[..16]);
-        }
+        let unique = match self {
+            Self::Insert { row, .. } => &mut row.incarnation,
+            Self::Retire { token, .. } => token,
+            _ => return,
+        };
+
+        let hash = encoding::hash("woodland/row", &(author, seq, index));
+        unique.copy_from_slice(&hash[..16]);
     }
 
     pub(crate) fn requires(&self) -> Vec<(Vec<u8>, Requirement)> {
@@ -201,7 +249,11 @@ impl Operation {
             Self::Create { .. } => vec![(Place::Table.key(), Requirement::Vacant)],
             Self::Insert { row, cells } => rows::insert_requires(&row.key, cells),
             Self::Set { row, cells, rekey } => rows::set_requires(row, cells, rekey.as_ref()),
-            Self::Delete { row, keys, .. } => rows::delete_requires(row, keys),
+            Self::Delete {
+                row, keys, retired, ..
+            } => rows::delete_requires(row, keys, *retired),
+            Self::Refer { row } | Self::Retire { row, .. } => rows::refer_requires(row),
+            Self::Restore { row } => rows::restore_requires(row),
             Self::DropColumn { .. } => vec![(Place::Table.key(), Requirement::Present)],
             Self::NameColumn { column, add, .. } => {
                 let table = (Place::Table.key(), Requirement::Present);
@@ -230,7 +282,15 @@ impl Operation {
 
             Self::Insert { row, cells } => rows::insert_writes(row, cells),
             Self::Set { row, cells, rekey } => rows::set_writes(row, cells, rekey.as_ref()),
-            Self::Delete { row, cells, keys } => rows::delete_writes(row, cells, keys),
+            Self::Delete {
+                row,
+                cells,
+                keys,
+                retired,
+            } => rows::delete_writes(row, cells, keys, retired.is_some()),
+            Self::Refer { row } => rows::refer_writes(row),
+            Self::Retire { row, token } => rows::retire_writes(row, *token),
+            Self::Restore { row } => rows::restore_writes(row),
             Self::NameColumn { column, name, .. } => Self::named(*column, name).into(),
             Self::DropColumn { column } => vec![(Place::Column(*column).key(), None)],
         }

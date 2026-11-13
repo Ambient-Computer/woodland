@@ -295,10 +295,65 @@ impl<'a> TransactionBuilder<'a> {
     /// already gone, or its [unique] or [indexed] columns have changed
     /// since it was read.
     ///
+    /// It's also dropped if anything has ever [referred] to the row,
+    /// unless the row was [retired] when it was read and still is, in
+    /// the same retirement. See [`retire`] for how to delete a row
+    /// that others depend on.
+    ///
     /// [unique]: ColumnId::unique
     /// [indexed]: ColumnId::indexed
+    /// [referred]: Self::refer
+    /// [retired]: Row::is_retired
+    /// [`retire`]: Self::retire
     pub fn delete_row(mut self, table: ModelId, row: &Row) -> Self {
         self.operations.push(Operation::table(table, row.delete()));
+        self
+    }
+
+    /// Makes the transaction depend on `row` of `table`, the way a row
+    /// with a foreign key depends on the row it names. The whole
+    /// transaction is dropped, on every device, if at its place in the
+    /// timeline the row is gone or [retired].
+    ///
+    /// The row is marked as referred to, for good, and can't be
+    /// deleted without being retired first. So of a reference and a
+    /// delete written apart, only one happens. Any number of
+    /// references to a row can be written apart, and all happen.
+    ///
+    /// [retired]: Self::retire
+    pub fn refer(mut self, table: ModelId, row: &Row) -> Self {
+        self.operations.push(Operation::table(table, row.refer()));
+        self
+    }
+
+    /// Retires `row` of `table`: from here on in the timeline, nothing
+    /// can [refer] to it. The whole transaction is dropped, on every
+    /// device, if the row is gone or already retired.
+    ///
+    /// It's the first step of deleting a row that's been referred to:
+    ///
+    /// 1. Retire it.
+    /// 2. Wait until a [committed] read shows it retired. Every
+    ///    reference to it that will ever exist has settled by then.
+    /// 3. Find what refers to it, with committed reads.
+    /// 4. In one transaction, deal with those rows and
+    ///    [delete][`delete_row`] this one. Or [`restore`] it.
+    ///
+    /// [refer]: Self::refer
+    /// [committed]: crate::Query::committed
+    /// [`delete_row`]: Self::delete_row
+    /// [`restore`]: Self::restore
+    pub fn retire(mut self, table: ModelId, row: &Row) -> Self {
+        self.operations.push(Operation::table(table, row.retire()));
+        self
+    }
+
+    /// Lets a [retired] row take references again. A delete written
+    /// while it was retired doesn't happen after this.
+    ///
+    /// [retired]: Self::retire
+    pub fn restore(mut self, table: ModelId, row: &Row) -> Self {
+        self.operations.push(Operation::table(table, row.restore()));
         self
     }
 
