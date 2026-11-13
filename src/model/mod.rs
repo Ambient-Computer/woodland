@@ -76,6 +76,7 @@ mod table;
 use serde::{Deserialize, Serialize};
 
 pub use query::Query;
+pub(crate) use table::Rule;
 pub use table::{ColumnId, Row, Table, Value};
 
 use crate::agreement::AgreementId;
@@ -186,8 +187,19 @@ impl Operation {
         Self { model, change }
     }
 
-    pub(crate) fn insert(model: ModelId, key: Vec<u8>, cells: Vec<(ColumnId, Value)>) -> Self {
-        let change = Change::Table(table::Operation::Insert { key, cells });
+    pub(crate) fn put_row(
+        model: ModelId,
+        key: Vec<u8>,
+        cells: Vec<(ColumnId, Value)>,
+        rule: Rule,
+    ) -> Self {
+        let change = Change::Table(table::Operation::Put { key, cells, rule });
+
+        Self { model, change }
+    }
+
+    pub(crate) fn delete_row(model: ModelId, key: Vec<u8>) -> Self {
+        let change = Change::Table(table::Operation::Delete { key });
 
         Self { model, change }
     }

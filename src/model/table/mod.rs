@@ -9,11 +9,21 @@
 //!   table requires that it doesn't exist. Inserting a row requires that
 //!   no row has its key. Of two transactions that try, the first in the
 //!   timeline happens and the other is pruned, on every device.
-//! - **Present** is how a transaction depends on another. Inserting a
-//!   row requires its table, and every column it has a value for. If
-//!   the transaction that created the table was pruned, then so is
-//!   every transaction that wrote to it, however many there were and
-//!   whoever wrote them.
+//! - **Present** is how a transaction depends on another. Writing a
+//!   row requires its table, and every column it has a value for.
+//!   Replacing a row requires the row. If the transaction that created
+//!   the table was pruned, then so is every transaction that wrote to
+//!   it, however many there were and whoever wrote them.
+//!
+//! # Rows
+//!
+//! A row is one value: all of its cells. Writing one replaces whatever
+//! was there, and of two transactions that write the same row, the
+//! later in the timeline is what's read. So changing one column means
+//! writing the row again with the others as they were read, and a
+//! concurrent change to another column is lost to it, or wins over it.
+//! Merging the two would take a write that depends on the value under
+//! it, which nothing here has yet.
 //!
 //! So a device can create a table and fill it while offline, and none
 //! of it is final until it settles. Until then it either all stands, or
@@ -56,11 +66,25 @@ use crate::encoding;
 pub(crate) enum Operation {
     /// Creates the table, with these columns and their names.
     Create { columns: Vec<(ColumnId, String)> },
-    /// Adds a row.
-    Insert {
+    /// Writes a row. What must be true of its key first is the rule.
+    Put {
         key: Vec<u8>,
         cells: Vec<(ColumnId, Value)>,
+        rule: Rule,
     },
+    /// Removes a row, if there is one.
+    Delete { key: Vec<u8> },
+}
+
+/// What a row's key must hold for a row to be written there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum Rule {
+    /// Nothing: the row is new.
+    Insert,
+    /// A row, which this one replaces.
+    Replace,
+    /// Either.
+    Upsert,
 }
 
 /// What a key in a table's model is for.
@@ -87,24 +111,34 @@ impl Operation {
             Self::Create { columns } => columns
                 .iter()
                 .all(|(column, _)| column.takes(&Value::Null) && seen.insert(column)),
-            Self::Insert { cells, .. } => cells
+            Self::Put { cells, .. } => cells
                 .iter()
                 .all(|(column, value)| column.takes(value) && seen.insert(column)),
+            Self::Delete { .. } => true,
         }
     }
 
     pub(crate) fn requires(&self) -> Vec<(Vec<u8>, Requirement)> {
         match self {
             Self::Create { .. } => vec![(Place::Table.key(), Requirement::Vacant)],
-            Self::Insert { key, cells } => {
+            Self::Put { key, cells, rule } => {
                 let table = (Place::Table.key(), Requirement::Present);
                 let columns = cells
                     .iter()
                     .map(|(column, _)| (Place::Column(*column).key(), Requirement::Present));
-                let row = (Place::Row(key.clone()).key(), Requirement::Vacant);
+                let row = Place::Row(key.clone()).key();
+                let row = match rule {
+                    Rule::Insert => Some((row, Requirement::Vacant)),
+                    Rule::Replace => Some((row, Requirement::Present)),
+                    Rule::Upsert => None,
+                };
 
-                std::iter::once(table).chain(columns).chain([row]).collect()
+                std::iter::once(table).chain(columns).chain(row).collect()
             }
+
+            // Deleting a row that's already gone isn't a failure. Two
+            // devices that delete the same row both got what they wanted.
+            Self::Delete { .. } => vec![(Place::Table.key(), Requirement::Present)],
         }
     }
 
@@ -122,12 +156,14 @@ impl Operation {
                 std::iter::once(table).chain(columns).collect()
             }
 
-            Self::Insert { key, cells } => {
+            Self::Put { key, cells, .. } => {
                 let cells: std::collections::BTreeMap<_, _> = cells.iter().cloned().collect();
                 let row = encoding::encode(&cells);
 
                 vec![(Place::Row(key.clone()).key(), Some(row))]
             }
+
+            Self::Delete { key } => vec![(Place::Row(key.clone()).key(), None)],
         }
     }
 }

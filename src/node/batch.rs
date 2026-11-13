@@ -3,7 +3,7 @@ use ed25519_dalek::VerifyingKey;
 use super::Node;
 use crate::agreement::{AgreementId, Change, Genesis};
 use crate::io::{Action, Event, LocalEvent, NetworkEvent, StorageEvent};
-use crate::model::{ColumnId, ModelId, Operation, Value};
+use crate::model::{ColumnId, ModelId, Operation, Rule, Value};
 
 /// Events to process together. Start one with [`Node::batch`].
 ///
@@ -178,14 +178,56 @@ impl<'a> TransactionBuilder<'a> {
     /// settled, this one included. If that one ends up dropped, so does
     /// this.
     pub fn insert(
-        mut self,
+        self,
         table: ModelId,
         key: impl Into<Vec<u8>>,
         cells: impl IntoIterator<Item = (ColumnId, Value)>,
     ) -> Self {
+        self.put_row(table, key, cells, Rule::Insert)
+    }
+
+    /// Replaces the row of `table` under `key` with these cells. A
+    /// column that isn't given a value is left without one. The whole
+    /// transaction is dropped, on every device, unless at its place in
+    /// the timeline the table, the columns and the row exist.
+    pub fn replace(
+        self,
+        table: ModelId,
+        key: impl Into<Vec<u8>>,
+        cells: impl IntoIterator<Item = (ColumnId, Value)>,
+    ) -> Self {
+        self.put_row(table, key, cells, Rule::Replace)
+    }
+
+    /// Writes the row of `table` under `key`, whether or not there is
+    /// one already. The table and the columns still have to exist.
+    pub fn upsert(
+        self,
+        table: ModelId,
+        key: impl Into<Vec<u8>>,
+        cells: impl IntoIterator<Item = (ColumnId, Value)>,
+    ) -> Self {
+        self.put_row(table, key, cells, Rule::Upsert)
+    }
+
+    /// Removes the row of `table` under `key`. Removing a row that
+    /// isn't there does nothing, but the table has to exist.
+    pub fn delete(mut self, table: ModelId, key: impl Into<Vec<u8>>) -> Self {
+        self.operations
+            .push(Operation::delete_row(table, key.into()));
+        self
+    }
+
+    fn put_row(
+        mut self,
+        table: ModelId,
+        key: impl Into<Vec<u8>>,
+        cells: impl IntoIterator<Item = (ColumnId, Value)>,
+        rule: Rule,
+    ) -> Self {
         let cells = cells.into_iter().collect();
         self.operations
-            .push(Operation::insert(table, key.into(), cells));
+            .push(Operation::put_row(table, key.into(), cells, rule));
         self
     }
 
