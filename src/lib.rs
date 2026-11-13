@@ -77,15 +77,29 @@
 //!   in code that never looks inside an operation (`group/verdicts.rs`).
 //!   Last-writer-wins is "requires nothing". First-writer-wins is
 //!   "requires the key to be vacant" (`model/claims.rs`).
-//! - Signed transactions and attestations can be relayed by anyone, so sync
-//!   and agreement both work over chains of devices, not just a full mesh.
-//!   Both go through the same batch verification before a group sees them.
-//! - Reads bypass the state machine. Every integrated change is written in
-//!   the batch that integrates it, and writes precede every other action,
-//!   so storage is current once a batch's actions are performed. A
-//!   [`Query`] is just a key range and a decoder.
-//! - Settling bounds hydration. Only protocol state loads at startup, and
-//!   the log in it holds only what hasn't settled yet (`storage/keys.rs`).
+//! - Everything that travels is signed by whoever said it: transactions,
+//!   progress reports, proposals, attestations. A decision travels with
+//!   the attestations that prove it (`agreement/certificate.rs`). So sync
+//!   and agreement both work over chains of devices, not just a full
+//!   mesh, and a device with no write access can relay all of it without
+//!   being trusted with any of it.
+//! - A proof of a decision is only checkable by someone who knows the
+//!   contributors it counts. Keeping one proof per change of
+//!   configuration is enough to walk anyone up from the genesis
+//!   (`a_replica_far_behind_follows_each_change_of_configuration`).
+//! - Reads bypass the state machine. A change is written in the batch
+//!   that finds it live, and writes precede every other action, so
+//!   storage is current once a batch's actions are performed. A
+//!   [`Query`] is just a key range and a decoder, and [`Changed`] says
+//!   when to run it again.
+//! - Declarations are also what's worth remembering. Verdicts never
+//!   read a value, so the log keeps an outline of each unsettled
+//!   transaction and leaves the transaction in storage. It comes back a
+//!   page at a time, to be sent, settled, or shown
+//!   (`group/bodies.rs`).
+//! - Settling bounds hydration. Only protocol state loads at startup, a
+//!   page at a time, and the log in it holds only what hasn't settled
+//!   yet (`storage/keys.rs`).
 //! - The timeline and sans-IO. A write is stored as a version of its key
 //!   under its transaction's stamp, so storage's key order is the timeline
 //!   and integrating never reads (`model/kv.rs`,
@@ -115,8 +129,14 @@
 //!   settled is only in storage, so the point read came back, and with
 //!   it a third verdict: pending. It only costs a round trip the first
 //!   time a key is asked about (`group/verdicts.rs`).
-//! - Crash faults only. A lying member can forge progress or equivocate,
-//!   and Byzantine RLA is a separate line of research.
+//! - An offline contributor and memory. Nothing settles past what it
+//!   has, so the frontier grows for as long as it's away. Values stay in
+//!   storage, but an outline per transaction is still in memory, and
+//!   every verdict in the frontier is worked out again when it changes.
+//! - Honest contributors only. Nobody else has to be trusted, but a
+//!   lying contributor can report progress it hasn't made, attest to a
+//!   view it doesn't hold, or equivocate. Byzantine RLA is a separate
+//!   line of research.
 
 mod actor;
 mod agreement;
