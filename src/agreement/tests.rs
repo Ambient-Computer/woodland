@@ -30,18 +30,18 @@ fn gossip(from: &mut Agreement) -> Sent {
 
     Sent {
         view: from.view().clone(),
-        gossip: from.gossip(),
+        gossip: from.gossip(0),
         attestations: attestations.collect(),
     }
 }
 
 fn deliver(to: &mut Agreement, sent: Sent) {
     let Gossip {
-        learned,
+        decisions,
         proposals,
         reports,
     } = sent.gossip;
-    to.receive(&learned, verify_all(proposals), verify_all(reports));
+    to.receive(decisions, verify_all(proposals), verify_all(reports));
     for attestation in verify_all(sent.attestations) {
         to.hear(attestation);
     }
@@ -193,7 +193,8 @@ impl Simulation {
     }
 
     fn learn(&mut self, replica: usize) {
-        if let Some(decision) = self.replicas[replica].try_learn() {
+        let identity = identity_of(cast()[replica]);
+        if let Some(decision) = self.replicas[replica].try_learn(&identity) {
             self.learned.push(decision.clone());
         }
     }
@@ -283,7 +284,10 @@ fn a_lone_member_cannot_learn() {
     let mut phone_replica = Agreement::new(&genesis(), phone());
     report(&mut phone_replica, 1);
 
-    assert_eq!(phone_replica.try_learn(), None);
+    assert_eq!(
+        phone_replica.try_learn(&identity_of(phone_replica.me)),
+        None
+    );
 }
 
 #[test]
@@ -295,7 +299,9 @@ fn two_of_three_members_can_learn_while_one_is_offline() {
     send(&mut phone_replica, &mut laptop_replica);
     send(&mut laptop_replica, &mut phone_replica);
 
-    let learned = phone_replica.try_learn().cloned();
+    let learned = phone_replica
+        .try_learn(&identity_of(phone_replica.me))
+        .cloned();
     assert_eq!(learned.map(|it| it.progress), Some(report));
 }
 
@@ -315,7 +321,10 @@ fn a_reconfiguration_needs_the_old_quorum_too() {
 
     let target = laptop_replica.view().target_configuration();
     assert!(target.has_quorum(&BTreeSet::from([laptop()])));
-    assert_eq!(laptop_replica.try_learn(), None);
+    assert_eq!(
+        laptop_replica.try_learn(&identity_of(laptop_replica.me)),
+        None
+    );
 }
 
 /// Why "storage writes are durable before the next action" is a safety
@@ -335,7 +344,9 @@ fn a_replica_that_forgets_breaks_agreement() {
     report(&mut phone_replica, 1);
     send(&mut phone_replica, &mut laptop_replica);
     send(&mut laptop_replica, &mut phone_replica);
-    let phone_learned = phone_replica.try_learn().cloned();
+    let phone_learned = phone_replica
+        .try_learn(&identity_of(phone_replica.me))
+        .cloned();
 
     let amnesiac = Agreement::new(&genesis(), laptop());
     laptop_replica = amnesiac;
@@ -343,7 +354,7 @@ fn a_replica_that_forgets_breaks_agreement() {
     report(&mut nas_replica, 1);
     send(&mut nas_replica, &mut laptop_replica);
     send(&mut laptop_replica, &mut nas_replica);
-    let nas_learned = nas_replica.try_learn().cloned();
+    let nas_learned = nas_replica.try_learn(&identity_of(nas_replica.me)).cloned();
 
     let (Some(phone_learned), Some(nas_learned)) = (phone_learned, nas_learned) else {
         panic!("both should learn");
@@ -361,13 +372,18 @@ fn adding_a_member_raises_the_quorum() {
 
     // Two of three household members agree, but the configuration with
     // the friend has four members, so it needs three.
-    assert_eq!(phone_replica.try_learn(), None);
+    assert_eq!(
+        phone_replica.try_learn(&identity_of(phone_replica.me)),
+        None
+    );
 
     let mut friend_replica = Agreement::new(&genesis(), friend());
     send(&mut phone_replica, &mut friend_replica);
     send(&mut friend_replica, &mut phone_replica);
 
-    let learned = phone_replica.try_learn().cloned();
+    let learned = phone_replica
+        .try_learn(&identity_of(phone_replica.me))
+        .cloned();
     assert!(learned.is_some_and(|it| it.configuration.is_member(friend())));
 }
 
@@ -387,7 +403,9 @@ fn a_relayed_attestation_counts() {
     send(&mut nas_replica, &mut friend_replica);
     send(&mut friend_replica, &mut phone_replica);
 
-    let learned = phone_replica.try_learn().cloned();
+    let learned = phone_replica
+        .try_learn(&identity_of(phone_replica.me))
+        .cloned();
     assert_eq!(learned.map(|it| it.progress), Some(report));
 }
 
@@ -407,7 +425,10 @@ fn attestations_only_count_in_their_own_agreement() {
     send(&mut laptop_elsewhere, &mut phone_replica);
     report(&mut phone_replica, 1);
 
-    assert_eq!(phone_replica.try_learn(), None);
+    assert_eq!(
+        phone_replica.try_learn(&identity_of(phone_replica.me)),
+        None
+    );
 }
 
 /// The friend relays the household's views, and tries to slip
@@ -440,4 +461,105 @@ fn a_relay_cant_add_to_what_it_passes_on() {
 
     assert_eq!(laptop_replica.view(), phone_replica.view());
     assert!(!propose(&mut friend_replica, Change::Add(friend())));
+}
+
+fn learn(replica: &mut Agreement) -> Option<Decision> {
+    let me = replica.me;
+
+    replica.try_learn(&identity_of(me)).cloned()
+}
+
+/// What a relay hands over when it wasn't given, or doesn't bother to
+/// pass on, anyone's attestations: just the view's parts.
+fn relay(from: &mut Agreement) -> Sent {
+    let mut sent = gossip(from);
+    sent.attestations.clear();
+
+    sent
+}
+
+/// The phone and the laptop learn something while the nas is away. The
+/// friend, who isn't a member, later tells the nas. The nas has heard
+/// from nobody else, and takes the decision on the proof that comes
+/// with it.
+#[test]
+fn a_decision_is_taken_on_a_quorums_word() {
+    let mut phone_replica = Agreement::new(&genesis(), phone());
+    let mut laptop_replica = Agreement::new(&genesis(), laptop());
+    let mut nas_replica = Agreement::new(&genesis(), nas());
+    let mut friend_replica = Agreement::new(&genesis(), friend());
+    report(&mut phone_replica, 1);
+    send(&mut phone_replica, &mut laptop_replica);
+    send(&mut laptop_replica, &mut phone_replica);
+    let learned = learn(&mut phone_replica);
+
+    send(&mut phone_replica, &mut friend_replica);
+    deliver(&mut nas_replica, relay(&mut friend_replica));
+
+    assert!(learned.is_some());
+    assert_eq!(Some(nas_replica.learned()), learned.as_ref());
+}
+
+/// The friend claims the household decided to add it, and attests to
+/// that itself. Its word isn't a contributor's, so there's no quorum.
+#[test]
+fn a_relay_cant_make_up_a_decision() {
+    let mut phone_replica = Agreement::new(&genesis(), phone());
+    let mut nas_replica = Agreement::new(&genesis(), nas());
+    let mut friend_replica = Agreement::new(&genesis(), friend());
+    report(&mut phone_replica, 1);
+    send(&mut phone_replica, &mut friend_replica);
+
+    let mut wished = friend_replica.view().clone();
+    wished.propose(genesis().configuration().with(Change::Add(friend())));
+    let attestation = Attestation {
+        agreement: genesis().id(),
+        revision: 1,
+        digest: wished.digest(),
+    };
+    let attestation = Signed::sign(&identity_of(friend()), attestation);
+    let mut sent = relay(&mut friend_replica);
+    let forged = Certificate::of(&wished, [&attestation]);
+    sent.gossip.decisions.push(forged);
+    deliver(&mut nas_replica, sent);
+
+    assert_eq!(
+        nas_replica.learned(),
+        Agreement::new(&genesis(), nas()).learned()
+    );
+}
+
+/// The household adds the friend, then removes the laptop, all while
+/// the nas is away. The nas can't check the second decision by itself:
+/// it doesn't know the friend counts. The first decision is what tells
+/// it so, and the two together bring it up to date.
+#[test]
+fn a_replica_far_behind_follows_each_change_of_configuration() {
+    let mut phone_replica = Agreement::new(&genesis(), phone());
+    let mut laptop_replica = Agreement::new(&genesis(), laptop());
+    let mut friend_replica = Agreement::new(&genesis(), friend());
+    for change in [Change::Add(friend()), Change::Remove(laptop())] {
+        propose(&mut phone_replica, change);
+        send(&mut phone_replica, &mut laptop_replica);
+        send(&mut phone_replica, &mut friend_replica);
+        send(&mut laptop_replica, &mut phone_replica);
+        send(&mut friend_replica, &mut phone_replica);
+        assert!(learn(&mut phone_replica).is_some());
+    }
+
+    send(&mut phone_replica, &mut friend_replica);
+    let whole = relay(&mut friend_replica);
+    let mut latest = whole.clone();
+    latest.gossip.decisions.remove(0);
+
+    let mut nas_replica = Agreement::new(&genesis(), nas());
+    deliver(&mut nas_replica, latest);
+    assert_eq!(
+        nas_replica.learned().configuration,
+        genesis().configuration()
+    );
+
+    deliver(&mut nas_replica, whole);
+    assert_eq!(nas_replica.learned(), phone_replica.learned());
+    assert!(!nas_replica.learned().configuration.is_member(laptop()));
 }

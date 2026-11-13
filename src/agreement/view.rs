@@ -128,6 +128,16 @@ impl View {
         self.forget_superseded();
     }
 
+    /// What this replica would learn next, if enough replicas hold the
+    /// same view.
+    pub(crate) fn pending(&self) -> Decision {
+        Decision {
+            progress: self.candidate.clone(),
+            acknowledged: self.acknowledged.clone(),
+            configuration: self.target_configuration(),
+        }
+    }
+
     /// The configuration this replica would learn next: everything learned
     /// so far plus every pending proposal.
     pub(crate) fn target_configuration(&self) -> Configuration {

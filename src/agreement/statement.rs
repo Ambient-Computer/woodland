@@ -5,13 +5,14 @@
 //! access can relay a view between contributors that never meet, and
 //! can't put anything into it: every part is checked against its
 //! author's signature, and against whether that author is someone the
-//! agreement ever let speak.
+//! agreement ever let speak. What was learned comes with the
+//! attestations that prove it (see `certificate`).
 //!
 //! [`View`]: super::View
 
 use serde::{Deserialize, Serialize};
 
-use super::{AgreementId, Configuration, Decision};
+use super::{AgreementId, Certificate, Configuration};
 use crate::actor::{Signable, Signed};
 use crate::clock::VersionVector;
 use crate::lattice::Lattice;
@@ -36,7 +37,9 @@ pub(crate) struct Proposal {
 /// Everything a replica's view is made of, as it's sent and stored.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Gossip {
-    pub(crate) learned: Decision,
+    /// What was learned, oldest first: a certificate for each change of
+    /// configuration, then the latest decision if it came after those.
+    pub(crate) decisions: Vec<Certificate>,
     pub(crate) proposals: Vec<Signed<Proposal>>,
     pub(crate) reports: Vec<Signed<Report>>,
 }

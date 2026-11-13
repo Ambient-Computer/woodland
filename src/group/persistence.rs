@@ -128,7 +128,9 @@ impl From<Restored> for Group {
         let attested = restored.attested.as_ref().map(|it| it.payload().revision);
         let stored = restored.gossip.is_some();
         let agreement = match restored.gossip {
-            Some(gossip) => Agreement::resume(id, gossip, restored.attested, restored.me),
+            Some(gossip) => {
+                Agreement::resume(&restored.genesis, gossip, restored.attested, restored.me)
+            }
             None => Agreement::new(&restored.genesis, restored.me),
         };
         let view = stored.then(|| agreement.view().clone());
@@ -170,7 +172,7 @@ impl Persisted {
         outbox: &mut Outbox,
     ) {
         if self.view.as_ref() != Some(agreement.view()) {
-            outbox.put(keys::view(id), &agreement.gossip());
+            outbox.put(keys::view(id), &agreement.gossip(0));
             self.view = Some(agreement.view().clone());
         }
 

@@ -78,12 +78,15 @@
 //!   contributors in a line.
 //! - **Honest contributors.** Nobody can forge what a contributor said:
 //!   reports, proposals and attestations are all signed (see
-//!   `statement`), so anyone can relay a view. But a lying contributor
+//!   `statement`), and decisions come with the attestations that prove
+//!   them (see `certificate`), so anyone can relay a view. But a lying
+//!   contributor
 //!   could attest to a view it doesn't hold, or report progress it
 //!   hasn't made. Byzantine-tolerant RLA is follow-up work in the
 //!   literature.
 
 mod attestation;
+mod certificate;
 mod configuration;
 mod genesis;
 mod statement;
@@ -92,6 +95,7 @@ mod view;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) use attestation::Attestation;
+pub(crate) use certificate::Certificate;
 pub(crate) use configuration::{Change, Configuration};
 pub use genesis::{AgreementId, Genesis};
 pub(crate) use statement::{Gossip, Proposal, Report};
@@ -113,6 +117,12 @@ pub(crate) struct Agreement {
     reports: BTreeMap<Peer, Verified<Report>>,
     /// Who proposed each of the view's pending configurations.
     proposals: BTreeMap<Configuration, Verified<Proposal>>,
+    /// Proof of each decision that changed the configuration, oldest
+    /// first. Anyone who knows the founders can follow these to the
+    /// configuration we've learned.
+    steps: Vec<Certificate>,
+    /// Proof of the latest decision, if it came after the last step.
+    latest: Option<Certificate>,
     /// The latest attestation from each replica, this one included, however
     /// it arrived. A replica witnesses our view when its digest matches ours.
     heard: BTreeMap<Peer, Verified<Attestation>>,
@@ -120,12 +130,7 @@ pub(crate) struct Agreement {
 
 impl Agreement {
     pub(crate) fn new(genesis: &Genesis, me: Peer) -> Self {
-        let founded = Gossip {
-            learned: View::new(genesis.configuration()).learned,
-            ..Gossip::default()
-        };
-
-        Self::resume(genesis.id(), founded, None, me)
+        Self::resume(genesis, Gossip::default(), None, me)
     }
 
     /// Picks up from what was saved earlier: everything the view was made
@@ -133,23 +138,30 @@ impl Agreement {
     /// was stored. Nothing else heard is remembered, so peers must attest
     /// again before anything new is learned.
     pub(crate) fn resume(
-        id: AgreementId,
+        genesis: &Genesis,
         saved: Gossip,
         attested: Option<Verified<Attestation>>,
         me: Peer,
     ) -> Self {
         let mut agreement = Self {
-            id,
+            id: genesis.id(),
             me,
-            view: View::new(saved.learned.configuration.clone()),
+            view: View::new(genesis.configuration()),
             reports: BTreeMap::new(),
             proposals: BTreeMap::new(),
+            steps: Vec::new(),
+            latest: None,
             heard: attested.map(|it| (me, it)).into_iter().collect(),
         };
 
+        for certificate in saved.decisions {
+            let decision = certificate.decision();
+            agreement.adopt(certificate, &decision);
+        }
+
         let proposals = saved.proposals.into_iter().map(Verified::trust_stored);
         let reports = saved.reports.into_iter().map(Verified::trust_stored);
-        agreement.receive(&saved.learned, proposals.collect(), reports.collect());
+        agreement.receive(Vec::new(), proposals.collect(), reports.collect());
 
         agreement
     }
@@ -158,16 +170,26 @@ impl Agreement {
         &self.view
     }
 
-    /// Everything the view is made of, to send or to store.
-    pub(crate) fn gossip(&self) -> Gossip {
+    /// Everything the view is made of, to send or to store. Whoever
+    /// it's for already has the first `known` of the [steps].
+    ///
+    /// [steps]: Agreement::steps
+    pub(crate) fn gossip(&self, known: usize) -> Gossip {
+        let decisions = self.steps.iter().skip(known).chain(&self.latest);
         let proposals = self.proposals.values();
         let reports = self.reports.values();
 
         Gossip {
-            learned: self.view.learned.clone(),
+            decisions: decisions.cloned().collect(),
             proposals: proposals.map(|it| it.signed().clone()).collect(),
             reports: reports.map(|it| it.signed().clone()).collect(),
         }
+    }
+
+    /// How many times the configuration has changed, as far as this
+    /// replica has learned.
+    pub(crate) fn steps(&self) -> usize {
+        self.steps.len()
     }
 
     /// This replica's latest attestation, if it has made one.
@@ -210,18 +232,22 @@ impl Agreement {
         self.accept_proposal(Signed::sign(identity, proposal))
     }
 
-    /// Merges what a peer holds. Every part arrives with its author's
-    /// signature checked, and is kept only if its author may speak. What
-    /// the peer itself holds is the business of its attestation, which
-    /// may arrive separately or through someone else.
+    /// Merges what a peer holds. Every statement arrives with its
+    /// author's signature checked, and is kept only if its author may
+    /// speak. Decisions are checked here, and only the ones that would
+    /// teach us something. What the peer itself holds is the business of
+    /// its attestation, which may arrive separately or through someone
+    /// else.
     pub(crate) fn receive(
         &mut self,
-        learned: &Decision,
+        decisions: Vec<Certificate>,
         mut proposals: Vec<Verified<Proposal>>,
         reports: Vec<Verified<Report>>,
     ) -> bool {
         let before = self.view.clone();
-        self.view.learn(learned);
+        for certificate in decisions {
+            self.accept_decision(certificate);
+        }
 
         // One proposal can be what lets the author of another speak, so
         // go around until no more of them are accepted.
@@ -261,8 +287,9 @@ impl Agreement {
     /// Signs what this replica holds, if that changed since it last said.
     /// `identity` must be this replica's own.
     ///
-    /// Call it after the view settles and before it's sent. The attestation
-    /// must be persisted along with the view (see the module docs).
+    /// Call it after the view settles and before it's sent. The latest
+    /// attestation must be persisted along with the view (see the module
+    /// docs).
     pub(crate) fn attest(&mut self, identity: &Identity) -> bool {
         let digest = self.view.digest();
         let previous = self.attested().map(Verified::payload);
@@ -283,7 +310,10 @@ impl Agreement {
 
     /// Learns the candidate if a quorum of every configuration in play
     /// holds this exact view. Returns the new decision, if there is one.
-    pub(crate) fn try_learn(&mut self) -> Option<&Decision> {
+    /// `identity` must be this replica's own: it attests first, so that
+    /// its word is part of the proof others get.
+    pub(crate) fn try_learn(&mut self, identity: &Identity) -> Option<&Decision> {
+        self.attest(identity);
         let holders = self.witnesses();
         let every_quorum_holds = self
             .view
@@ -291,18 +321,13 @@ impl Agreement {
             .iter()
             .all(|configuration| configuration.has_quorum(&holders));
 
-        let decision = Decision {
-            progress: self.view.candidate.clone(),
-            acknowledged: self.view.acknowledged.clone(),
-            configuration: self.view.target_configuration(),
-        };
-
+        let decision = self.view.pending();
         if !every_quorum_holds || decision.leq(&self.view.learned) {
             return None;
         }
 
-        self.view.learn(&decision);
-        self.forget_superseded();
+        let certificate = Certificate::of(&self.view, self.heard.values());
+        self.adopt(certificate, &decision);
         Some(&self.view.learned)
     }
 
@@ -316,6 +341,36 @@ impl Agreement {
     /// decided where it's read (see `Decision::floor`).
     fn may_speak(&self, peer: Peer) -> bool {
         self.view.target_configuration().was_ever_member(peer)
+    }
+
+    /// Takes a decision on the word of those who witnessed it. See
+    /// `certificate` for why this is sound.
+    fn accept_decision(&mut self, certificate: Certificate) -> bool {
+        let learned = self.learned();
+        let decision = certificate.decision();
+        let checkable = certificate.base().leq(&learned.configuration);
+        if !checkable || decision.leq(learned) || !certificate.holds(self.id) {
+            return false;
+        }
+
+        self.adopt(certificate, &decision);
+        true
+    }
+
+    /// Learns `decision`, and keeps the proof of it to pass on.
+    fn adopt(&mut self, certificate: Certificate, decision: &Decision) {
+        let before = self.learned().configuration.clone();
+        self.view.learn(decision);
+        self.forget_superseded();
+
+        // Decisions form a chain, so this one includes every earlier
+        // one. Only the path through the configurations must be kept.
+        if self.learned().configuration == before {
+            self.latest = Some(certificate);
+        } else {
+            self.steps.push(certificate);
+            self.latest = None;
+        }
     }
 
     /// Returns whether the proposal counts, even if what's learned
@@ -359,17 +414,16 @@ impl Agreement {
             .retain(|configuration, _| pending.contains(configuration));
     }
 
-    /// Replicas known to have held exactly our view, ourselves included.
-    /// Our own attestation may lag the view, but we hold it regardless.
+    /// Replicas known to have held exactly our view. That includes us,
+    /// once we've attested to it.
     fn witnesses(&self) -> BTreeSet<Peer> {
         let ours = self.view.digest();
-        let peers = self
+        let holders = self
             .heard
             .iter()
-            .filter(|&(_, attestation)| attestation.payload().digest == ours)
-            .map(|(&peer, _)| peer);
+            .filter(|&(_, attestation)| attestation.payload().digest == ours);
 
-        peers.chain([self.me]).collect()
+        holders.map(|(&peer, _)| peer).collect()
     }
 }
 

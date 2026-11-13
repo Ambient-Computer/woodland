@@ -121,7 +121,8 @@ impl Group {
     ) {
         if let Some(gossip) = &message.gossip {
             let (proposals, reports) = (signed.proposals, signed.reports);
-            self.agreement.receive(&gossip.learned, proposals, reports);
+            let decisions = gossip.decisions.clone();
+            self.agreement.receive(decisions, proposals, reports);
         }
 
         for attestation in signed.attestations {
@@ -162,7 +163,7 @@ impl Group {
     pub(crate) fn advance(&mut self, identity: &Identity, outbox: &mut Outbox) {
         // Learning first: a decision may grant write access to transactions
         // that are already waiting.
-        self.agreement.try_learn();
+        self.agreement.try_learn(identity);
         self.rewind(outbox);
         self.integrate(outbox);
         self.admit(identity, outbox);
@@ -175,7 +176,7 @@ impl Group {
             self.agreement.report(identity, integrated);
         }
 
-        self.agreement.try_learn();
+        self.agreement.try_learn(identity);
         self.judge(outbox);
         self.settle(outbox);
 

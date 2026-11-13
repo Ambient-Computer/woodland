@@ -16,7 +16,8 @@
 //!    and every **attestation** newer than what we last sent, whoever
 //!    signed it. That's all the agreement protocol needs: views merge,
 //!    and matching attestations are witnesses. Every part is signed by
-//!    whoever said it, so it doesn't matter who passes it on.
+//!    whoever said it, and what was learned comes with proof, so it
+//!    doesn't matter who passes it on.
 //!
 //! A device that [rewinds] says so, and its peers forget what they thought
 //! it had.
@@ -71,6 +72,8 @@ pub(crate) struct PeerSync {
     has: Option<VersionVector>,
     /// The last view and clock we sent, so we only send changes.
     sent_view: Option<View>,
+    /// How many changes of configuration the peer has proof of from us.
+    sent_steps: usize,
     sent_clock: Option<VersionVector>,
     /// Whether we rewound and haven't told the peer yet.
     rewound: bool,
@@ -114,7 +117,8 @@ impl PeerSync {
         let view = agreement.view();
         if self.sent_view.as_ref() != Some(view) {
             self.sent_view = Some(view.clone());
-            message.gossip = Some(agreement.gossip());
+            message.gossip = Some(agreement.gossip(self.sent_steps));
+            self.sent_steps = agreement.steps();
         }
 
         // The peer's own attestations would only come back to it.
