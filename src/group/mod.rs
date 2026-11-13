@@ -49,7 +49,7 @@ use crate::agreement::{Agreement, AgreementId, Change, Genesis};
 use crate::io::Changed;
 use crate::lattice::Lattice;
 use crate::log::{Log, Outline, Transaction};
-use crate::model::{Declaration, Effect, Kind, ModelId, Operation};
+use crate::model::{Declaration, Effect, Fingerprint, Kind, ModelId, Operation};
 use crate::node::Outbox;
 
 #[derive(Debug)]
@@ -175,8 +175,8 @@ impl Group {
     }
 
     /// A read of a settled value is back, for a verdict.
-    pub(crate) fn got(&mut self, model: ModelId, key: Vec<u8>, holds: bool) {
-        self.verdicts.got(model, key, holds);
+    pub(crate) fn got(&mut self, model: ModelId, key: Vec<u8>, value: Option<&[u8]>) {
+        self.verdicts.got(model, key, value.map(Fingerprint::of));
     }
 
     /// Runs after every event in the batch is in. `identity` must be this
@@ -483,8 +483,8 @@ impl Group {
                 persistence::fold_operations(self.id, operations, outbox);
                 for operation in &outline.declared {
                     match &operation.effect {
-                        Effect::Write { key, leaves_value } => {
-                            self.verdicts.folded(operation.model, key, *leaves_value);
+                        Effect::Write { key, leaves } => {
+                            self.verdicts.folded(operation.model, key, *leaves);
                         }
                         Effect::Drop => self.log.dropped(operation.model),
                         Effect::Require { .. } => {}

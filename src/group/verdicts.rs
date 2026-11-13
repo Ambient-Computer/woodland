@@ -50,7 +50,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::actor::Peer;
 use crate::agreement::AgreementId;
 use crate::log::Outline;
-use crate::model::{Declaration, Effect, ModelId, Requirement};
+use crate::model::{Declaration, Effect, Fingerprint, ModelId, Requirement};
 use crate::node::Outbox;
 use crate::storage::keys;
 
@@ -68,6 +68,9 @@ pub(super) enum Verdict {
 /// A key in a model.
 type Place = (ModelId, Vec<u8>);
 
+/// What a key holds, as far as requirements can tell. `None` if nothing.
+type Held = Option<Fingerprint>;
+
 #[derive(Debug, Default)]
 pub(super) struct Verdicts {
     /// The verdict of each transaction in the frontier.
@@ -76,7 +79,7 @@ pub(super) struct Verdicts {
     /// that wasn't pending.
     stored: BTreeMap<(Peer, u64), Verdict>,
     /// Whether a place holds a settled value, where that's known.
-    settled: BTreeMap<Place, bool>,
+    settled: BTreeMap<Place, Held>,
     /// The places some requirement in the frontier asks about.
     wanted: BTreeSet<Place>,
     /// Reads that haven't been answered. `true` once the answer is out of
@@ -88,7 +91,7 @@ pub(super) struct Verdicts {
 #[derive(Default)]
 struct Written {
     /// Whether the last live write to a place left a value.
-    holds: BTreeMap<Place, bool>,
+    holds: BTreeMap<Place, Held>,
     /// Places a pending transaction wrote to. Nobody knows what they hold.
     unsure: BTreeSet<Place>,
     /// Models dropped so far, settled drops included.
@@ -185,7 +188,7 @@ impl Verdicts {
     }
 
     /// A read came back: whether `place` holds a settled value.
-    pub(super) fn got(&mut self, model: ModelId, key: Vec<u8>, holds: bool) {
+    pub(super) fn got(&mut self, model: ModelId, key: Vec<u8>, holds: Held) {
         let place = (model, key);
         if self.reading.remove(&place) == Some(false) {
             self.settled.entry(place).or_insert(holds);
@@ -194,7 +197,7 @@ impl Verdicts {
 
     /// A live transaction settled, and one of its writes left `key`
     /// holding a value, or not.
-    pub(super) fn folded(&mut self, model: ModelId, key: &[u8], holds: bool) {
+    pub(super) fn folded(&mut self, model: ModelId, key: &[u8], holds: Held) {
         let place = (model, key.to_vec());
         if let Some(stale) = self.reading.get_mut(&place) {
             *stale = true;
@@ -229,7 +232,7 @@ impl Verdicts {
             return Verdict::Pruned;
         }
 
-        let mut own: BTreeMap<Place, bool> = BTreeMap::new();
+        let mut own: BTreeMap<Place, Held> = BTreeMap::new();
         let mut own_drops = BTreeSet::new();
         let mut pending = false;
         for operation in operations {
@@ -247,17 +250,21 @@ impl Verdicts {
                         None => self.holds(id, &place, written, outbox),
                     };
 
-                    match (holds, requirement) {
-                        (Some(true), Requirement::Vacant) | (Some(false), Requirement::Present) => {
-                            return Verdict::Pruned;
-                        }
-                        (Some(_), _) => {}
-                        (None, _) => pending = true,
+                    let met = holds.map(|held| match requirement {
+                        Requirement::Vacant => held.is_none(),
+                        Requirement::Present => held.is_some(),
+                        Requirement::Is(value) => held == Some(*value),
+                    });
+
+                    match met {
+                        Some(true) => {}
+                        Some(false) => return Verdict::Pruned,
+                        None => pending = true,
                     }
                 }
 
-                Effect::Write { key, leaves_value } => {
-                    own.insert((model, key.clone()), *leaves_value);
+                Effect::Write { key, leaves } => {
+                    own.insert((model, key.clone()), *leaves);
                 }
 
                 Effect::Drop => {
@@ -281,7 +288,7 @@ impl Verdicts {
         place: &Place,
         written: &Written,
         outbox: &mut Outbox,
-    ) -> Option<bool> {
+    ) -> Option<Held> {
         if written.unsure.contains(place) {
             return None;
         }
@@ -308,10 +315,10 @@ impl Written {
     fn apply(&mut self, operations: &[Declaration]) {
         for operation in operations {
             match &operation.effect {
-                Effect::Write { key, leaves_value } => {
+                Effect::Write { key, leaves } => {
                     let place = (operation.model, key.clone());
                     self.unsure.remove(&place);
-                    self.holds.insert(place, *leaves_value);
+                    self.holds.insert(place, *leaves);
                 }
 
                 Effect::Drop => {
@@ -379,7 +386,7 @@ mod tests {
         let mut outbox = Outbox::default();
         verdicts.judge(agreement(), &BTreeSet::new(), frontier, &mut outbox);
         for place in verdicts.reading.clone().into_keys() {
-            verdicts.got(place.0, place.1, false);
+            verdicts.got(place.0, place.1, None);
         }
 
         verdicts.judge(agreement(), &BTreeSet::new(), frontier, &mut outbox);
@@ -459,7 +466,7 @@ mod tests {
         assert!(verdicts.is_pending(&after));
 
         // Taken, long ago.
-        verdicts.got(names(), b"ada".to_vec(), true);
+        verdicts.got(names(), b"ada".to_vec(), Some(Fingerprint::of(b"theirs")));
         let changed = verdicts.judge(
             agreement(),
             &BTreeSet::new(),
@@ -479,7 +486,7 @@ mod tests {
         let second = transaction(laptop(), 2, &[claim("ada")]);
         judge(&mut verdicts, &[&first, &second]);
 
-        verdicts.folded(names(), b"ada", true);
+        verdicts.folded(names(), b"ada", Some(Fingerprint::of(b"mine")));
 
         assert_eq!(judge(&mut verdicts, &[&second]), [Verdict::Pruned]);
         assert!(verdicts.reading.is_empty());
@@ -495,7 +502,7 @@ mod tests {
         verdicts.judge(agreement(), &BTreeSet::new(), &[&second], &mut outbox);
 
         verdicts.absorbed();
-        verdicts.got(names(), b"ada".to_vec(), false);
+        verdicts.got(names(), b"ada".to_vec(), None);
         verdicts.judge(agreement(), &BTreeSet::new(), &[&second], &mut outbox);
 
         assert!(verdicts.is_pending(&second));
@@ -556,7 +563,7 @@ mod tests {
             &[&plain, &claims],
             &mut outbox,
         );
-        verdicts.got(names(), b"ada".to_vec(), false);
+        verdicts.got(names(), b"ada".to_vec(), None);
         let changed = verdicts.judge(
             agreement(),
             &BTreeSet::new(),

@@ -19,6 +19,18 @@ enum Step {
         device: usize,
         name: u8,
     },
+    /// Gives a name up, and removes the note, if the device holds it.
+    GiveUp {
+        device: usize,
+        name: u8,
+    },
+    /// Moves a count on, and notes what to, if it's where the device
+    /// expects.
+    Count {
+        device: usize,
+        from: u8,
+        to: u8,
+    },
     /// Writes to a model that anyone might drop.
     Scratch {
         device: usize,
@@ -71,6 +83,9 @@ fn step() -> impl Strategy<Value = Step> {
         4 => (device.clone(), 0..3u8, any::<u8>())
             .prop_map(|(device, key, value)| Step::Write { device, key, value }),
         3 => (device.clone(), 0..3u8).prop_map(|(device, name)| Step::Claim { device, name }),
+        2 => (device.clone(), 0..3u8).prop_map(|(device, name)| Step::GiveUp { device, name }),
+        3 => (device.clone(), 0..3u8, 1..3u8)
+            .prop_map(|(device, from, to)| Step::Count { device, from, to }),
         2 => (device.clone(), any::<u8>())
             .prop_map(|(device, value)| Step::Scratch { device, value }),
         1 => device.clone().prop_map(|device| Step::DropScratch { device }),
@@ -97,6 +112,13 @@ fn run(cluster: &mut Cluster, step: Step) {
         }
         Step::Claim { device, name } => {
             claim(cluster, device, &name.to_string(), &device.to_string());
+        }
+        Step::GiveUp { device, name } => {
+            guards::give_up(cluster, device, &name.to_string(), &device.to_string());
+        }
+        Step::Count { device, from, to } => {
+            let from = (from > 0).then(|| from.to_string());
+            guards::count(cluster, device, from.as_deref(), &to.to_string());
         }
         Step::Scratch { device, value } => {
             let (scratch, notes) = (scratch(cluster), notes(cluster));
@@ -240,6 +262,9 @@ proptest! {
             let note = format!("owner/{name}");
             prop_assert_eq!(holder(&cluster, PHONE, &name), read(&cluster, PHONE, &note));
         }
+
+        // A count only moves along with the note of where it moved to.
+        prop_assert_eq!(read(&cluster, PHONE, "count"), read(&cluster, PHONE, "counted"));
 
         // Both tables wanted one name. Whichever didn't get it doesn't
         // exist, and has no rows.

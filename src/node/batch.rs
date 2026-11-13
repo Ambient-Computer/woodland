@@ -3,7 +3,7 @@ use ed25519_dalek::VerifyingKey;
 use super::Node;
 use crate::agreement::{AgreementId, Change, Genesis};
 use crate::io::{Action, Event, LocalEvent, NetworkEvent, StorageEvent};
-use crate::model::{ColumnId, ModelId, Operation, Rule, Value};
+use crate::model::{ColumnId, Fingerprint, ModelId, Operation, Requirement, Row, Rule, Value};
 
 /// Events to process together. Start one with [`Node::batch`].
 ///
@@ -150,6 +150,71 @@ impl<'a> TransactionBuilder<'a> {
     ) -> Self {
         let operation = Operation::claim(model, key.into(), value.into());
         self.operations.push(operation);
+        self
+    }
+
+    /// Gives up `key` in `model`, a [claims] model, so that it can be
+    /// claimed again. Only what it was claimed for can: the whole
+    /// transaction is dropped, on every device, unless at its place in
+    /// the timeline the key is claimed for exactly `value`.
+    ///
+    /// [claims]: ModelId::claims
+    pub fn release(
+        mut self,
+        model: ModelId,
+        key: impl Into<Vec<u8>>,
+        value: impl Into<Vec<u8>>,
+    ) -> Self {
+        let operation = Operation::release(model, key.into(), value.into());
+        self.operations.push(operation);
+        self
+    }
+
+    /// Makes the transaction depend on what its author read. The whole
+    /// transaction is dropped, on every device, unless at its place in
+    /// the timeline `key` in `model` holds exactly `value`. Nothing is
+    /// written.
+    ///
+    /// Two devices that read the same value, and each write a new one
+    /// expecting the old, can't both happen: whichever comes second in
+    /// the timeline finds the first one's value instead.
+    ///
+    /// It's also how to hold a lock: [claim] a key for a value nobody
+    /// else would use, and expect it in every transaction that needs
+    /// the lock. If another device turns out to have claimed it first,
+    /// those transactions are dropped along with the claim.
+    ///
+    /// [claim]: Self::claim
+    pub fn expect(
+        mut self,
+        model: ModelId,
+        key: impl Into<Vec<u8>>,
+        value: impl AsRef<[u8]>,
+    ) -> Self {
+        let requirement = Requirement::Is(Fingerprint::of(value.as_ref()));
+        let operation = Operation::expect(model, key.into(), requirement);
+        self.operations.push(operation);
+        self
+    }
+
+    /// Like [`expect`], for a key that should hold nothing.
+    ///
+    /// [`expect`]: Self::expect
+    pub fn expect_absent(mut self, model: ModelId, key: impl Into<Vec<u8>>) -> Self {
+        let operation = Operation::expect(model, key.into(), Requirement::Vacant);
+        self.operations.push(operation);
+        self
+    }
+
+    /// Like [`expect`], for a row of `table` as it was read. The whole
+    /// transaction is dropped, on every device, if at its place in the
+    /// timeline the row has been written to or deleted since.
+    ///
+    /// [`expect`]: Self::expect
+    pub fn expect_unchanged(mut self, table: ModelId, row: &Row) -> Self {
+        let (key, requirement) = row.unchanged();
+        self.operations
+            .push(Operation::expect(table, key, requirement));
         self
     }
 

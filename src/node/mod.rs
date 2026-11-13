@@ -181,7 +181,7 @@ impl Node {
                 key,
             }) => {
                 if let Some(group) = self.groups.get_mut(&agreement) {
-                    group.got(model, key, value.is_some());
+                    group.got(model, key, value);
                 }
             }
 

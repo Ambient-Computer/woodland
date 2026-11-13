@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use super::{ColumnId, Place, Value};
 use crate::encoding;
+use crate::model::{Fingerprint, Requirement};
 
 /// A table as it's read: its columns, and its rows in key order.
 ///
@@ -21,6 +22,8 @@ pub struct Table {
 pub struct Row {
     key: Vec<u8>,
     cells: BTreeMap<ColumnId, Value>,
+    /// Stands for the row exactly as it was stored.
+    stored: Fingerprint,
 }
 
 impl Table {
@@ -40,7 +43,8 @@ impl Table {
                 }
                 Some(Place::Row(key)) => {
                     if let Some(cells) = encoding::decode(value) {
-                        rows.push(Row { key, cells });
+                        let stored = Fingerprint::of(value);
+                        rows.push(Row { key, cells, stored });
                     }
                 }
                 Some(Place::Added(_)) | None => {}
@@ -85,5 +89,13 @@ impl Row {
     #[must_use]
     pub fn get(&self, column: ColumnId) -> &Value {
         self.cells.get(&column).unwrap_or(&Value::Null)
+    }
+
+    /// The row's key in its model, and the requirement that it's still
+    /// what was read.
+    pub(crate) fn unchanged(&self) -> (Vec<u8>, Requirement) {
+        let key = Place::Row(self.key.clone()).key();
+
+        (key, Requirement::Is(self.stored))
     }
 }

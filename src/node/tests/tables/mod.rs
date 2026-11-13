@@ -16,7 +16,7 @@ fn name(table: ModelId) -> ColumnId {
     ColumnId::text(table, [1; 32])
 }
 
-fn age(table: ModelId) -> ColumnId {
+pub(super) fn age(table: ModelId) -> ColumnId {
     ColumnId::integer(table, [2; 32])
 }
 

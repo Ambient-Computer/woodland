@@ -7,8 +7,8 @@
 //! - what it **writes**: values under keys, or the absence of them
 //!   ([`Write`]);
 //! - what it **requires** of the model's state at its transaction's place
-//!   in the timeline: that a key is vacant, or that it's present
-//!   ([`Requirement`]). A transaction with a requirement that doesn't
+//!   in the timeline: that a key is vacant, that it's present, or that
+//!   it holds a certain value ([`Requirement`]). A transaction with a requirement that doesn't
 //!   hold is **pruned**: it stays in the log, and none of its operations
 //!   happen.
 //!
@@ -95,6 +95,12 @@ pub(crate) enum Change {
     Kv(kv::Operation),
     Claims(claims::Operation),
     Table(table::Operation),
+    /// Changes nothing, and requires something of a key, in any kind of
+    /// model. It's what makes the rest of its transaction conditional.
+    Expect {
+        key: Vec<u8>,
+        requirement: Requirement,
+    },
     /// Drops the model, whatever its kind: everything in it is gone, and
     /// it's dead for good. Every operation requires its model to be
     /// alive, so a transaction that names it later in the timeline is
@@ -104,7 +110,7 @@ pub(crate) enum Change {
 
 /// What an operation needs to be true of a key, at its transaction's
 /// place in the timeline.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Requirement {
     /// The key holds no value. It's how only one transaction gets
     /// something: a name, a row's key, a lock.
@@ -112,6 +118,25 @@ pub(crate) enum Requirement {
     /// The key holds a value. It's how a transaction depends on another:
     /// if whatever wrote the key was pruned, so is this.
     Present,
+    /// The key holds exactly this value. It's how a transaction depends
+    /// on what its author read: if something else got there first, in
+    /// the timeline, this doesn't happen.
+    Is(Fingerprint),
+}
+
+/// Stands for a value where only "is it the same one" matters: a hash
+/// of it, short enough to keep for every write that hasn't settled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub(crate) struct Fingerprint([u8; 16]);
+
+impl Fingerprint {
+    pub(crate) fn of(value: &[u8]) -> Self {
+        let hash = encoding::hash("woodland/value", &value);
+        let mut fingerprint = [0; 16];
+        fingerprint.copy_from_slice(&hash[..16]);
+
+        Self(fingerprint)
+    }
 }
 
 /// One thing an operation declares, apart from the values it carries.
@@ -138,8 +163,8 @@ pub(crate) enum Effect {
     /// Writes to a key.
     Write {
         key: Vec<u8>,
-        /// Whether the key holds a value afterwards.
-        leaves_value: bool,
+        /// What the key holds afterwards, if anything.
+        leaves: Option<Fingerprint>,
     },
     /// Drops the model.
     Drop,
@@ -216,6 +241,18 @@ impl Operation {
         Self { model, change }
     }
 
+    pub(crate) fn expect(model: ModelId, key: Vec<u8>, requirement: Requirement) -> Self {
+        let change = Change::Expect { key, requirement };
+
+        Self { model, change }
+    }
+
+    pub(crate) fn release(model: ModelId, key: Vec<u8>, value: Vec<u8>) -> Self {
+        let change = Change::Claims(claims::Operation::Release { key, value });
+
+        Self { model, change }
+    }
+
     pub(crate) fn drop(model: ModelId) -> Self {
         let change = Change::Drop;
 
@@ -227,9 +264,16 @@ impl Operation {
         match (&self.change, self.model.kind()) {
             (Change::Kv(_), Some(Kind::Kv | Kind::Threshold))
             | (Change::Claims(_), Some(Kind::Claims))
-            | (Change::Drop, Some(_)) => true,
+            | (Change::Expect { .. } | Change::Drop, Some(_)) => true,
             (Change::Table(operation), Some(Kind::Table)) => operation.belongs(),
-            (Change::Kv(_) | Change::Claims(_) | Change::Table(_) | Change::Drop, _) => false,
+            (
+                Change::Kv(_)
+                | Change::Claims(_)
+                | Change::Table(_)
+                | Change::Expect { .. }
+                | Change::Drop,
+                _,
+            ) => false,
         }
     }
 
@@ -240,7 +284,7 @@ impl Operation {
         let requires = requires.map(|(key, requirement)| Effect::Require { key, requirement });
         let writes = self.writes().into_iter().map(|write| Effect::Write {
             key: write.key,
-            leaves_value: write.value.is_some(),
+            leaves: write.value.as_deref().map(Fingerprint::of),
         });
 
         let drops = self.drops().then_some(Effect::Drop);
@@ -261,7 +305,7 @@ impl Operation {
             Change::Kv(operation) => vec![operation.write()],
             Change::Claims(operation) => vec![operation.write()],
             Change::Table(operation) => operation.writes(),
-            Change::Drop => Vec::new(),
+            Change::Expect { .. } | Change::Drop => Vec::new(),
         };
 
         let write = |(key, value)| Write {
@@ -284,6 +328,7 @@ impl Operation {
         match &self.change {
             Change::Kv(_) | Change::Drop => Vec::new(),
             Change::Claims(operation) => vec![operation.requires()],
+            Change::Expect { key, requirement } => vec![(key.clone(), *requirement)],
             Change::Table(operation) => operation.requires(),
         }
     }

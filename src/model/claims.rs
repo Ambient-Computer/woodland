@@ -21,31 +21,54 @@
 //! long as the claim hasn't settled. A committed read shows only the
 //! claim that won for good (see [`Query::committed`]).
 //!
+//! # Locks
+//!
+//! A claim can be given up, by a [release] that names what the key was
+//! claimed for, and then claimed again. That makes a claim a lock that
+//! works across transactions: claim a key for a token nobody else has,
+//! make every transaction that needs the lock [expect] the key to hold
+//! that token, and release it when done. Transactions that expected a
+//! lock their device turned out not to get are pruned, like the claim
+//! that didn't get it.
+//!
+//! [release]: crate::TransactionBuilder::release
+//! [expect]: crate::TransactionBuilder::expect
 //! [requires]: Requirement
 //! [`Query::committed`]: crate::Query::committed
 
 use serde::{Deserialize, Serialize};
 
-use super::Requirement;
+use super::{Fingerprint, Requirement};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Operation {
-    Claim { key: Vec<u8>, value: Vec<u8> },
+    Claim {
+        key: Vec<u8>,
+        value: Vec<u8>,
+    },
+    /// Gives a key up. Only what it was claimed for can.
+    Release {
+        key: Vec<u8>,
+        value: Vec<u8>,
+    },
 }
 
 impl Operation {
     /// The operation's key, and what it holds once the operation is
     /// applied.
     pub(crate) fn write(&self) -> (Vec<u8>, Option<Vec<u8>>) {
-        let Self::Claim { key, value } = self;
-
-        (key.clone(), Some(value.clone()))
+        match self {
+            Self::Claim { key, value } => (key.clone(), Some(value.clone())),
+            Self::Release { key, .. } => (key.clone(), None),
+        }
     }
 
-    /// Every claim has the same rule, about its own key.
+    /// A claim needs its key to be vacant. A release needs it to be
+    /// claimed for the value it names.
     pub(crate) fn requires(&self) -> (Vec<u8>, Requirement) {
-        let Self::Claim { key, .. } = self;
-
-        (key.clone(), Requirement::Vacant)
+        match self {
+            Self::Claim { key, .. } => (key.clone(), Requirement::Vacant),
+            Self::Release { key, value } => (key.clone(), Requirement::Is(Fingerprint::of(value))),
+        }
     }
 }
