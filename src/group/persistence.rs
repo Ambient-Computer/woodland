@@ -11,15 +11,17 @@
 //! - writes **held** until this device is admitted, unsigned;
 //! - the **settled** value of every model key, and the cut they reflect;
 //! - a **version** for every write that hasn't settled, of every
-//!   transaction that hasn't been pruned.
+//!   transaction that's live.
 //!
 //! What isn't: remote transactions still waiting, and everything about
 //! peers. Peers re-send whatever we report missing when they reconnect.
 //!
 //! Hydration loads everything except model data: the protocol range of the
 //! key layout. Its size is bounded by what hasn't settled yet, not by how
-//! much data the models hold. The node only ever writes model data.
-//! Reading it is the application's business (see [`Query`]).
+//! much data the models hold. Of each transaction in the log, only an
+//! outline stays in memory afterwards (see `bodies`). The node only ever
+//! writes model data. Reading it is the application's business (see
+//! [`Query`]).
 //!
 //! [`Query`]: crate::Query
 
@@ -27,15 +29,15 @@ use std::collections::BTreeMap;
 
 use super::Group;
 use super::admission::{self, Held};
+use super::bodies::Bodies;
 use super::snapshot::{Snapshot, Snapshots};
 use super::verdicts::Verdicts;
 use crate::actor::{Peer, Signed, Verified};
 use crate::agreement::{Agreement, AgreementId, Attestation, Genesis, Gossip, View};
 use crate::clock::Stamp;
 use crate::encoding;
-use crate::log::Transaction;
-use crate::log::{Clock, Log};
-use crate::model::{Kind, Operation, Write};
+use crate::log::{Clock, Log, Outline, Transaction};
+use crate::model::{Declaration, Effect, Kind, Operation, Write};
 use crate::node::Outbox;
 use crate::storage::keys::{self, Record};
 
@@ -147,6 +149,9 @@ impl From<Restored> for Group {
             agreement,
             verdicts: Verdicts::resume(&log.frontier()),
             log,
+            bodies: Bodies::new(id),
+            unwritten: BTreeMap::new(),
+            settling: None,
             held: Held::restore(restored.held),
             snapshots: Snapshots::default(),
             peers: BTreeMap::new(),
@@ -248,29 +253,25 @@ pub(super) fn fold_operations(id: AgreementId, operations: &[Operation], outbox:
 
 /// Deletes a transaction's versions and its place in the log: it settled,
 /// here or in a snapshot.
-pub(super) fn forget_transaction(
-    id: AgreementId,
-    transaction: &Verified<Transaction>,
-    outbox: &mut Outbox,
-) {
-    let (author, payload) = (transaction.author(), transaction.payload());
-    forget_operations(id, payload.stamp(author), &payload.operations, outbox);
-    outbox.delete(keys::log(id, author, payload.seq));
+pub(super) fn forget_transaction(id: AgreementId, transaction: &Outline, outbox: &mut Outbox) {
+    forget_operations(id, transaction.stamp(), &transaction.declared, outbox);
+    outbox.delete(keys::log(id, transaction.author, transaction.seq));
 }
 
 /// Deletes a transaction's versions: it was pruned, or it settled.
 pub(super) fn forget_operations(
     id: AgreementId,
     stamp: Stamp,
-    operations: &[Operation],
+    operations: &[Declaration],
     outbox: &mut Outbox,
 ) {
-    for write in operations.iter().filter_map(Operation::write) {
-        outbox.delete(keys::version(id, write.model, &write.key, stamp));
-    }
+    for operation in operations {
+        let stored = match &operation.effect {
+            Effect::Write { key, .. } => keys::version(id, operation.model, key, stamp),
+            Effect::Drop => keys::drop(id, operation.model, stamp),
+        };
 
-    for dropped in operations.iter().filter(|it| it.drops()) {
-        outbox.delete(keys::drop(id, dropped.model, stamp));
+        outbox.delete(stored);
     }
 }
 

@@ -1,4 +1,5 @@
 mod convergence;
+mod paging;
 
 use super::*;
 use crate::agreement::Genesis;

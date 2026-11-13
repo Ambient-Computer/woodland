@@ -8,8 +8,10 @@
 //!
 //! 1. Both sides send their **clock** when it changes. A peer's clock says
 //!    exactly which transactions it has.
-//! 2. Knowing a peer's clock, send the **transactions** it lacks. If it
-//!    lacks some that have settled here, they're gone, so send a
+//! 2. Knowing a peer's clock, send the **transactions** it lacks, in
+//!    timeline order, a page at a time. They're read from storage, apart
+//!    from the ones integrated in this very batch (see `bodies`). If the
+//!    peer lacks some that have settled here, they're gone, so send a
 //!    **snapshot** (our settled state) first, and nothing else until it
 //!    holds everything we've settled.
 //! 3. Send what our agreement **view** is made of whenever it changes,
@@ -31,6 +33,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use super::bodies::{Bodies, PAGE};
 use super::snapshot::Snapshot;
 use crate::actor::{Peer, Signed, Verified};
 use crate::agreement::{Agreement, Attestation, Gossip, Proposal, Report, View};
@@ -38,6 +41,7 @@ use crate::clock::VersionVector;
 use crate::lattice::Lattice;
 use crate::log::Log;
 use crate::log::Transaction;
+use crate::node::Outbox;
 
 /// One agreement's part of a message to a peer.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,6 +83,11 @@ pub(crate) struct PeerSync {
     rewound: bool,
     /// The latest revision sent from each attesting replica.
     sent_attestations: BTreeMap<Peer, u64>,
+    /// The page of transactions storage was asked for, to send next.
+    requested: Vec<(Peer, u64)>,
+    /// Whether storage turned out not to hold a transaction it should.
+    /// Nothing more is sent until the peer reconnects.
+    broken: bool,
 }
 
 impl PeerSync {
@@ -111,6 +120,8 @@ impl PeerSync {
         agreement: &Agreement,
         log: &Log,
         snapshot: Option<&Snapshot>,
+        bodies: &mut Bodies,
+        outbox: &mut Outbox,
     ) -> Option<GroupMessage> {
         let mut message = GroupMessage::default();
 
@@ -151,12 +162,130 @@ impl PeerSync {
             // Not while the peer is still behind: counting what we send as
             // had would hide the gap below our cut, and no snapshot would
             // ever be sent to fill it.
-            if log.settled().leq(has) {
-                message.transactions = log.missing_from(has);
-                has.join(log.integrated());
+            if log.settled().leq(has) && !self.broken {
+                message.transactions = Self::page(log, has, bodies);
             }
         }
 
+        self.request(log, bodies, outbox);
+
         (message != GroupMessage::default()).then_some(message)
+    }
+
+    /// The transactions in hand that the peer can take next, counted as
+    /// had from here on. One that isn't in hand holds back the rest of
+    /// its author's: a peer's clock can't have gaps.
+    fn page(log: &Log, has: &mut VersionVector, bodies: &Bodies) -> Vec<Signed<Transaction>> {
+        let mut page = Vec::new();
+        for (author, seq) in log.missing_from(has, PAGE) {
+            if let Some(transaction) = bodies.get((author, seq))
+                && has.next(author) == seq
+            {
+                has.advance(author, seq);
+                page.push(transaction.signed().clone());
+            }
+        }
+
+        page
+    }
+
+    /// Asks storage for the next page, unless the last one is still on
+    /// its way.
+    fn request(&mut self, log: &Log, bodies: &mut Bodies, outbox: &mut Outbox) {
+        let Some(has) = &self.has else {
+            return;
+        };
+
+        let waiting = !self.requested.iter().all(|&key| bodies.answered(key));
+        if waiting || self.broken || !log.settled().leq(has) {
+            return;
+        }
+
+        self.requested = log.missing_from(has, PAGE);
+        self.requested.retain(|&key| bodies.get(key).is_none());
+        for &key in &self.requested {
+            if bodies.answered(key) {
+                tracing::error!("a transaction in the frontier is missing from storage");
+                self.broken = true;
+            } else {
+                bodies.ask(key, outbox);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agreement::Genesis;
+    use crate::io::Action;
+    use crate::log::Clock;
+    use crate::storage::{StorageAction, keys};
+    use crate::testing::peers::{identity_of, laptop, phone};
+
+    fn genesis() -> Genesis {
+        Genesis::new([7; 32], [phone().id(), laptop().id()])
+    }
+
+    /// The keys storage was asked for.
+    fn asked(outbox: Outbox) -> Vec<Vec<u8>> {
+        let mut actions = outbox.into_actions(Vec::new()).into_iter();
+        let get = actions.find_map(|action| match action {
+            Action::Storage(StorageAction::Get { keys }) => Some(keys),
+            _ => None,
+        });
+
+        get.unwrap_or_default()
+    }
+
+    /// The phone has more than two pages the laptop lacks, none of them
+    /// in hand. It reads a page, sends it, and reads the next.
+    #[test]
+    fn a_peer_gets_what_its_missing_a_page_at_a_time() {
+        let agreement = Agreement::new(&genesis(), phone());
+        let mut log = Log::restore(Clock::default(), Vec::new(), phone());
+        let mut written = Vec::new();
+        for _ in 0..=PAGE * 2 {
+            let transaction = log.author(genesis().id(), Vec::new());
+            let signed = Signed::sign(&identity_of(phone()), transaction);
+            log.offer(signed.clone());
+            written.push(signed);
+        }
+
+        log.integrate_ready(|_, _| true);
+        let stored = |seq: u64| keys::log(genesis().id(), phone(), seq);
+        let pages: Vec<Vec<Vec<u8>>> = vec![
+            (1..=PAGE as u64).map(stored).collect(),
+            (PAGE as u64 + 1..=PAGE as u64 * 2).map(stored).collect(),
+        ];
+
+        let mut bodies = Bodies::new(genesis().id());
+        let mut sync = PeerSync::default();
+        sync.heard_clock(&VersionVector::default());
+        let mut outbox = Outbox::default();
+        let message = sync.outgoing(laptop(), &agreement, &log, None, &mut bodies, &mut outbox);
+        assert_eq!(message.map(|it| it.transactions), Some(Vec::new()));
+        assert_eq!(asked(outbox), pages[0]);
+
+        // Nothing more is asked for while that's on its way.
+        bodies.clear();
+        let mut outbox = Outbox::default();
+        sync.outgoing(laptop(), &agreement, &log, None, &mut bodies, &mut outbox);
+        assert_eq!(asked(outbox), Vec::<Vec<u8>>::new());
+
+        for transaction in &written[..PAGE] {
+            let key = (phone(), transaction.payload().seq);
+            bodies.read(key, Some(transaction.clone()));
+        }
+
+        let mut outbox = Outbox::default();
+        let message = sync.outgoing(laptop(), &agreement, &log, None, &mut bodies, &mut outbox);
+        let sent = message.map(|it| it.transactions).unwrap_or_default();
+        let page: Vec<_> = written[..PAGE]
+            .iter()
+            .map(|it| it.signed().clone())
+            .collect();
+        assert_eq!(sent, page);
+        assert_eq!(asked(outbox), pages[1]);
     }
 }

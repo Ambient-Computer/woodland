@@ -14,11 +14,12 @@ use network::Network;
 pub(crate) use outbox::Outbox;
 use wire::Message;
 
-use crate::actor::{self, Identity, Peer};
+use crate::actor::{self, Identity, Peer, Signed, Verified};
 use crate::agreement::AgreementId;
 use crate::encoding;
 use crate::group::{Group, VerifiedParts};
 use crate::io::{Action, Event, LocalEvent, NetworkEvent, StorageEvent};
+use crate::log::Transaction;
 use crate::storage::keys::{self, Record};
 
 /// Represents this device. Applications should only create one.
@@ -92,6 +93,10 @@ impl Node {
         }
 
         let messages = self.compose(&mut outbox);
+        for group in self.groups.values_mut() {
+            group.finish();
+        }
+
         outbox.into_actions(messages)
     }
 
@@ -132,7 +137,7 @@ impl Node {
 
             Event::Storage(StorageEvent::Got { entries }) => {
                 for (key, value) in entries {
-                    self.got(&key, value.is_some());
+                    self.got(&key, value.as_deref());
                 }
             }
 
@@ -161,16 +166,35 @@ impl Node {
         }
     }
 
-    /// A read is back. Groups read settled values to work out verdicts.
-    fn got(&mut self, stored: &[u8], holds: bool) {
-        if let Some(Record::Settled {
-            agreement,
-            model,
-            key,
-        }) = keys::parse(stored)
-            && let Some(group) = self.groups.get_mut(&agreement)
-        {
-            group.got(model, key, holds);
+    /// A read is back. Groups read settled values to work out verdicts,
+    /// and transactions to send, show or settle them.
+    fn got(&mut self, stored: &[u8], value: Option<&[u8]>) {
+        match keys::parse(stored) {
+            Some(Record::Settled {
+                agreement,
+                model,
+                key,
+            }) => {
+                if let Some(group) = self.groups.get_mut(&agreement) {
+                    group.got(model, key, value.is_some());
+                }
+            }
+
+            Some(Record::Log {
+                agreement,
+                author,
+                seq,
+            }) => {
+                // Only this device wrote it, after verifying it.
+                let signed = value.and_then(encoding::decode::<Signed<Transaction>>);
+                if let Some(group) = self.groups.get_mut(&agreement)
+                    && let Some(author) = Peer::from_bytes(&author)
+                {
+                    group.fetched((author, seq), signed.map(Verified::trust_stored));
+                }
+            }
+
+            _ => {}
         }
     }
 

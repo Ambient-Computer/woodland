@@ -32,31 +32,34 @@
 //!
 //! [`Stamp`]: crate::clock::Stamp
 
+mod outline;
 mod transaction;
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::actor::{Peer, Signed, Verified};
+use crate::actor::{Peer, Verified};
 use crate::agreement::AgreementId;
-use crate::clock::VersionVector;
+use crate::clock::{Stamp, VersionVector};
 use crate::lattice::Lattice;
 use crate::model::{ModelId, Operation};
+pub(crate) use outline::Outline;
 pub(crate) use transaction::Transaction;
 
 /// One log on this device.
 ///
-/// Invariant: `transactions` holds exactly those integrated and not yet
-/// settled: the frontier. A settled transaction lives on only in what the
-/// models derived from it, whether it settled here or arrived in a
-/// snapshot.
+/// Invariant: `frontier` outlines exactly the transactions integrated
+/// and not yet settled, in timeline order. The transactions themselves
+/// are in storage (see [`Outline`]). A settled transaction lives on only
+/// in what the models derived from it, whether it settled here or arrived
+/// in a snapshot.
 #[derive(Debug, Default)]
 pub(crate) struct Log {
     clock: Clock,
     /// The highest sequence number this device has authored.
     authored: u64,
-    transactions: BTreeMap<(Peer, u64), Verified<Transaction>>,
+    frontier: BTreeMap<Stamp, Outline>,
     /// Verified transactions that can't be integrated yet: there's a gap
     /// before them in their author's history, something they were written
     /// on top of is missing, or their author doesn't have write access yet.
@@ -111,12 +114,12 @@ impl Log {
                 log.authored = log.authored.max(seq);
             }
 
-            let destination = if log.clock.integrated.contains(author, seq) {
-                &mut log.transactions
+            if log.clock.integrated.contains(author, seq) {
+                let outline = Outline::of(&transaction);
+                log.frontier.insert(outline.stamp(), outline);
             } else {
-                &mut log.waiting
-            };
-            destination.insert((author, seq), transaction);
+                log.waiting.insert((author, seq), transaction);
+            }
         }
 
         log
@@ -192,7 +195,8 @@ impl Log {
             if let Some(transaction) = self.waiting.remove(&key) {
                 self.clock.integrated.advance(key.0, key.1);
                 self.clock.lamport = self.clock.lamport.max(transaction.payload().lamport);
-                self.transactions.insert(key, transaction.clone());
+                let outline = Outline::of(&transaction);
+                self.frontier.insert(outline.stamp(), outline);
                 integrated.push(transaction);
             }
         }
@@ -200,50 +204,59 @@ impl Log {
         integrated
     }
 
-    /// Transactions a peer that has integrated `theirs` is missing. Only
-    /// what's in the log: anything settled must go as a snapshot.
-    pub(crate) fn missing_from(&self, theirs: &VersionVector) -> Vec<Signed<Transaction>> {
-        self.transactions
-            .iter()
-            .filter(|&(&(author, seq), _)| !theirs.contains(author, seq))
-            .map(|(_, transaction)| transaction.signed().clone())
-            .collect()
+    /// Whether a transaction is in the frontier: integrated, not settled.
+    pub(crate) fn holds(&self, author: Peer, seq: u64) -> bool {
+        self.clock.integrated.contains(author, seq) && !self.clock.cut.settled.contains(author, seq)
+    }
+
+    /// The first transactions, in timeline order and at most `limit`,
+    /// that a peer that has integrated `theirs` is missing. Only what's
+    /// in the frontier: anything settled must go as a snapshot.
+    ///
+    /// Timeline order puts a transaction after everything it was written
+    /// on top of, so the peer can integrate them as they come.
+    pub(crate) fn missing_from(&self, theirs: &VersionVector, limit: usize) -> Vec<(Peer, u64)> {
+        let missing = self
+            .frontier
+            .values()
+            .filter(|it| !theirs.contains(it.author, it.seq));
+
+        missing.take(limit).map(Outline::key).collect()
     }
 
     /// Everything integrated that hasn't settled, in timeline order.
-    pub(crate) fn frontier(&self) -> Vec<&Verified<Transaction>> {
-        let mut timeline: Vec<_> = self.transactions.values().collect();
-        timeline.sort_by_key(|it| it.payload().stamp(it.author()));
-
-        timeline
+    pub(crate) fn frontier(&self) -> Vec<&Outline> {
+        self.frontier.values().collect()
     }
 
-    /// Settles the longest prefix of the timeline that lies within `floor`
-    /// and is `ready`, and returns it, in timeline order. Those
-    /// transactions leave the log.
+    /// The longest prefix of the timeline that lies within `floor` and is
+    /// `ready`, up to `limit` transactions: what can [settle] next.
     ///
     /// An author's transactions appear in the timeline in the order it
     /// wrote them, so a prefix never skips one, and the cut stays a
     /// version vector.
-    pub(crate) fn settle(
-        &mut self,
+    ///
+    /// [settle]: Log::settle
+    pub(crate) fn settleable(
+        &self,
         floor: &VersionVector,
-        ready: impl Fn(&Verified<Transaction>) -> bool,
-    ) -> Vec<Verified<Transaction>> {
-        let within = |it: &&Verified<Transaction>| {
-            floor.contains(it.author(), it.payload().seq) && ready(it)
-        };
+        ready: impl Fn(&Outline) -> bool,
+        limit: usize,
+    ) -> Vec<Outline> {
+        let within = |it: &&Outline| floor.contains(it.author, it.seq) && ready(it);
+        let timeline = self.frontier.values();
 
-        let timeline = self.frontier().into_iter();
-        let settled: Vec<_> = timeline.take_while(within).cloned().collect();
-        for transaction in &settled {
-            let (author, payload) = (transaction.author(), transaction.payload());
-            self.transactions.remove(&(author, payload.seq));
-            self.clock.cut.settled.advance(author, payload.seq);
-            self.clock.cut.lamport = self.clock.cut.lamport.max(payload.lamport);
+        timeline.take_while(within).take(limit).cloned().collect()
+    }
+
+    /// Settles `prefix`, which must be the start of the frontier. Those
+    /// transactions leave the log.
+    pub(crate) fn settle(&mut self, prefix: &[Outline]) {
+        for outline in prefix {
+            self.frontier.remove(&outline.stamp());
+            self.clock.cut.settled.advance(outline.author, outline.seq);
+            self.clock.cut.lamport = self.clock.cut.lamport.max(outline.lamport);
         }
-
-        settled
     }
 
     /// A transaction that settled dropped `model`. The log doesn't read
@@ -255,8 +268,8 @@ impl Log {
     /// Takes on a peer's cut, which must be ahead of ours: everything in
     /// it is reflected in the settled state that came with it, so this
     /// device has it too. Returns the transactions that were still in the
-    /// frontier here and are now settled, in no particular order.
-    pub(crate) fn absorb(&mut self, cut: &Cut) -> Vec<Verified<Transaction>> {
+    /// frontier here and are now settled.
+    pub(crate) fn absorb(&mut self, cut: &Cut) -> Vec<Outline> {
         self.clock.integrated.join(&cut.settled);
         self.clock.lamport = self.clock.lamport.max(cut.lamport);
         self.clock.cut = cut.clone();
@@ -265,13 +278,13 @@ impl Log {
         self.waiting
             .retain(|&(author, seq), _| !integrated.contains(author, seq));
 
-        let settled = |&&(author, seq): &&(Peer, u64)| cut.settled.contains(author, seq);
-        let absorbed: Vec<_> = self.transactions.keys().filter(settled).copied().collect();
+        let settled = |it: &&Outline| cut.settled.contains(it.author, it.seq);
+        let absorbed: Vec<Outline> = self.frontier.values().filter(settled).cloned().collect();
+        for outline in &absorbed {
+            self.frontier.remove(&outline.stamp());
+        }
 
         absorbed
-            .iter()
-            .filter_map(|key| self.transactions.remove(key))
-            .collect()
     }
 
     /// Drops waiting transactions that will never be integrated.
@@ -285,7 +298,7 @@ impl Log {
     /// and its Lamport counter never goes back.
     pub(crate) fn rewind(&mut self) {
         self.clock.integrated = self.clock.cut.settled.clone();
-        self.transactions.clear();
+        self.frontier.clear();
         self.waiting.clear();
     }
 
@@ -332,6 +345,14 @@ mod tests {
             self.receive(&signed);
 
             signed
+        }
+
+        /// Settles whatever lies within `floor`.
+        fn settle(&mut self, floor: &VersionVector) -> Vec<Outline> {
+            let prefix = self.log.settleable(floor, |_| true, usize::MAX);
+            self.log.settle(&prefix);
+
+            prefix
         }
 
         /// Takes in a transaction. Returns what could be integrated, as
@@ -407,11 +428,11 @@ mod tests {
         // Everyone holds the phone's writes. Not the laptop's, which sorts
         // before the phone's second.
         let floor = [(phone(), 2)].into_iter().collect();
-        nas_device.log.settle(&floor, |_| true);
+        nas_device.settle(&floor);
         assert!(nas_device.log.settled().get(phone()) < 2);
 
         let floor: VersionVector = [(phone(), 2), (laptop(), 1)].into_iter().collect();
-        nas_device.log.settle(&floor, |_| true);
+        nas_device.settle(&floor);
         assert_eq!(nas_device.log.settled(), &floor);
         assert_eq!(nas_device.log.cut().lamport, second.payload().lamport);
     }
@@ -425,16 +446,16 @@ mod tests {
         let reply = phone_device.write();
 
         let floor = [(phone(), 2), (laptop(), 1)].into_iter().collect();
-        let settled = phone_device.log.settle(&floor, |_| true);
-        let stamps: Vec<_> = settled
-            .iter()
-            .map(|it| it.payload().stamp(it.author()))
-            .collect();
+        let settled = phone_device.settle(&floor);
+        let stamps: Vec<_> = settled.iter().map(Outline::stamp).collect();
 
         assert_eq!(settled.len(), 3);
         assert!(stamps.is_sorted());
         assert_eq!(stamps.last(), Some(&reply.payload().stamp(phone())));
-        assert_eq!(phone_device.log.missing_from(&VersionVector::default()), []);
+        assert_eq!(
+            phone_device.log.missing_from(&VersionVector::default(), 9),
+            []
+        );
     }
 
     #[test]
@@ -452,7 +473,7 @@ mod tests {
         };
         let absorbed = laptop_device.log.absorb(&cut);
 
-        assert_eq!(absorbed, [first]);
+        assert_eq!(absorbed, [Outline::of(&first)]);
         assert_eq!(laptop_device.log.integrated(), &cut.settled);
         assert_eq!(laptop_device.log.cut(), &cut);
         assert!(laptop_device.write().payload().lamport > cut.lamport);

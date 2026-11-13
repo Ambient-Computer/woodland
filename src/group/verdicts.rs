@@ -13,8 +13,9 @@
 //! Every operation also requires its model to be alive: a transaction
 //! that names a model after it was dropped is pruned.
 //!
-//! Nothing here knows what a model is. Operations declare what they
-//! write and what they require, and that's all that's read.
+//! Nothing here knows what a model is, or sees a value. Operations
+//! declare what they write and what they require, and that's all that's
+//! read: the log's outline of each transaction is enough.
 //!
 //! # Verdicts change
 //!
@@ -46,10 +47,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::actor::{Peer, Verified};
+use crate::actor::Peer;
 use crate::agreement::AgreementId;
-use crate::log::Transaction;
-use crate::model::{ModelId, Operation, Requirement, Write};
+use crate::log::Outline;
+use crate::model::{Declaration, Effect, ModelId, Requirement};
 use crate::node::Outbox;
 use crate::storage::keys;
 
@@ -97,18 +98,32 @@ struct Written {
 }
 
 impl Verdicts {
-    /// Picks up after a restart. A transaction that requires nothing was
-    /// live from the moment it was integrated, so storage already holds
-    /// its writes. The others are worked out again.
-    pub(super) fn resume(frontier: &[&Verified<Transaction>]) -> Self {
-        let requires_nothing = |it: &&&Verified<Transaction>| {
-            let mut operations = it.payload().operations.iter();
+    /// Picks up after a restart. A transaction that requires nothing,
+    /// in models nothing in the frontier drops, was live from the moment
+    /// it was integrated, so storage already holds its writes. The
+    /// others are worked out again, and written again if they're live.
+    pub(super) fn resume(frontier: &[&Outline]) -> Self {
+        let declared = || frontier.iter().flat_map(|it| &it.declared);
+        let drops = declared().filter(|it| it.effect == Effect::Drop);
+        let dropped: BTreeSet<ModelId> = drops.map(|it| it.model).collect();
+        let requires_nothing = |it: &&&Outline| {
+            let requires = |effect: &Effect| {
+                matches!(
+                    effect,
+                    Effect::Write {
+                        requires: Some(_),
+                        ..
+                    }
+                )
+            };
 
-            operations.all(|operation| operation.belongs() && operation.requires().is_none())
+            it.declared
+                .iter()
+                .all(|it| it.belongs && !requires(&it.effect) && !dropped.contains(&it.model))
         };
 
         let live = frontier.iter().filter(requires_nothing);
-        let reached: BTreeMap<_, _> = live.map(|it| (key(it), Verdict::Live)).collect();
+        let reached: BTreeMap<_, _> = live.map(|it| (it.key(), Verdict::Live)).collect();
         Self {
             stored: reached.clone(),
             reached,
@@ -123,9 +138,9 @@ impl Verdicts {
         &mut self,
         id: AgreementId,
         dropped: &BTreeSet<ModelId>,
-        frontier: &[&Verified<Transaction>],
+        frontier: &[&Outline],
         outbox: &mut Outbox,
-    ) -> Vec<(Verified<Transaction>, Verdict)> {
+    ) -> Vec<(Outline, Verdict)> {
         let mut written = Written {
             dropped: dropped.clone(),
             ..Written::default()
@@ -137,15 +152,14 @@ impl Verdicts {
 
         for &transaction in frontier {
             let verdict = self.weigh(id, transaction, &written, outbox);
-            let operations = &transaction.payload().operations;
             match verdict {
-                Verdict::Live => written.apply(operations),
-                Verdict::Pending => written.doubt(operations),
+                Verdict::Live => written.apply(&transaction.declared),
+                Verdict::Pending => written.doubt(&transaction.declared),
                 Verdict::Pruned => {}
             }
 
             // While it's pending, storage keeps whatever it had.
-            let key = key(transaction);
+            let key = transaction.key();
             let before = stored.get(&key).copied();
             let after = if verdict == Verdict::Pending {
                 before
@@ -168,14 +182,14 @@ impl Verdicts {
 
     /// Whether a transaction's verdict can't be worked out yet. It can't
     /// settle until it can.
-    pub(super) fn is_pending(&self, transaction: &Verified<Transaction>) -> bool {
-        let verdict = self.reached.get(&key(transaction));
+    pub(super) fn is_pending(&self, transaction: &Outline) -> bool {
+        let verdict = self.reached.get(&transaction.key());
 
         !matches!(verdict, Some(Verdict::Live | Verdict::Pruned))
     }
 
-    pub(super) fn is_live(&self, transaction: &Verified<Transaction>) -> bool {
-        self.reached.get(&key(transaction)) == Some(&Verdict::Live)
+    pub(super) fn is_live(&self, transaction: &Outline) -> bool {
+        self.reached.get(&transaction.key()) == Some(&Verdict::Live)
     }
 
     /// A read came back: whether `place` holds a settled value.
@@ -186,15 +200,16 @@ impl Verdicts {
         }
     }
 
-    /// A live transaction settled, and this is one of its writes.
-    pub(super) fn folded(&mut self, write: &Write) {
-        let place = (write.model, write.key.clone());
+    /// A live transaction settled, and one of its writes left `key`
+    /// holding a value, or not.
+    pub(super) fn folded(&mut self, model: ModelId, key: &[u8], holds: bool) {
+        let place = (model, key.to_vec());
         if let Some(stale) = self.reading.get_mut(&place) {
             *stale = true;
         }
 
         if self.wanted.contains(&place) {
-            self.settled.insert(place, write.value.is_some());
+            self.settled.insert(place, holds);
         }
     }
 
@@ -213,12 +228,12 @@ impl Verdicts {
     fn weigh(
         &mut self,
         id: AgreementId,
-        transaction: &Verified<Transaction>,
+        transaction: &Outline,
         written: &Written,
         outbox: &mut Outbox,
     ) -> Verdict {
-        let operations = &transaction.payload().operations;
-        if !operations.iter().all(Operation::belongs) {
+        let operations = &transaction.declared;
+        if !operations.iter().all(|it| it.belongs) {
             return Verdict::Pruned;
         }
 
@@ -232,13 +247,18 @@ impl Verdicts {
             }
 
             pending |= written.unsure_models.contains(&model);
-            let Some(write) = operation.write() else {
+            let Effect::Write {
+                key,
+                leaves_value,
+                requires,
+            } = &operation.effect
+            else {
                 own_drops.insert(model);
                 continue;
             };
 
-            let place = (write.model, write.key);
-            if let Some(Requirement::Vacant) = operation.requires() {
+            let place = (model, key.clone());
+            if let Some(Requirement::Vacant) = requires {
                 let holds = match own.get(&place) {
                     Some(&holds) => Some(holds),
                     None => self.holds(id, &place, written, outbox),
@@ -251,7 +271,7 @@ impl Verdicts {
                 }
             }
 
-            own.insert(place, write.value.is_some());
+            own.insert(place, *leaves_value);
         }
 
         if pending {
@@ -293,31 +313,32 @@ impl Verdicts {
 }
 
 impl Written {
-    fn apply(&mut self, operations: &[Operation]) {
+    fn apply(&mut self, operations: &[Declaration]) {
         for operation in operations {
-            let Some(write) = operation.write() else {
-                self.dropped.insert(operation.model);
-                continue;
-            };
+            match &operation.effect {
+                Effect::Write {
+                    key, leaves_value, ..
+                } => {
+                    let place = (operation.model, key.clone());
+                    self.unsure.remove(&place);
+                    self.holds.insert(place, *leaves_value);
+                }
 
-            let place = (write.model, write.key);
-            self.unsure.remove(&place);
-            self.holds.insert(place, write.value.is_some());
+                Effect::Drop => {
+                    self.dropped.insert(operation.model);
+                }
+            }
         }
     }
 
-    fn doubt(&mut self, operations: &[Operation]) {
+    fn doubt(&mut self, operations: &[Declaration]) {
         for operation in operations {
-            match operation.write() {
-                Some(write) => self.unsure.insert((write.model, write.key)),
-                None => self.unsure_models.insert(operation.model),
+            match &operation.effect {
+                Effect::Write { key, .. } => self.unsure.insert((operation.model, key.clone())),
+                Effect::Drop => self.unsure_models.insert(operation.model),
             };
         }
     }
-}
-
-fn key(transaction: &Verified<Transaction>) -> (Peer, u64) {
-    (transaction.author(), transaction.payload().seq)
 }
 
 #[cfg(test)]
@@ -326,6 +347,8 @@ mod tests {
     use crate::actor::Signed;
     use crate::agreement::Genesis;
     use crate::clock::VersionVector;
+    use crate::log::Transaction;
+    use crate::model::Operation;
     use crate::testing::peers::{identity_of, laptop, nas, phone};
 
     fn agreement() -> AgreementId {
@@ -345,7 +368,7 @@ mod tests {
     }
 
     /// A transaction at `lamport` in the timeline.
-    fn transaction(author: Peer, lamport: u64, operations: &[Operation]) -> Verified<Transaction> {
+    fn transaction(author: Peer, lamport: u64, operations: &[Operation]) -> Outline {
         let transaction = Transaction {
             agreement: agreement(),
             seq: lamport,
@@ -354,12 +377,12 @@ mod tests {
             operations: operations.to_vec(),
         };
 
-        Signed::sign(&identity_of(author), transaction)
+        Outline::of(&Signed::sign(&identity_of(author), transaction))
     }
 
     /// Judges a frontier, answering every read with "nothing settled
     /// there". Returns each transaction's verdict, in timeline order.
-    fn judge(verdicts: &mut Verdicts, frontier: &[&Verified<Transaction>]) -> Vec<Verdict> {
+    fn judge(verdicts: &mut Verdicts, frontier: &[&Outline]) -> Vec<Verdict> {
         let mut outbox = Outbox::default();
         verdicts.judge(agreement(), &BTreeSet::new(), frontier, &mut outbox);
         for place in verdicts.reading.clone().into_keys() {
@@ -369,7 +392,7 @@ mod tests {
         verdicts.judge(agreement(), &BTreeSet::new(), frontier, &mut outbox);
         frontier
             .iter()
-            .map(|it| verdicts.reached[&key(it)])
+            .map(|it| verdicts.reached[&it.key()])
             .collect()
     }
 
@@ -463,14 +486,7 @@ mod tests {
         let second = transaction(laptop(), 2, &[claim("ada")]);
         judge(&mut verdicts, &[&first, &second]);
 
-        for write in first
-            .payload()
-            .operations
-            .iter()
-            .filter_map(Operation::write)
-        {
-            verdicts.folded(&write);
-        }
+        verdicts.folded(names(), b"ada", true);
 
         assert_eq!(judge(&mut verdicts, &[&second]), [Verdict::Pruned]);
         assert!(verdicts.reading.is_empty());

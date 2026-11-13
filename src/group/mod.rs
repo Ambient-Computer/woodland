@@ -6,7 +6,9 @@
 //! - the **agreement** decides who may write, and proves how much of the
 //!   timeline has settled;
 //! - the **log** (transactions and their clock) orders and deduplicates
-//!   transactions;
+//!   transactions, and remembers an outline of each;
+//! - **bodies** are the few transactions whose contents are in memory,
+//!   read back from storage a page at a time;
 //! - the **models** say what each transaction writes to storage;
 //! - **admission** holds this device's writes until it may make them;
 //! - **removal** says which of a removed contributor's writes still count;
@@ -24,6 +26,7 @@
 //! 3. [`outgoing`](Group::outgoing) says what each peer is missing.
 
 mod admission;
+mod bodies;
 mod persistence;
 mod removal;
 mod settling;
@@ -34,18 +37,19 @@ mod verdicts;
 use std::collections::{BTreeMap, BTreeSet};
 
 use admission::Held;
+use bodies::{Bodies, PAGE};
 pub(crate) use persistence::Restored;
 use snapshot::{Snapshot, Snapshots};
 use sync::PeerSync;
 pub(crate) use sync::{GroupMessage, VerifiedParts};
 use verdicts::{Verdict, Verdicts};
 
-use crate::actor::{Identity, Peer, Signed};
+use crate::actor::{Identity, Peer, Signed, Verified};
 use crate::agreement::{Agreement, AgreementId, Change, Genesis};
 use crate::io::Changed;
 use crate::lattice::Lattice;
-use crate::log::Log;
-use crate::model::{Kind, ModelId, Operation};
+use crate::log::{Log, Outline, Transaction};
+use crate::model::{Declaration, Effect, Kind, ModelId, Operation};
 use crate::node::Outbox;
 
 #[derive(Debug)]
@@ -56,6 +60,13 @@ pub(crate) struct Group {
     log: Log,
     /// Which transactions in the frontier happen.
     verdicts: Verdicts,
+    bodies: Bodies,
+    /// Live transactions whose versions aren't in storage yet, and
+    /// whether storage has been asked for them.
+    unwritten: BTreeMap<(Peer, u64), bool>,
+    /// The start of the frontier, while storage reads it back to settle
+    /// it.
+    settling: Option<Vec<Outline>>,
     /// Writes made before this device was admitted.
     held: Held,
     snapshots: Snapshots,
@@ -148,6 +159,16 @@ impl Group {
         }
     }
 
+    /// Storage answered: a transaction we asked for, or that it's gone.
+    pub(crate) fn fetched(&mut self, key: (Peer, u64), stored: Option<Verified<Transaction>>) {
+        self.bodies.read(key, stored);
+    }
+
+    /// The batch is over, and so is whatever was in hand for it.
+    pub(crate) fn finish(&mut self) {
+        self.bodies.clear();
+    }
+
     /// Our scan of the settled range is back, for a snapshot.
     pub(crate) fn scanned(&mut self, entries: &[(Vec<u8>, Vec<u8>)]) {
         self.snapshots.scanned(entries);
@@ -204,7 +225,8 @@ impl Group {
         }
 
         let snapshot = self.snapshots.prepared();
-        sync.outgoing(peer, &self.agreement, &self.log, snapshot)
+        let (agreement, log, bodies) = (&self.agreement, &self.log, &mut self.bodies);
+        sync.outgoing(peer, agreement, log, snapshot, bodies, outbox)
     }
 
     /// Whether to propose a new progress report: only as a contributor
@@ -290,6 +312,8 @@ impl Group {
 
         tracing::info!("rewinding: holding transactions nobody vouched for");
         self.log.rewind();
+        self.unwritten.clear();
+        self.settling = None;
         persistence::forget_frontier(self.id, outbox);
         outbox.changed(Changed::Everything { agreement: self.id });
         for peer in self.peers.values_mut() {
@@ -303,6 +327,7 @@ impl Group {
         let counts = |author, seq| removal::counts(learned, author, seq);
         for transaction in self.log.integrate_ready(counts) {
             persistence::save_transaction(self.id, transaction.signed(), outbox);
+            self.bodies.hold(transaction);
         }
     }
 
@@ -313,67 +338,161 @@ impl Group {
     fn judge(&mut self, outbox: &mut Outbox) {
         let frontier = self.log.frontier();
         let dropped = &self.log.cut().dropped;
-        for (transaction, verdict) in self.verdicts.judge(self.id, dropped, &frontier, outbox) {
-            let payload = transaction.payload();
-            let (stamp, operations) = (payload.stamp(transaction.author()), &payload.operations);
+        for (outline, verdict) in self.verdicts.judge(self.id, dropped, &frontier, outbox) {
             match verdict {
-                Verdict::Live => persistence::save_operations(self.id, stamp, operations, outbox),
-                Verdict::Pruned => {
-                    persistence::forget_operations(self.id, stamp, operations, outbox);
+                Verdict::Live => {
+                    self.unwritten.insert(outline.key(), false);
                 }
-                Verdict::Pending => continue,
+
+                Verdict::Pruned => {
+                    let (stamp, declared) = (outline.stamp(), &outline.declared);
+                    self.unwritten.remove(&outline.key());
+                    persistence::forget_operations(self.id, stamp, declared, outbox);
+                    Self::notify_shown(self.id, declared, outbox);
+                }
+
+                Verdict::Pending => {}
+            }
+        }
+
+        self.show(outbox);
+    }
+
+    /// Writes the versions of live transactions that storage doesn't
+    /// have yet. One integrated in this batch is in hand. One that turned
+    /// out to be live later has to be read back first.
+    fn show(&mut self, outbox: &mut Outbox) {
+        for (key, asked) in std::mem::take(&mut self.unwritten) {
+            if !self.log.holds(key.0, key.1) {
+                continue;
             }
 
-            // Either way, what readers see at its keys may be different.
-            let shown = |operation: &&Operation| {
-                let kind = operation.model.kind();
+            if let Some(transaction) = self.bodies.get(key) {
+                let payload = transaction.payload();
+                let stamp = payload.stamp(transaction.author());
+                persistence::save_operations(self.id, stamp, &payload.operations, outbox);
 
-                kind.is_some_and(Kind::shows_unsettled)
-            };
-            for operation in operations.iter().filter(shown) {
-                Self::notify(self.id, operation, false, outbox);
+                let declared: Vec<_> = payload.operations.iter().map(Operation::declares).collect();
+                Self::notify_shown(self.id, &declared, outbox);
+            } else if self.bodies.answered(key) {
+                tracing::error!("a transaction in the frontier is missing from storage");
+            } else {
+                if !asked {
+                    self.bodies.ask(key, outbox);
+                }
+
+                self.unwritten.insert(key, true);
             }
+        }
+    }
+
+    /// Tells whoever is watching that what optimistic readers see at a
+    /// transaction's keys may be different.
+    fn notify_shown(agreement: AgreementId, declared: &[Declaration], outbox: &mut Outbox) {
+        let shown = |operation: &&Declaration| {
+            let kind = operation.model.kind();
+
+            kind.is_some_and(Kind::shows_unsettled)
+        };
+
+        for operation in declared.iter().filter(shown) {
+            Self::notify(agreement, operation, false, outbox);
         }
     }
 
     /// Tells whoever is watching that an operation's key changed, or its
     /// whole model, if it dropped one.
-    fn notify(agreement: AgreementId, operation: &Operation, committed: bool, outbox: &mut Outbox) {
-        let change = match operation.write() {
-            Some(write) => Changed::Key {
+    fn notify(
+        agreement: AgreementId,
+        operation: &Declaration,
+        committed: bool,
+        outbox: &mut Outbox,
+    ) {
+        let change = match &operation.effect {
+            Effect::Write { key, .. } => Changed::Key {
                 agreement,
-                model: write.model,
-                key: write.key,
+                model: operation.model,
+                key: key.clone(),
                 committed,
             },
-            None => Changed::Everything { agreement },
+            Effect::Drop => Changed::Everything { agreement },
         };
 
         outbox.changed(change);
     }
 
-    /// Settles what agreement proves is final. A live transaction's
-    /// writes become settled values, and a model it drops is emptied. A
-    /// pruned one just leaves.
+    /// Settles what agreement proves is final, a page at a time: the
+    /// live transactions among them have to be read back from storage
+    /// first, and the answer comes in a later batch.
     fn settle(&mut self, outbox: &mut Outbox) {
-        let verdicts = &self.verdicts;
-        let ready = |transaction: &_| !verdicts.is_pending(transaction);
-        let settled = settling::settle(&mut self.log, self.agreement.learned(), ready);
-        for transaction in settled {
-            let operations = &transaction.payload().operations;
-            if self.verdicts.is_live(&transaction) {
+        loop {
+            let verdicts = &self.verdicts;
+            let ready = |outline: &Outline| !verdicts.is_pending(outline);
+            let learned = self.agreement.learned();
+            let next = settling::settleable(&self.log, learned, ready, PAGE);
+            let needed = |outline: &&Outline| verdicts.is_live(outline);
+            let in_hand = |page: &[Outline]| {
+                let mut needed = page.iter().filter(needed);
+
+                needed.all(|it| self.bodies.get(it.key()).is_some())
+            };
+
+            if let Some(page) = self.settling.take() {
+                // Something else may have changed the frontier since.
+                if !next.starts_with(&page) {
+                    continue;
+                }
+
+                if !in_hand(&page) {
+                    let mut needed = page.iter().filter(needed);
+                    if needed.all(|it| self.bodies.answered(it.key())) {
+                        tracing::error!("a transaction in the frontier is missing from storage");
+                    }
+
+                    self.settling = Some(page);
+                    return;
+                }
+
+                self.fold(&page, outbox);
+            } else if next.is_empty() {
+                return;
+            } else if in_hand(&next) {
+                self.fold(&next, outbox);
+            } else {
+                for outline in next.iter().filter(needed) {
+                    self.bodies.ask(outline.key(), outbox);
+                }
+
+                self.settling = Some(next);
+                return;
+            }
+        }
+    }
+
+    /// Settles the start of the frontier. A live transaction's writes
+    /// become settled values, and a model it drops is emptied. A pruned
+    /// one just leaves.
+    fn fold(&mut self, page: &[Outline], outbox: &mut Outbox) {
+        self.log.settle(page);
+        for outline in page {
+            let live = self.verdicts.is_live(outline);
+            if live && let Some(transaction) = self.bodies.get(outline.key()) {
+                let operations = &transaction.payload().operations;
                 persistence::fold_operations(self.id, operations, outbox);
-                for operation in operations {
-                    match operation.write() {
-                        Some(write) => self.verdicts.folded(&write),
-                        None => self.log.dropped(operation.model),
+                for operation in &outline.declared {
+                    match &operation.effect {
+                        Effect::Write {
+                            key, leaves_value, ..
+                        } => self.verdicts.folded(operation.model, key, *leaves_value),
+                        Effect::Drop => self.log.dropped(operation.model),
                     }
 
                     Self::notify(self.id, operation, true, outbox);
                 }
             }
 
-            persistence::forget_transaction(self.id, &transaction, outbox);
+            self.unwritten.remove(&outline.key());
+            persistence::forget_transaction(self.id, outline, outbox);
         }
     }
 
@@ -394,8 +513,9 @@ impl Group {
         persistence::save_snapshot(self.id, snapshot, outbox);
         outbox.changed(Changed::Everything { agreement: self.id });
         self.verdicts.absorbed();
-        for transaction in self.log.absorb(&snapshot.cut) {
-            persistence::forget_transaction(self.id, &transaction, outbox);
+        for outline in self.log.absorb(&snapshot.cut) {
+            self.unwritten.remove(&outline.key());
+            persistence::forget_transaction(self.id, &outline, outbox);
         }
     }
 }

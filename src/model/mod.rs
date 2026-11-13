@@ -103,6 +103,31 @@ pub(crate) enum Requirement {
     Vacant,
 }
 
+/// What an operation declares, apart from the value it carries. It's
+/// everything the layers above need to know of an operation, so it's
+/// all they keep of one once the transaction is in storage.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Declaration {
+    pub(crate) model: ModelId,
+    /// Whether the change is one its model takes.
+    pub(crate) belongs: bool,
+    pub(crate) effect: Effect,
+}
+
+/// What an operation does to its model.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Effect {
+    /// Writes to a key.
+    Write {
+        key: Vec<u8>,
+        /// Whether the key holds a value afterwards.
+        leaves_value: bool,
+        requires: Option<Requirement>,
+    },
+    /// Drops the model.
+    Drop,
+}
+
 /// The kinds of model there are. A model's kind is part of its ID.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
@@ -151,6 +176,24 @@ impl Operation {
             | (Change::Claims(_), Some(Kind::Claims))
             | (Change::Drop, Some(_)) => true,
             (Change::Kv(_) | Change::Claims(_) | Change::Drop, _) => false,
+        }
+    }
+
+    /// Everything the operation declares, without its value.
+    pub(crate) fn declares(&self) -> Declaration {
+        let effect = match self.write() {
+            Some(write) => Effect::Write {
+                key: write.key,
+                leaves_value: write.value.is_some(),
+                requires: self.requires(),
+            },
+            None => Effect::Drop,
+        };
+
+        Declaration {
+            model: self.model,
+            belongs: self.belongs(),
+            effect,
         }
     }
 

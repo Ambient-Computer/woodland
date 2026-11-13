@@ -67,29 +67,30 @@
 //!   it can arrive anymore, so there's no tombstone to keep.
 //! - **Bounded hydration.** Only what hasn't settled loads at startup.
 
-use crate::actor::Verified;
 use crate::agreement::Decision;
 use crate::lattice::Lattice;
-use crate::log::{Log, Transaction};
+use crate::log::{Log, Outline};
 
-/// Settles as much of the timeline as `learned` proves is final, and
-/// returns the transactions that settled, in timeline order.
+/// The start of the timeline that `learned` proves is final, up to
+/// `limit` transactions, in timeline order. Settling them takes their
+/// contents, which are in storage, so it happens a page at a time.
 ///
 /// Nothing settles until this device holds everything the contributors
 /// have reported. An observer that's behind can learn a floor long before
 /// it has the transactions to settle it. And nothing settles past a
 /// transaction that isn't `ready`: one whose verdict is still out (see
 /// `verdicts`).
-pub(super) fn settle(
-    log: &mut Log,
+pub(super) fn settleable(
+    log: &Log,
     learned: &Decision,
-    ready: impl Fn(&Verified<Transaction>) -> bool,
-) -> Vec<Verified<Transaction>> {
+    ready: impl Fn(&Outline) -> bool,
+    limit: usize,
+) -> Vec<Outline> {
     let contributors = learned.configuration.members();
     let reported = learned.progress.ceiling(&contributors);
     if !reported.leq(log.integrated()) {
         return Vec::new();
     }
 
-    log.settle(&learned.floor(), ready)
+    log.settleable(&learned.floor(), ready, limit)
 }
