@@ -155,6 +155,6 @@ mod testing;
 pub use actor::Identity;
 pub use agreement::{AgreementId, Genesis};
 pub use io::{Action, Changed, NetworkAction};
-pub use model::{ModelId, Query};
+pub use model::{ColumnId, ModelId, Query, Row, Table, Value};
 pub use node::{Batch, Node, TransactionBuilder};
 pub use storage::{StorageAction, StorageWrite};

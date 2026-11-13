@@ -3,7 +3,7 @@ use ed25519_dalek::VerifyingKey;
 use super::Node;
 use crate::agreement::{AgreementId, Change, Genesis};
 use crate::io::{Action, Event, LocalEvent, NetworkEvent, StorageEvent};
-use crate::model::{ModelId, Operation};
+use crate::model::{ColumnId, ModelId, Operation, Value};
 
 /// Events to process together. Start one with [`Node::batch`].
 ///
@@ -150,6 +150,42 @@ impl<'a> TransactionBuilder<'a> {
     ) -> Self {
         let operation = Operation::claim(model, key.into(), value.into());
         self.operations.push(operation);
+        self
+    }
+
+    /// Creates `table`, a [table] model, with these columns and their
+    /// names. If it already exists at this transaction's place in the
+    /// timeline, the whole transaction is dropped, on every device.
+    ///
+    /// [table]: ModelId::table
+    pub fn create_table(
+        mut self,
+        table: ModelId,
+        columns: impl IntoIterator<Item = (ColumnId, impl Into<String>)>,
+    ) -> Self {
+        let columns = columns.into_iter().map(|(id, name)| (id, name.into()));
+        let operation = Operation::create_table(table, columns.collect());
+        self.operations.push(operation);
+        self
+    }
+
+    /// Adds a row to `table` under `key`, with a value for each of
+    /// these columns. The whole transaction is dropped, on every
+    /// device, unless at its place in the timeline the table and each
+    /// of the columns exist, and no row has the key.
+    ///
+    /// The table may have been created by a transaction that hasn't
+    /// settled, this one included. If that one ends up dropped, so does
+    /// this.
+    pub fn insert(
+        mut self,
+        table: ModelId,
+        key: impl Into<Vec<u8>>,
+        cells: impl IntoIterator<Item = (ColumnId, Value)>,
+    ) -> Self {
+        let cells = cells.into_iter().collect();
+        self.operations
+            .push(Operation::insert(table, key.into(), cells));
         self
     }
 

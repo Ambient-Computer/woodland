@@ -27,6 +27,17 @@ enum Step {
     DropScratch {
         device: usize,
     },
+    /// Creates one of two tables. Both want the same name.
+    CreateTable {
+        device: usize,
+        table: u8,
+    },
+    /// Adds a row to a table, which may not exist.
+    Insert {
+        device: usize,
+        table: u8,
+        row: u8,
+    },
     Connect {
         left: usize,
         right: usize,
@@ -63,6 +74,10 @@ fn step() -> impl Strategy<Value = Step> {
         2 => (device.clone(), any::<u8>())
             .prop_map(|(device, value)| Step::Scratch { device, value }),
         1 => device.clone().prop_map(|device| Step::DropScratch { device }),
+        1 => (device.clone(), 1..3u8)
+            .prop_map(|(device, table)| Step::CreateTable { device, table }),
+        3 => (device.clone(), 1..3u8, 0..3u8)
+            .prop_map(|(device, table, row)| Step::Insert { device, table, row }),
         2 => (device.clone(), device.clone())
             .prop_map(|(left, right)| Step::Connect { left, right }),
         2 => (device.clone(), device.clone())
@@ -99,6 +114,13 @@ fn run(cluster: &mut Cluster, step: Step) {
             cluster.run(device, |batch| {
                 batch.transaction(agreement).drop_model(scratch).commit()
             });
+        }
+        Step::CreateTable { device, table } => {
+            tables::create(cluster, device, tables::people(cluster, table));
+        }
+        Step::Insert { device, table, row } => {
+            let table = tables::people(cluster, table);
+            tables::insert(cluster, device, table, &row.to_string(), i64::from(row));
         }
         Step::Connect { left, right } => cluster.connect(left, right),
         Step::Disconnect { left, right } => cluster.disconnect(left, right),
@@ -217,6 +239,15 @@ proptest! {
             let name = name.to_string();
             let note = format!("owner/{name}");
             prop_assert_eq!(holder(&cluster, PHONE, &name), read(&cluster, PHONE, &note));
+        }
+
+        // Both tables wanted one name. Whichever didn't get it doesn't
+        // exist, and has no rows.
+        let named = tables::holder_bytes(&cluster, PHONE, "people");
+        for table in [tables::people(&cluster, 1), tables::people(&cluster, 2)] {
+            if named != table.as_bytes() {
+                prop_assert_eq!(tables::read_table(&cluster, PHONE, table), None);
+            }
         }
 
         // Settling really forgets: nothing settled stays in the log.

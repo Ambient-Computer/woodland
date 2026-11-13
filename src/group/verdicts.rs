@@ -107,15 +107,7 @@ impl Verdicts {
         let drops = declared().filter(|it| it.effect == Effect::Drop);
         let dropped: BTreeSet<ModelId> = drops.map(|it| it.model).collect();
         let requires_nothing = |it: &&&Outline| {
-            let requires = |effect: &Effect| {
-                matches!(
-                    effect,
-                    Effect::Write {
-                        requires: Some(_),
-                        ..
-                    }
-                )
-            };
+            let requires = |effect: &Effect| matches!(effect, Effect::Require { .. });
 
             it.declared
                 .iter()
@@ -247,31 +239,31 @@ impl Verdicts {
             }
 
             pending |= written.unsure_models.contains(&model);
-            let Effect::Write {
-                key,
-                leaves_value,
-                requires,
-            } = &operation.effect
-            else {
-                own_drops.insert(model);
-                continue;
-            };
+            match &operation.effect {
+                Effect::Require { key, requirement } => {
+                    let place = (model, key.clone());
+                    let holds = match own.get(&place) {
+                        Some(&holds) => Some(holds),
+                        None => self.holds(id, &place, written, outbox),
+                    };
 
-            let place = (model, key.clone());
-            if let Some(Requirement::Vacant) = requires {
-                let holds = match own.get(&place) {
-                    Some(&holds) => Some(holds),
-                    None => self.holds(id, &place, written, outbox),
-                };
+                    match (holds, requirement) {
+                        (Some(true), Requirement::Vacant) | (Some(false), Requirement::Present) => {
+                            return Verdict::Pruned;
+                        }
+                        (Some(_), _) => {}
+                        (None, _) => pending = true,
+                    }
+                }
 
-                match holds {
-                    Some(true) => return Verdict::Pruned,
-                    Some(false) => {}
-                    None => pending = true,
+                Effect::Write { key, leaves_value } => {
+                    own.insert((model, key.clone()), *leaves_value);
+                }
+
+                Effect::Drop => {
+                    own_drops.insert(model);
                 }
             }
-
-            own.insert(place, *leaves_value);
         }
 
         if pending {
@@ -316,9 +308,7 @@ impl Written {
     fn apply(&mut self, operations: &[Declaration]) {
         for operation in operations {
             match &operation.effect {
-                Effect::Write {
-                    key, leaves_value, ..
-                } => {
+                Effect::Write { key, leaves_value } => {
                     let place = (operation.model, key.clone());
                     self.unsure.remove(&place);
                     self.holds.insert(place, *leaves_value);
@@ -327,6 +317,8 @@ impl Written {
                 Effect::Drop => {
                     self.dropped.insert(operation.model);
                 }
+
+                Effect::Require { .. } => {}
             }
         }
     }
@@ -336,6 +328,7 @@ impl Written {
             match &operation.effect {
                 Effect::Write { key, .. } => self.unsure.insert((operation.model, key.clone())),
                 Effect::Drop => self.unsure_models.insert(operation.model),
+                Effect::Require { .. } => false,
             };
         }
     }

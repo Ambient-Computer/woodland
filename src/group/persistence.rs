@@ -230,7 +230,7 @@ pub(super) fn save_operations(
     outbox: &mut Outbox,
 ) {
     let shown = |write: &Write| write.model.kind().is_some_and(Kind::shows_unsettled);
-    for write in operations.iter().filter_map(Operation::write).filter(shown) {
+    for write in operations.iter().flat_map(Operation::writes).filter(shown) {
         let key = keys::version(id, write.model, &write.key, stamp);
         outbox.put(key, &write.value);
     }
@@ -245,17 +245,18 @@ pub(super) fn save_operations(
 /// must be folded in timeline order.
 pub(super) fn fold_operations(id: AgreementId, operations: &[Operation], outbox: &mut Outbox) {
     for operation in operations {
-        let Some(write) = operation.write() else {
+        for write in operation.writes() {
+            let settled = keys::settled_value(id, write.model, &write.key);
+            match write.value {
+                Some(value) => outbox.put_bytes(settled, value),
+                None => outbox.delete(settled),
+            }
+        }
+
+        if operation.drops() {
             let model = keys::settled_value(id, operation.model, b"");
             let (start, end) = keys::range(model);
             outbox.delete_range(start, end);
-            continue;
-        };
-
-        let settled = keys::settled_value(id, write.model, &write.key);
-        match write.value {
-            Some(value) => outbox.put_bytes(settled, value),
-            None => outbox.delete(settled),
         }
     }
 }
@@ -275,12 +276,13 @@ pub(super) fn forget_operations(
     outbox: &mut Outbox,
 ) {
     for operation in operations {
-        let stored = match &operation.effect {
-            Effect::Write { key, .. } => keys::version(id, operation.model, key, stamp),
-            Effect::Drop => keys::drop(id, operation.model, stamp),
-        };
-
-        outbox.delete(stored);
+        match &operation.effect {
+            Effect::Write { key, .. } => {
+                outbox.delete(keys::version(id, operation.model, key, stamp));
+            }
+            Effect::Drop => outbox.delete(keys::drop(id, operation.model, stamp)),
+            Effect::Require { .. } => {}
+        }
     }
 }
 

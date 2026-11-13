@@ -372,7 +372,8 @@ impl Group {
                 let stamp = payload.stamp(transaction.author());
                 persistence::save_operations(self.id, stamp, &payload.operations, outbox);
 
-                let declared: Vec<_> = payload.operations.iter().map(Operation::declares).collect();
+                let operations = payload.operations.iter();
+                let declared: Vec<_> = operations.flat_map(Operation::declares).collect();
                 Self::notify_shown(self.id, &declared, outbox);
             } else if self.bodies.answered(key) {
                 tracing::error!("a transaction in the frontier is missing from storage");
@@ -416,6 +417,7 @@ impl Group {
                 committed,
             },
             Effect::Drop => Changed::Everything { agreement },
+            Effect::Require { .. } => return,
         };
 
         outbox.changed(change);
@@ -481,10 +483,11 @@ impl Group {
                 persistence::fold_operations(self.id, operations, outbox);
                 for operation in &outline.declared {
                     match &operation.effect {
-                        Effect::Write {
-                            key, leaves_value, ..
-                        } => self.verdicts.folded(operation.model, key, *leaves_value),
+                        Effect::Write { key, leaves_value } => {
+                            self.verdicts.folded(operation.model, key, *leaves_value);
+                        }
                         Effect::Drop => self.log.dropped(operation.model),
+                        Effect::Require { .. } => {}
                     }
 
                     Self::notify(self.id, operation, true, outbox);

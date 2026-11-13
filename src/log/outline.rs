@@ -12,7 +12,7 @@ pub(crate) struct Outline {
     pub(crate) author: Peer,
     pub(crate) seq: u64,
     pub(crate) lamport: u64,
-    /// One for each operation, in order.
+    /// What each operation declares, in order.
     pub(crate) declared: Vec<Declaration>,
 }
 
@@ -25,7 +25,7 @@ impl Outline {
             author: transaction.author(),
             seq: payload.seq,
             lamport: payload.lamport,
-            declared: operations.map(Operation::declares).collect(),
+            declared: operations.flat_map(Operation::declares).collect(),
         }
     }
 

@@ -42,9 +42,10 @@ impl Operation {
         (key.clone(), Some(value.clone()))
     }
 
-    /// Every claim has the same rule.
-    #[expect(clippy::unused_self, reason = "the rule is the operation's")]
-    pub(crate) fn requires(&self) -> Requirement {
-        Requirement::Vacant
+    /// Every claim has the same rule, about its own key.
+    pub(crate) fn requires(&self) -> (Vec<u8>, Requirement) {
+        let Self::Claim { key, .. } = self;
+
+        (key.clone(), Requirement::Vacant)
     }
 }

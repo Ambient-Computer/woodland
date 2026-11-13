@@ -4,12 +4,13 @@
 //! a few things, and everything else follows from the timeline. About
 //! each of its operations:
 //!
-//! - what it **writes**: a value under a key, or the absence of one
+//! - what it **writes**: values under keys, or the absence of them
 //!   ([`Write`]);
 //! - what it **requires** of the model's state at its transaction's place
-//!   in the timeline ([`Requirement`]). A transaction with a requirement
-//!   that doesn't hold is **pruned**: it stays in the log, and none of
-//!   its operations happen.
+//!   in the timeline: that a key is vacant, or that it's present
+//!   ([`Requirement`]). A transaction with a requirement that doesn't
+//!   hold is **pruned**: it stays in the log, and none of its operations
+//!   happen.
 //!
 //! And about itself: whether readers may see writes that **haven't
 //! settled** ([`Kind::shows_unsettled`]).
@@ -19,6 +20,8 @@
 //!
 //! - `kv` requires nothing, so the last writer wins.
 //! - `claims` requires the key to be vacant, so the first writer wins.
+//! - A `table` requires what keeps rows and schema coherent: a row's
+//!   table and columns must be present, and its key vacant.
 //! - A **threshold** map takes the same operations as `kv`, but only
 //!   shows what has settled. A reader never sees a value that some
 //!   contributor might not have, or one that an earlier write could
@@ -68,10 +71,12 @@
 mod claims;
 mod kv;
 mod query;
+mod table;
 
 use serde::{Deserialize, Serialize};
 
 pub use query::Query;
+pub use table::{ColumnId, Row, Table, Value};
 
 use crate::agreement::AgreementId;
 use crate::encoding;
@@ -88,6 +93,7 @@ pub(crate) struct Operation {
 pub(crate) enum Change {
     Kv(kv::Operation),
     Claims(claims::Operation),
+    Table(table::Operation),
     /// Drops the model, whatever its kind: everything in it is gone, and
     /// it's dead for good. Every operation requires its model to be
     /// alive, so a transaction that names it later in the timeline is
@@ -95,17 +101,22 @@ pub(crate) enum Change {
     Drop,
 }
 
-/// What an operation needs to be true of its key, at its transaction's
+/// What an operation needs to be true of a key, at its transaction's
 /// place in the timeline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Requirement {
-    /// The key holds no value.
+    /// The key holds no value. It's how only one transaction gets
+    /// something: a name, a row's key, a lock.
     Vacant,
+    /// The key holds a value. It's how a transaction depends on another:
+    /// if whatever wrote the key was pruned, so is this.
+    Present,
 }
 
-/// What an operation declares, apart from the value it carries. It's
-/// everything the layers above need to know of an operation, so it's
-/// all they keep of one once the transaction is in storage.
+/// One thing an operation declares, apart from the values it carries.
+/// An operation declares a list of them, in the order they apply, and
+/// that's everything the layers above need to know of it, so it's all
+/// they keep once the transaction is in storage.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Declaration {
     pub(crate) model: ModelId,
@@ -114,15 +125,20 @@ pub(crate) struct Declaration {
     pub(crate) effect: Effect,
 }
 
-/// What an operation does to its model.
+/// What an operation does to its model, or needs of it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Effect {
+    /// Needs something of a key. If it doesn't hold, the transaction is
+    /// pruned.
+    Require {
+        key: Vec<u8>,
+        requirement: Requirement,
+    },
     /// Writes to a key.
     Write {
         key: Vec<u8>,
         /// Whether the key holds a value afterwards.
         leaves_value: bool,
-        requires: Option<Requirement>,
     },
     /// Drops the model.
     Drop,
@@ -134,6 +150,7 @@ pub(crate) enum Kind {
     Kv = 1,
     Claims = 2,
     Threshold = 3,
+    Table = 4,
 }
 
 impl Kind {
@@ -163,6 +180,18 @@ impl Operation {
         Self { model, change }
     }
 
+    pub(crate) fn create_table(model: ModelId, columns: Vec<(ColumnId, String)>) -> Self {
+        let change = Change::Table(table::Operation::Create { columns });
+
+        Self { model, change }
+    }
+
+    pub(crate) fn insert(model: ModelId, key: Vec<u8>, cells: Vec<(ColumnId, Value)>) -> Self {
+        let change = Change::Table(table::Operation::Insert { key, cells });
+
+        Self { model, change }
+    }
+
     pub(crate) fn drop(model: ModelId) -> Self {
         let change = Change::Drop;
 
@@ -175,41 +204,49 @@ impl Operation {
             (Change::Kv(_), Some(Kind::Kv | Kind::Threshold))
             | (Change::Claims(_), Some(Kind::Claims))
             | (Change::Drop, Some(_)) => true,
-            (Change::Kv(_) | Change::Claims(_) | Change::Drop, _) => false,
+            (Change::Table(operation), Some(Kind::Table)) => operation.belongs(),
+            (Change::Kv(_) | Change::Claims(_) | Change::Table(_) | Change::Drop, _) => false,
         }
     }
 
-    /// Everything the operation declares, without its value.
-    pub(crate) fn declares(&self) -> Declaration {
-        let effect = match self.write() {
-            Some(write) => Effect::Write {
-                key: write.key,
-                leaves_value: write.value.is_some(),
-                requires: self.requires(),
-            },
-            None => Effect::Drop,
-        };
+    /// Everything the operation declares, without its values: what it
+    /// requires, then what it writes.
+    pub(crate) fn declares(&self) -> Vec<Declaration> {
+        let requires = self.requires().into_iter();
+        let requires = requires.map(|(key, requirement)| Effect::Require { key, requirement });
+        let writes = self.writes().into_iter().map(|write| Effect::Write {
+            key: write.key,
+            leaves_value: write.value.is_some(),
+        });
 
-        Declaration {
+        let drops = self.drops().then_some(Effect::Drop);
+        let effects = requires.chain(writes).chain(drops);
+        let belongs = self.belongs();
+        let declare = |effect| Declaration {
             model: self.model,
-            belongs: self.belongs(),
+            belongs,
             effect,
-        }
-    }
-
-    /// What the operation leaves under a key, if it writes to one.
-    pub(crate) fn write(&self) -> Option<Write> {
-        let (key, value) = match &self.change {
-            Change::Kv(operation) => operation.write(),
-            Change::Claims(operation) => operation.write(),
-            Change::Drop => return None,
         };
 
-        Some(Write {
+        effects.map(declare).collect()
+    }
+
+    /// What the operation leaves under each key it writes to, in order.
+    pub(crate) fn writes(&self) -> Vec<Write> {
+        let writes = match &self.change {
+            Change::Kv(operation) => vec![operation.write()],
+            Change::Claims(operation) => vec![operation.write()],
+            Change::Table(operation) => operation.writes(),
+            Change::Drop => Vec::new(),
+        };
+
+        let write = |(key, value)| Write {
             model: self.model,
             key,
             value,
-        })
+        };
+
+        writes.into_iter().map(write).collect()
     }
 
     /// Whether the operation drops its model.
@@ -217,12 +254,13 @@ impl Operation {
         matches!(self.change, Change::Drop)
     }
 
-    /// What must hold of the operation's key for its transaction to
-    /// happen.
-    pub(crate) fn requires(&self) -> Option<Requirement> {
+    /// What must hold, and of which keys, for the operation's
+    /// transaction to happen.
+    pub(crate) fn requires(&self) -> Vec<(Vec<u8>, Requirement)> {
         match &self.change {
-            Change::Kv(_) | Change::Drop => None,
-            Change::Claims(operation) => Some(operation.requires()),
+            Change::Kv(_) | Change::Drop => Vec::new(),
+            Change::Claims(operation) => vec![operation.requires()],
+            Change::Table(operation) => operation.requires(),
         }
     }
 }
@@ -276,9 +314,18 @@ impl ModelId {
         Self::new(Kind::Threshold, agreement, nonce)
     }
 
+    /// A table: rows of typed cells, in columns that are themselves
+    /// part of the data. It exists once a transaction [creates] it.
+    ///
+    /// [creates]: crate::TransactionBuilder::create_table
+    #[must_use]
+    pub fn table(agreement: AgreementId, nonce: [u8; 32]) -> Self {
+        Self::new(Kind::Table, agreement, nonce)
+    }
+
     /// `None` for an ID this version of the library didn't make.
     pub(crate) fn kind(&self) -> Option<Kind> {
-        [Kind::Kv, Kind::Claims, Kind::Threshold]
+        [Kind::Kv, Kind::Claims, Kind::Threshold, Kind::Table]
             .into_iter()
             .find(|&kind| kind as u8 == self.0[0])
     }

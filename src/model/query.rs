@@ -70,6 +70,15 @@ impl Query {
         Self::new(agreement, model, prefix, false)
     }
 
+    /// All of a [table]: decode the results with [`Table::read`].
+    ///
+    /// [table]: ModelId::table
+    /// [`Table::read`]: crate::Table::read
+    #[must_use]
+    pub fn table(agreement: AgreementId, table: ModelId) -> Self {
+        Self::prefix(agreement, table, b"")
+    }
+
     /// Reads only what has settled, leaving out writes that could still be
     /// reordered.
     #[must_use]
