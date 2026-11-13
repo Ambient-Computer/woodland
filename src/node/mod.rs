@@ -117,18 +117,23 @@ impl Node {
 
             Event::Storage(StorageEvent::Hydrate) => hydration::start(outbox),
 
-            Event::Storage(StorageEvent::Scanned { prefix, entries }) => {
+            Event::Storage(StorageEvent::Scanned {
+                start,
+                end,
+                entries,
+            }) => {
                 // A group scans its own data for snapshots. Every other scan
                 // is part of hydration.
-                let mut groups = self.groups.values_mut();
-                if let Some(group) = groups.find(|it| keys::settled(it.id()) == prefix) {
+                let range = (start, end);
+                let settled = |group: &&mut Group| keys::range(keys::settled(group.id())) == range;
+                if let Some(group) = self.groups.values_mut().find(settled) {
                     group.scanned(&entries);
                     return;
                 }
 
                 let me = self.me();
-                let restored =
-                    hydration::scanned(&mut self.hydration, me, &prefix, &entries, outbox);
+                let range = (&range.0[..], &range.1[..]);
+                let restored = hydration::scanned(&mut self.hydration, me, range, &entries, outbox);
                 if let Some(group) = restored {
                     self.groups.insert(group.id(), group);
                     self.resubscribe();

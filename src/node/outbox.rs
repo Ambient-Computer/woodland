@@ -5,7 +5,7 @@ use crate::encoding;
 use std::collections::BTreeSet;
 
 use crate::io::{Action, Changed, NetworkAction};
-use crate::storage::{StorageAction, StorageWrite};
+use crate::storage::{StorageAction, StorageWrite, keys};
 
 /// Collects the storage work domains produce while processing a batch, then
 /// turns it and the batch's messages into ordered actions.
@@ -17,7 +17,8 @@ use crate::storage::{StorageAction, StorageWrite};
 #[derive(Debug, Default)]
 pub(crate) struct Outbox {
     writes: Vec<StorageWrite>,
-    scans: Vec<Vec<u8>>,
+    /// Ranges to read, and how many entries of each at most.
+    scans: Vec<(Vec<u8>, Vec<u8>, Option<usize>)>,
     /// Keys to read, all in one get.
     gets: Vec<Vec<u8>>,
     /// What changed for readers. Each change is reported once.
@@ -43,8 +44,15 @@ impl Outbox {
         self.writes.push(StorageWrite::DeleteRange { start, end });
     }
 
+    /// Reads everything under `prefix`.
     pub(crate) fn scan(&mut self, prefix: Vec<u8>) {
-        self.scans.push(prefix);
+        let (start, end) = keys::range(prefix);
+        self.scans.push((start, end, None));
+    }
+
+    /// Reads the first `limit` entries in `start..end`.
+    pub(crate) fn scan_page(&mut self, start: Vec<u8>, end: Vec<u8>, limit: usize) {
+        self.scans.push((start, end, Some(limit)));
     }
 
     pub(crate) fn get(&mut self, key: Vec<u8>) {
@@ -62,7 +70,7 @@ impl Outbox {
         let scans = self
             .scans
             .into_iter()
-            .map(|prefix| StorageAction::Scan { prefix });
+            .map(|(start, end, limit)| StorageAction::Scan { start, end, limit });
         let get = (!self.gets.is_empty()).then_some(StorageAction::Get { keys: self.gets });
         let sends = messages.into_iter().map(|(peer, message)| {
             Action::Network(NetworkAction::Send {

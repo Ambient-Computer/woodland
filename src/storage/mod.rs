@@ -6,6 +6,10 @@
 //! asks for queries. Instead, it encodes its structure into keys so that
 //! everything it needs to load together shares a prefix (see [`keys`]).
 //!
+//! What can grow without bound is never read in one go. The log comes
+//! back a page at a time: by key to send or settle it, and as a bounded
+//! range scan at startup.
+//!
 //! # The contract
 //!
 //! - **Writes are atomic.** Apply all of a [`StorageAction::Write`] or none.
@@ -26,17 +30,26 @@
 
 pub(crate) mod keys;
 
+/// How many transactions to read, send or settle at once. Small in
+/// tests, so that they cross page boundaries all the time.
+pub(crate) const PAGE: usize = if cfg!(test) { 3 } else { 256 };
+
 /// Something for the caller to do with storage.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StorageAction {
     /// Apply these changes atomically, in order.
     Write(Vec<StorageWrite>),
 
-    /// Read every entry whose key starts with `prefix`, in key order, and
-    /// report them with [`Batch::scanned`].
+    /// Read the entries whose keys are in `start..end`, in key order, and
+    /// report them with [`Batch::scanned`]. With a `limit`, stop after
+    /// that many: the node asks for the rest if it wants them.
     ///
     /// [`Batch::scanned`]: crate::Batch::scanned
-    Scan { prefix: Vec<u8> },
+    Scan {
+        start: Vec<u8>,
+        end: Vec<u8>,
+        limit: Option<usize>,
+    },
 
     /// Read each of these keys, and report what's stored under each one
     /// (or that nothing is) with [`Batch::got`].

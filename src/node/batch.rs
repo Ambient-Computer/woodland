@@ -43,9 +43,16 @@ impl<'a> Batch<'a> {
         self.push(Event::Storage(StorageEvent::Hydrate))
     }
 
-    /// A scan the node asked for finished.
-    pub fn scanned(self, prefix: Vec<u8>, entries: Vec<(Vec<u8>, Vec<u8>)>) -> Self {
-        self.push(Event::Storage(StorageEvent::Scanned { prefix, entries }))
+    /// A scan the node asked for finished. `start` and `end` are the
+    /// ones it asked with.
+    pub fn scanned(self, start: Vec<u8>, end: Vec<u8>, entries: Vec<(Vec<u8>, Vec<u8>)>) -> Self {
+        let scanned = StorageEvent::Scanned {
+            start,
+            end,
+            entries,
+        };
+
+        self.push(Event::Storage(scanned))
     }
 
     /// A get the node asked for finished. Report every key it asked for,

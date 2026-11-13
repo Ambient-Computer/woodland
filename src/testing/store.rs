@@ -45,6 +45,20 @@ impl MemoryStore {
             .collect()
     }
 
+    /// The first `limit` entries in `start..end`, or all of them.
+    pub(crate) fn scan_range(
+        &self,
+        start: &[u8],
+        end: &[u8],
+        limit: Option<usize>,
+    ) -> Vec<(Vec<u8>, Vec<u8>)> {
+        self.entries
+            .range(start.to_vec()..end.to_vec())
+            .take(limit.unwrap_or(usize::MAX))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect()
+    }
+
     pub(crate) fn get(&self, keys: Vec<Vec<u8>>) -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
         let read = |key: Vec<u8>| {
             let value = self.entries.get(&key).cloned();

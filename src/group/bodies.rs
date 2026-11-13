@@ -22,11 +22,8 @@ use crate::actor::{Peer, Verified};
 use crate::agreement::AgreementId;
 use crate::log::Transaction;
 use crate::node::Outbox;
+pub(super) use crate::storage::PAGE;
 use crate::storage::keys;
-
-/// How many transactions to read, send or settle at once. Small in
-/// tests, so that they cross page boundaries all the time.
-pub(super) const PAGE: usize = if cfg!(test) { 3 } else { 256 };
 
 #[derive(Debug)]
 pub(super) struct Bodies {

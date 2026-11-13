@@ -36,7 +36,7 @@ enum Incoming {
     Connected(VerifyingKey),
     Disconnected(VerifyingKey),
     Message(VerifyingKey, Vec<u8>),
-    Scanned(Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>),
+    Scanned(Vec<u8>, Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>),
     Got(Vec<(Vec<u8>, Option<Vec<u8>>)>),
 }
 
@@ -149,7 +149,7 @@ impl Cluster {
                     Incoming::Connected(peer) => batch.connected(peer),
                     Incoming::Disconnected(peer) => batch.disconnected(peer),
                     Incoming::Message(peer, bytes) => batch.message(peer, bytes),
-                    Incoming::Scanned(prefix, entries) => batch.scanned(prefix, entries),
+                    Incoming::Scanned(start, end, entries) => batch.scanned(start, end, entries),
                     Incoming::Got(entries) => batch.got(entries),
                 };
             }
@@ -180,9 +180,9 @@ impl Cluster {
                     self.devices[device].store.write(&writes);
                 }
 
-                Action::Storage(StorageAction::Scan { prefix }) => {
-                    let entries = self.devices[device].store.scan(&prefix);
-                    let scanned = Incoming::Scanned(prefix, entries);
+                Action::Storage(StorageAction::Scan { start, end, limit }) => {
+                    let entries = self.devices[device].store.scan_range(&start, &end, limit);
+                    let scanned = Incoming::Scanned(start, end, entries);
                     self.devices[device].inbox.push_back(scanned);
                 }
 

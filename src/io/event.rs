@@ -23,9 +23,10 @@ pub(crate) enum NetworkEvent {
 pub(crate) enum StorageEvent {
     /// The application asked to load what's stored. Starts hydration.
     Hydrate,
-    /// A scan finished.
+    /// A scan of `start..end` finished.
     Scanned {
-        prefix: Vec<u8>,
+        start: Vec<u8>,
+        end: Vec<u8>,
         entries: Vec<(Vec<u8>, Vec<u8>)>,
     },
     /// A get finished: each key asked for, and its value if it's stored.

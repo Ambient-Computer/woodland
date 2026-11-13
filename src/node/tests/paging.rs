@@ -85,3 +85,30 @@ fn an_unsettled_claim_is_still_held_after_a_restart() {
     assert_eq!(holder(&cluster, LAPTOP, "ada").as_deref(), Some("phone"));
     assert_eq!(stored_log_len(&cluster, PHONE), 0);
 }
+
+/// Starting up reads the log a few entries at a time, and keeps only
+/// an outline of each. Everything is still there to send afterwards.
+#[test]
+fn a_long_unsettled_log_comes_back_after_a_restart() {
+    let mut cluster = household();
+    cluster.disconnect_everyone();
+    cluster.settle();
+    for index in 0..MANY {
+        write(&mut cluster, PHONE, &format!("note/{index}"), "offline");
+    }
+
+    cluster.settle();
+    let clock = group(&cluster, PHONE).log().clock().clone();
+    cluster.restart(PHONE);
+    assert_eq!(group(&cluster, PHONE).log().clock(), &clock);
+    assert_eq!(stored_log_len(&cluster, PHONE), MANY);
+
+    cluster.connect_everyone();
+    cluster.settle();
+    for index in 0..MANY {
+        let note = read_committed(&cluster, LAPTOP, &format!("note/{index}"));
+        assert_eq!(note.as_deref(), Some("offline"));
+    }
+
+    assert_eq!(stored_log_len(&cluster, PHONE), 0);
+}

@@ -131,6 +131,11 @@ pub(crate) fn range(mut prefix: Vec<u8>) -> (Vec<u8>, Vec<u8>) {
     (start, prefix)
 }
 
+/// The first key after `key`, to carry on a scan from where it stopped.
+pub(crate) fn after(key: &[u8]) -> Vec<u8> {
+    [key, &[0]].concat()
+}
+
 /// Everything settled: the cut, and every model's settled values. What a
 /// snapshot is made of.
 pub(crate) fn settled(id: AgreementId) -> Vec<u8> {

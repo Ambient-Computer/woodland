@@ -243,7 +243,7 @@ mod tests {
     #[test]
     fn a_peer_gets_what_its_missing_a_page_at_a_time() {
         let agreement = Agreement::new(&genesis(), phone());
-        let mut log = Log::restore(Clock::default(), Vec::new(), phone());
+        let mut log = Log::restore(Clock::default(), Vec::new(), Vec::new(), phone());
         let mut written = Vec::new();
         for _ in 0..=PAGE * 2 {
             let transaction = log.author(genesis().id(), Vec::new());

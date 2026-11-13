@@ -50,7 +50,10 @@ pub(crate) struct Restored {
     gossip: Option<Gossip>,
     attested: Option<Verified<Attestation>>,
     clock: Clock,
-    transactions: Vec<Verified<Transaction>>,
+    /// The frontier, as the log keeps it.
+    outlines: Vec<Outline>,
+    /// This device's own transactions, written but not yet integrated.
+    waiting: Vec<Verified<Transaction>>,
     held: Vec<(u64, admission::HeldWrite)>,
 }
 
@@ -72,20 +75,21 @@ impl Restored {
             gossip: None,
             attested: None,
             clock: Clock::default(),
-            transactions: Vec::new(),
+            outlines: Vec::new(),
+            waiting: Vec::new(),
             held: Vec::new(),
         }
     }
 
-    /// Reads a scan of the agreement's protocol range. Entries that don't
-    /// decode are skipped: they can only come from a bug or a corrupted
-    /// store.
-    pub(crate) fn from_entries(
-        genesis: &Genesis,
-        me: Peer,
-        entries: &[(Vec<u8>, Vec<u8>)],
-    ) -> Self {
-        let mut restored = Self::fresh(genesis, me);
+    /// Takes in part of a scan of the agreement's protocol range, in key
+    /// order. Entries that don't decode are skipped: they can only come
+    /// from a bug or a corrupted store.
+    ///
+    /// The clock sorts before the log, so by the time a transaction
+    /// comes up it's known whether it was integrated. If it was, only
+    /// its outline is kept.
+    pub(crate) fn take(&mut self, entries: &[(Vec<u8>, Vec<u8>)]) {
+        let restored = self;
         for (key, value) in entries {
             match keys::parse(key) {
                 Some(Record::View(_)) => restored.gossip = encoding::decode(value),
@@ -100,7 +104,13 @@ impl Restored {
                 Some(Record::Log { .. }) => {
                     // Only this device wrote it, after verifying it.
                     if let Some(signed) = encoding::decode::<Signed<Transaction>>(value) {
-                        restored.transactions.push(Verified::trust_stored(signed));
+                        let (author, seq) = (signed.author(), signed.payload().seq);
+                        let transaction = Verified::trust_stored(signed);
+                        if restored.clock.integrated.contains(author, seq) {
+                            restored.outlines.push(Outline::of(&transaction));
+                        } else {
+                            restored.waiting.push(transaction);
+                        }
                     }
                 }
                 Some(Record::Held { index, .. }) => {
@@ -119,8 +129,6 @@ impl Restored {
                 | None => {}
             }
         }
-
-        restored
     }
 }
 
@@ -138,7 +146,8 @@ impl From<Restored> for Group {
         let view = stored.then(|| agreement.view().clone());
 
         // Founders never wait to be admitted (see `admission`).
-        let mut log = Log::restore(restored.clock.clone(), restored.transactions, restored.me);
+        let (outlines, waiting) = (restored.outlines, restored.waiting);
+        let mut log = Log::restore(restored.clock.clone(), outlines, waiting, restored.me);
         if restored.genesis.configuration().is_member(restored.me) {
             log.admit();
         }

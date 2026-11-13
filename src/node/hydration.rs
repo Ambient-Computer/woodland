@@ -1,9 +1,15 @@
 //! Rebuilding a node from storage, as a conversation of scans.
 //!
 //! 1. [`start`]: scan the genesis records to find which agreements exist.
-//! 2. [`scanned`] with the genesis list: scan each agreement's protocol
-//!    state. Model data isn't loaded. The node only ever writes it.
-//! 3. [`scanned`] with an agreement's entries: rebuild that group.
+//! 2. [`scanned`] with the genesis list: start scanning each agreement's
+//!    protocol state. Model data isn't loaded. The node only ever writes
+//!    it.
+//! 3. [`scanned`] with a page of an agreement's entries: take it in, and
+//!    scan the next page, or rebuild the group if that was the last.
+//!
+//! The protocol range holds the log, which can be long. It's read a page
+//! at a time, and only an outline of each transaction is kept, so
+//! starting up never needs the whole log in memory at once.
 //!
 //! The node never waits. Each step returns scans as actions, and the
 //! answers come back as events in a later batch, like anything else.
@@ -15,45 +21,60 @@ use crate::actor::Peer;
 use crate::agreement::{AgreementId, Genesis};
 use crate::encoding;
 use crate::group::{Group, Restored};
+use crate::storage::PAGE;
 use crate::storage::keys::{self, Record};
 
-/// Agreements found in storage whose data hasn't been scanned yet.
+/// Agreements found in storage, and what's been read of each so far.
 #[derive(Debug, Default)]
 pub(super) struct Hydration {
-    found: BTreeMap<AgreementId, Genesis>,
+    found: BTreeMap<AgreementId, Restored>,
 }
 
 pub(super) fn start(outbox: &mut Outbox) {
     outbox.scan(keys::geneses());
 }
 
-/// Handles a finished scan. Returns a group once its data is in.
+/// Handles a finished scan of `start..end`. Returns a group once all of
+/// its data is in.
 pub(super) fn scanned(
     hydration: &mut Hydration,
     me: Peer,
-    prefix: &[u8],
+    (start, end): (&[u8], &[u8]),
     entries: &[(Vec<u8>, Vec<u8>)],
     outbox: &mut Outbox,
 ) -> Option<Group> {
-    if prefix == keys::geneses() {
+    let (first, last) = keys::range(keys::geneses());
+    if (start, end) == (&first[..], &last[..]) {
         for (key, value) in entries {
             if let (Some(Record::Genesis(id)), Some(genesis)) =
                 (keys::parse(key), encoding::decode::<Genesis>(value))
                 && genesis.id() == id
             {
-                outbox.scan(keys::protocol(id));
-                hydration.found.insert(id, genesis);
+                let (start, end) = keys::range(keys::protocol(id));
+                outbox.scan_page(start, end, PAGE);
+                hydration.found.insert(id, Restored::fresh(&genesis, me));
             }
         }
 
         return None;
     }
 
-    let id = *hydration
-        .found
-        .keys()
-        .find(|&&id| keys::protocol(id) == prefix)?;
-    let genesis = hydration.found.remove(&id)?;
+    // Each page starts wherever the last one stopped, and they all end
+    // where the agreement's protocol range does.
+    let within = |id: &AgreementId| {
+        let (first, last) = keys::range(keys::protocol(*id));
 
-    Some(Group::from(Restored::from_entries(&genesis, me, entries)))
+        first[..] <= *start && last == end
+    };
+
+    let id = hydration.found.keys().copied().find(within)?;
+    hydration.found.get_mut(&id)?.take(entries);
+    if let Some((last, _)) = entries.last()
+        && entries.len() >= PAGE
+    {
+        outbox.scan_page(keys::after(last), end.to_vec(), PAGE);
+        return None;
+    }
+
+    hydration.found.remove(&id).map(Group::from)
 }

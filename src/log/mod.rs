@@ -98,29 +98,32 @@ pub(crate) struct Cut {
 }
 
 impl Log {
-    /// Rebuilds from storage. Stored transactions beyond the clock are this
-    /// device's own, written but not integrated before it stopped.
-    pub(crate) fn restore(clock: Clock, stored: Vec<Verified<Transaction>>, me: Peer) -> Self {
+    /// Rebuilds from storage: the frontier, and this device's own
+    /// transactions that were written but not integrated before it
+    /// stopped.
+    pub(crate) fn restore(
+        clock: Clock,
+        frontier: Vec<Outline>,
+        waiting: Vec<Verified<Transaction>>,
+        me: Peer,
+    ) -> Self {
         let mut log = Self {
             authored: clock.integrated.get(me),
             clock,
             ..Self::default()
         };
 
-        for transaction in stored {
-            let author = transaction.author();
-            let seq = transaction.payload().seq;
-            if author == me {
-                log.authored = log.authored.max(seq);
+        for transaction in waiting {
+            let key = (transaction.author(), transaction.payload().seq);
+            if key.0 == me {
+                log.authored = log.authored.max(key.1);
             }
 
-            if log.clock.integrated.contains(author, seq) {
-                let outline = Outline::of(&transaction);
-                log.frontier.insert(outline.stamp(), outline);
-            } else {
-                log.waiting.insert((author, seq), transaction);
-            }
+            log.waiting.insert(key, transaction);
         }
+
+        let frontier = frontier.into_iter().map(|it| (it.stamp(), it));
+        log.frontier = frontier.collect();
 
         log
     }
@@ -333,7 +336,7 @@ mod tests {
 
     impl Device {
         fn new(me: Peer) -> Self {
-            let log = Log::restore(Clock::default(), Vec::new(), me);
+            let log = Log::restore(Clock::default(), Vec::new(), Vec::new(), me);
 
             Self { me, log }
         }
