@@ -28,6 +28,10 @@ impl Electorate {
         self.0.contains_key(&peer)
     }
 
+    pub(crate) fn peers(&self) -> impl Iterator<Item = Peer> + '_ {
+        self.0.keys().copied()
+    }
+
     /// Nobody could ever extend a checkpoint that carries this.
     pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()

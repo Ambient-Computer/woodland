@@ -33,7 +33,7 @@ impl Replica {
     fn propose(&mut self, electorate: Electorate, body: &[u8]) -> bool {
         let identity = identity_of(self.peer);
         let proposed = self.chain.propose(&identity, electorate, body.to_vec());
-        self.chain.advance(&identity);
+        self.chain.advance(&identity, |_| true);
 
         proposed
     }
@@ -46,7 +46,7 @@ impl Replica {
     fn deliver(&mut self, gossip: Gossip) -> bool {
         let grew = self.chain.receive(gossip);
 
-        self.chain.advance(&identity_of(self.peer)) || grew
+        self.chain.advance(&identity_of(self.peer), |_| true) || grew
     }
 
     fn height(&self) -> u64 {

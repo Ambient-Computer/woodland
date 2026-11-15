@@ -16,6 +16,12 @@ use crate::encoding;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub(crate) struct Digest([u8; 32]);
 
+impl Digest {
+    pub(crate) fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
 /// One link of the chain.
 ///
 /// It names the link before it, so the chain is a sequence: whoever holds

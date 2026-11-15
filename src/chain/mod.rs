@@ -71,6 +71,8 @@ pub(crate) use statement::{
     Ballot, Certificate, Checkpoint, Digest, Prepare, Promise, Proposal, Stated, Vote,
 };
 
+use serde::{Deserialize, Serialize};
+
 use crate::actor::{Identity, Peer, Signable, Signed, Verified, verify_all};
 
 /// One device's replica of one chain.
@@ -99,8 +101,18 @@ struct Slot {
     votes: BTreeMap<Peer, Verified<Vote>>,
 }
 
+/// A replica, as it's kept in storage.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct Saved {
+    founding: Checkpoint,
+    promised: Option<Ballot>,
+    accepted: Option<(Ballot, Checkpoint)>,
+    candidate: Option<(Ballot, Checkpoint)>,
+    gossip: Gossip,
+}
+
 /// Everything a replica holds that another might not.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub(crate) struct Gossip {
     pub(crate) decided: Vec<Certificate>,
     pub(crate) prepares: Vec<Signed<Prepare>>,
@@ -130,6 +142,58 @@ impl Chain {
         let decided = self.decided.iter().map(|link| &link.checkpoint);
 
         std::iter::once(&self.founding).chain(decided)
+    }
+
+    /// The highest ballot anyone has mentioned for the slot after the
+    /// tip, if an attempt is under way.
+    pub(crate) fn attempt(&self) -> Option<u64> {
+        let round = self.slot.highest_round();
+
+        (round > 0).then_some(round)
+    }
+
+    /// Everything worth keeping across a restart.
+    pub(crate) fn save(&self) -> Saved {
+        let gossip = self.gossip(0);
+
+        Saved {
+            founding: self.founding.clone(),
+            promised: self.slot.promised,
+            accepted: self.slot.accepted.clone(),
+            candidate: self.slot.candidate.clone(),
+            gossip,
+        }
+    }
+
+    /// Picks up from what was saved. It was all checked before it was
+    /// stored.
+    pub(crate) fn restore(saved: Saved) -> Self {
+        fn trusted<T>(stored: Vec<Signed<T>>) -> BTreeMap<Peer, Verified<T>> {
+            let stored = stored.into_iter().map(Verified::trust_stored);
+
+            stored.map(|it| (it.author(), it)).collect()
+        }
+        let Gossip {
+            decided,
+            prepares,
+            promises,
+            proposals,
+            votes,
+        } = saved.gossip;
+
+        Self {
+            founding: saved.founding,
+            decided,
+            slot: Slot {
+                promised: saved.promised,
+                accepted: saved.accepted,
+                candidate: saved.candidate,
+                prepares: trusted(prepares),
+                promises: trusted(promises),
+                proposals: trusted(proposals),
+                votes: trusted(votes),
+            },
+        }
     }
 
     /// Starts an attempt to make `body` the next checkpoint, with
@@ -207,11 +271,18 @@ impl Chain {
     /// vote, propose, and decide. Returns whether it did anything.
     ///
     /// Whatever this signs must be durable before it's sent.
-    pub(crate) fn advance(&mut self, identity: &Identity) -> bool {
+    ///
+    /// It votes only for a checkpoint that's `valid`: one whose contents
+    /// this device has checked for itself. Promising needs no such check.
+    pub(crate) fn advance(
+        &mut self,
+        identity: &Identity,
+        valid: impl Fn(&Checkpoint) -> bool,
+    ) -> bool {
         let mut advanced = false;
         loop {
             let mut moved = self.promise(identity);
-            moved |= self.vote(identity);
+            moved |= self.vote(identity, &valid);
             moved |= self.put(identity);
             moved |= self.decide();
             if !moved {
@@ -272,7 +343,7 @@ impl Chain {
 
     /// Votes for the highest proposal, unless it promised a later ballot
     /// or already voted for this one.
-    fn vote(&mut self, identity: &Identity) -> bool {
+    fn vote(&mut self, identity: &Identity, valid: impl Fn(&Checkpoint) -> bool) -> bool {
         let me = identity.peer();
         let proposals = self.slot.proposals.values().map(Verified::payload);
         let Some(proposal) = proposals.max_by_key(|it| it.ballot).cloned() else {
@@ -283,6 +354,7 @@ impl Chain {
         if !self.tip().electorate.includes(me)
             || self.slot.promised > Some(ballot)
             || voted >= Some(ballot)
+            || !valid(&proposal.checkpoint)
         {
             return false;
         }
