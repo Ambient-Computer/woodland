@@ -140,7 +140,7 @@ fn rows_go_with_the_table_they_were_written_to() {
         assert_eq!(read_table(&cluster, device, loser), None, "device {device}");
     }
 
-    // Nothing of the losing table is left anywhere, once it's settled.
+    // Nothing of the losing table is left anywhere, once it's committed.
     for device in [PHONE, LAPTOP, NAS] {
         assert_eq!(stored_frontier(&cluster, device), []);
     }

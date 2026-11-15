@@ -4,12 +4,12 @@ use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
 use super::Peer;
 
-/// "This is me": the signing keypair of the device running the [`Node`].
+/// "This is me": the signing keypair of the device running the [`Database`].
 ///
 /// The library never generates keys. Randomness and secret storage belong
 /// to the application, which keeps the library deterministic and testable.
 ///
-/// [`Node`]: crate::Node
+/// [`Database`]: crate::Database
 pub struct Identity {
     keypair: SigningKey,
 }

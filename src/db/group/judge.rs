@@ -4,7 +4,7 @@
 //! requirement is checked against the state at the entry's place in the
 //! timeline: what's committed, plus what every earlier uncommitted entry
 //! that happened wrote. An entry with a requirement that doesn't hold is
-//! void. It stays in its author's chain, but none of its operations
+//! pruned. It stays in its author's chain, but none of its operations
 //! happen, in any model.
 //!
 //! A committed entry's verdict is final, because nothing can land before
@@ -17,11 +17,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::agreement::AgreementId;
 use crate::clock::Stamp;
-use crate::io::Changed;
+use crate::db::{Changed, GroupId, keys};
 use crate::model::{Declaration, Effect, Fingerprint, Kind, ModelId, Operation, Requirement};
-use crate::storage::keys;
 use crate::store::{StoreError, View};
 
 use super::super::entry::Outline;
@@ -71,7 +69,7 @@ impl Written {
 /// operations apply in order, so it can meet a requirement itself, or
 /// break one.
 pub(super) async fn weigh<V: View>(
-    id: AgreementId,
+    id: GroupId,
     entry: &Outline,
     written: &Written,
     step: &Step<V>,
@@ -91,7 +89,7 @@ pub(super) async fn weigh<V: View>(
                 let held = if let Some(&held) = before {
                     held
                 } else {
-                    let committed = step.get(&keys::settled_value(id, model, key)).await?;
+                    let committed = step.get(&keys::committed_value(id, model, key)).await?;
 
                     committed.as_deref().map(Fingerprint::of)
                 };
@@ -123,12 +121,12 @@ pub(super) async fn weigh<V: View>(
 /// in order, so a later operation on the same key replaces an earlier
 /// one. Not for models that only show what's committed. A drop leaves a
 /// mark, and nothing else changes until it's committed.
-pub(super) fn show<V>(id: AgreementId, stamp: Stamp, operations: &[Operation], step: &mut Step<V>)
+pub(super) fn show<V>(id: GroupId, stamp: Stamp, operations: &[Operation], step: &mut Step<V>)
 where
     V: View,
 {
     for operation in operations {
-        let shown = operation.model.kind().is_some_and(Kind::shows_unsettled);
+        let shown = operation.model.kind().is_some_and(Kind::shows_uncommitted);
         for write in operation.writes().into_iter().filter(|_| shown) {
             step.save(
                 keys::version(id, write.model, &write.key, stamp),
@@ -143,7 +141,7 @@ where
 }
 
 /// Takes back what [`show`] put there.
-pub(super) fn hide<V: View>(id: AgreementId, entry: &Outline, step: &mut Step<V>) {
+pub(super) fn hide<V: View>(id: GroupId, entry: &Outline, step: &mut Step<V>) {
     for declaration in &entry.declared {
         match &declaration.effect {
             Effect::Write { key, .. } => {
@@ -159,13 +157,13 @@ pub(super) fn hide<V: View>(id: AgreementId, entry: &Outline, step: &mut Step<V>
 /// Makes an entry's writes the committed values of their keys, and
 /// deletes every committed value of a model it drops.
 pub(super) async fn commit<V: View>(
-    id: AgreementId,
+    id: GroupId,
     operations: &[Operation],
     step: &mut Step<V>,
 ) -> Result<(), StoreError> {
     for operation in operations {
         for write in operation.writes() {
-            let key = keys::settled_value(id, write.model, &write.key);
+            let key = keys::committed_value(id, write.model, &write.key);
             match write.value {
                 Some(value) => step.put(key, value),
                 None => step.delete(key),
@@ -173,7 +171,7 @@ pub(super) async fn commit<V: View>(
         }
 
         if operation.drops() {
-            let (start, end) = keys::range(keys::settled_value(id, operation.model, b""));
+            let (start, end) = keys::range(keys::committed_value(id, operation.model, b""));
             for (key, _) in step.scan(&start, &end).await? {
                 step.delete(key);
             }
@@ -184,22 +182,17 @@ pub(super) async fn commit<V: View>(
 }
 
 /// Tells readers that whatever `entry` touches may read differently.
-pub(super) fn notify<V: View>(
-    id: AgreementId,
-    entry: &Outline,
-    committed: bool,
-    step: &mut Step<V>,
-) {
+pub(super) fn notify<V: View>(id: GroupId, entry: &Outline, committed: bool, step: &mut Step<V>) {
     for declaration in &entry.declared {
         match &declaration.effect {
             Effect::Write { key, .. } => step.changed(Changed::Key {
-                agreement: id,
+                group: id,
                 model: declaration.model,
                 key: key.clone(),
                 committed,
             }),
 
-            Effect::Drop => step.changed(Changed::Everything { agreement: id }),
+            Effect::Drop => step.changed(Changed::Everything { group: id }),
             Effect::Require { .. } => {}
         }
     }

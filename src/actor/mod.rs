@@ -16,7 +16,7 @@ pub(crate) use signed::{Signable, Signed, Verified, verify_all};
 /// ID).
 ///
 /// A peer may be an observer, not only a contributor. Whether it may write is
-/// decided by an agreement's configuration, not by this type.
+/// decided by an group's configuration, not by this type.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) struct Peer(VerifyingKey);
 

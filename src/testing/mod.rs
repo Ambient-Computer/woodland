@@ -1,9 +1,7 @@
-//! Test-only support: the cast of devices, and in-memory stand-ins for the
-//! network and storage that a real application would provide.
+//! Test-only support: the cast of devices, and a way to run a future
+//! without a runtime.
 
-pub(crate) mod cluster;
 pub(crate) mod peers;
-pub(crate) mod store;
 
 use std::pin::pin;
 use std::task::{Context, Poll, Waker};

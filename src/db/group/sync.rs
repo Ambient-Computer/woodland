@@ -8,8 +8,8 @@
 use crate::actor::{Identity, Peer};
 use crate::chain::{Digest, Gossip};
 use crate::clock::Stamp;
+use crate::db::keys;
 use crate::encoding;
-use crate::storage::keys;
 use crate::store::{StoreError, View};
 
 use super::super::entry::{Checked, Entry, Frontier, Link, reach};

@@ -34,7 +34,7 @@ fn found(cluster: &Sim, device: usize, query: &Query) -> Vec<String> {
         .collect()
 }
 
-fn signed_up() -> (Sim, AgreementId, ModelId) {
+fn signed_up() -> (Sim, GroupId, ModelId) {
     let mut cluster = household();
     let table = create_accounts(&mut cluster, PHONE);
     for (key, paid) in [("ada", 1), ("al", 9), ("alan", 3), ("grace", 2)] {
@@ -42,33 +42,24 @@ fn signed_up() -> (Sim, AgreementId, ModelId) {
     }
 
     cluster.settle();
-    let agreement = cluster.home;
+    let group = cluster.home;
 
-    (cluster, agreement, table)
+    (cluster, group, table)
 }
 
 #[test]
 fn rows_are_read_a_range_at_a_time() {
-    let (cluster, agreement, table) = signed_up();
+    let (cluster, group, table) = signed_up();
     let read = |query: Query| keys_read(&cluster, NAS, &query);
 
-    assert_eq!(
-        read(Query::rows(agreement, table, "al".."b")),
-        ["al", "alan"]
-    );
-    assert_eq!(
-        read(Query::rows(agreement, table, "ada"..="al")),
-        ["ada", "al"]
-    );
-    assert_eq!(read(Query::rows(agreement, table, .."al")), ["ada"]);
-    assert_eq!(
-        read(Query::rows(agreement, table, "alan"..)),
-        ["alan", "grace"]
-    );
+    assert_eq!(read(Query::rows(group, table, "al".."b")), ["al", "alan"]);
+    assert_eq!(read(Query::rows(group, table, "ada"..="al")), ["ada", "al"]);
+    assert_eq!(read(Query::rows(group, table, .."al")), ["ada"]);
+    assert_eq!(read(Query::rows(group, table, "alan"..)), ["alan", "grace"]);
 
     let after = (Bound::Excluded("al"), Bound::<&str>::Unbounded);
     assert_eq!(
-        read(Query::rows::<&str>(agreement, table, after)),
+        read(Query::rows::<&str>(group, table, after)),
         ["alan", "grace"]
     );
 }
@@ -77,8 +68,8 @@ fn rows_are_read_a_range_at_a_time() {
 /// of a row whose key starts with its key.
 #[test]
 fn one_row_is_read_on_its_own() {
-    let (cluster, agreement, table) = signed_up();
-    let query = Query::row(agreement, table, b"al");
+    let (cluster, group, table) = signed_up();
+    let query = Query::row(group, table, b"al");
     let read = Table::read(&cluster.read(NAS, &query)).expect("created");
 
     assert_eq!(read.rows().len(), 1);
@@ -86,7 +77,7 @@ fn one_row_is_read_on_its_own() {
     let al = read.row(b"al").expect("signed up");
     assert_eq!(al.get(tier(table)), &Value::from(9));
 
-    let nobody = Query::row(agreement, table, b"a");
+    let nobody = Query::row(group, table, b"a");
     assert_eq!(keys_read(&cluster, NAS, &nobody), [""; 0]);
 }
 
@@ -94,8 +85,8 @@ fn one_row_is_read_on_its_own() {
 /// it can be changed.
 #[test]
 fn a_row_read_on_its_own_can_be_changed() {
-    let (mut cluster, agreement, table) = signed_up();
-    let query = Query::row(agreement, table, b"grace");
+    let (mut cluster, group, table) = signed_up();
+    let query = Query::row(group, table, b"grace");
     let read = Table::read(&cluster.read(LAPTOP, &query)).expect("created");
     let grace = read.row(b"grace").expect("signed up");
 
@@ -108,52 +99,49 @@ fn a_row_read_on_its_own_can_be_changed() {
 
 #[test]
 fn an_index_finds_rows_by_what_they_hold() {
-    let (cluster, agreement, table) = signed_up();
+    let (cluster, group, table) = signed_up();
     let find = |query: Query| found(&cluster, NAS, &query);
     let paid = tier(table);
 
     assert_eq!(
-        find(Query::lookup(agreement, table, paid, &2.into())),
+        find(Query::lookup(group, table, paid, &2.into())),
         ["grace"]
     );
-    assert_eq!(
-        find(Query::lookup(agreement, table, paid, &4.into())),
-        [""; 0]
-    );
+    assert_eq!(find(Query::lookup(group, table, paid, &4.into())), [""; 0]);
 
     // In the order of the values, not of the rows.
-    let from_two = Query::index(agreement, table, paid, Value::from(2)..);
+    let from_two = Query::index(group, table, paid, Value::from(2)..);
     assert_eq!(find(from_two), ["grace", "alan", "al"]);
-    let below_three = Query::index(agreement, table, paid, ..Value::from(3));
+    let below_three = Query::index(group, table, paid, ..Value::from(3));
     assert_eq!(find(below_three), ["ada", "grace"]);
-    let through_three = Query::index(agreement, table, paid, Value::from(2)..=Value::from(3));
+    let through_three = Query::index(group, table, paid, Value::from(2)..=Value::from(3));
     assert_eq!(find(through_three), ["grace", "alan"]);
-    assert_eq!(find(Query::index(agreement, table, paid, ..)).len(), 4);
+    assert_eq!(find(Query::index(group, table, paid, ..)).len(), 4);
 }
 
 #[test]
 fn an_index_sorts_numbers_by_size() {
     let mut cluster = household();
-    let (agreement, table) = (cluster.home, create_accounts(&mut cluster, PHONE));
+    let (group, table) = (cluster.home, create_accounts(&mut cluster, PHONE));
     for (key, paid) in [("a", 300), ("b", -1), ("c", 0), ("d", -300), ("e", 2)] {
         sign_up_at(&mut cluster, PHONE, key, paid);
     }
 
     cluster.settle();
 
-    let everyone = Query::index(agreement, table, tier(table), ..);
+    let everyone = Query::index(group, table, tier(table), ..);
     assert_eq!(
         found(&cluster, LAPTOP, &everyone),
         ["d", "b", "c", "e", "a"]
     );
-    let negative = Query::index(agreement, table, tier(table), ..Value::from(0));
+    let negative = Query::index(group, table, tier(table), ..Value::from(0));
     assert_eq!(found(&cluster, LAPTOP, &negative), ["d", "b"]);
 }
 
 #[test]
 fn an_index_follows_the_rows() {
-    let (mut cluster, agreement, table) = signed_up();
-    let at = |paid: i64| Query::lookup(agreement, table, tier(table), &paid.into());
+    let (mut cluster, group, table) = signed_up();
+    let at = |paid: i64| Query::lookup(group, table, tier(table), &paid.into());
 
     let ada = account(&cluster, LAPTOP, "ada").expect("signed up");
     update(&mut cluster, LAPTOP, &ada, tier(table), 2);
@@ -179,22 +167,22 @@ fn an_index_follows_the_rows() {
 #[test]
 fn a_unique_column_is_an_index_too() {
     let mut cluster = household();
-    let (agreement, table) = (cluster.home, create_accounts(&mut cluster, PHONE));
+    let (group, table) = (cluster.home, create_accounts(&mut cluster, PHONE));
     sign_up(&mut cluster, PHONE, "ada", Some("a@example.com"));
     sign_up(&mut cluster, PHONE, "grace", Some("g@example.com"));
     cluster.settle();
 
     let address = Value::from("g@example.com");
-    let query = Query::lookup(agreement, table, email(table), &address);
+    let query = Query::lookup(group, table, email(table), &address);
     assert_eq!(found(&cluster, NAS, &query), ["grace"]);
-    let everyone = Query::index(agreement, table, email(table), ..);
+    let everyone = Query::index(group, table, email(table), ..);
     assert_eq!(found(&cluster, NAS, &everyone), ["ada", "grace"]);
 }
 
 #[test]
 fn a_column_that_isnt_indexed_finds_nothing() {
-    let (cluster, agreement, table) = signed_up();
-    let query = Query::index(agreement, table, plan(table), ..);
+    let (cluster, group, table) = signed_up();
+    let query = Query::index(group, table, plan(table), ..);
 
     assert_eq!(query.clone().committed().storage_ranges(), []);
     assert_eq!(found(&cluster, NAS, &query), [""; 0]);
@@ -205,7 +193,7 @@ fn a_column_that_isnt_indexed_finds_nothing() {
 /// devices that change it while apart can't both.
 #[test]
 fn only_one_of_two_changes_to_an_indexed_column_happens() {
-    let (mut cluster, agreement, table) = signed_up();
+    let (mut cluster, group, table) = signed_up();
     cluster.disconnect_all();
     cluster.settle();
 
@@ -216,7 +204,7 @@ fn only_one_of_two_changes_to_an_indexed_column_happens() {
     cluster.connect_all();
     cluster.settle();
 
-    let at = |paid: i64| Query::lookup(agreement, table, tier(table), &paid.into());
+    let at = |paid: i64| Query::lookup(group, table, tier(table), &paid.into());
     let (five, six) = (
         found(&cluster, PHONE, &at(5)),
         found(&cluster, PHONE, &at(6)),
@@ -236,11 +224,11 @@ fn only_one_of_two_changes_to_an_indexed_column_happens() {
 
 #[test]
 fn queries_for_part_of_a_table_know_what_changes_them() {
-    let (mut cluster, agreement, table) = signed_up();
-    let rows = Query::rows(agreement, table, "a".."b");
-    let other_rows = Query::rows(agreement, table, "g"..);
-    let paid_two = Query::lookup(agreement, table, tier(table), &2.into());
-    let paid_seven = Query::lookup(agreement, table, tier(table), &7.into());
+    let (mut cluster, group, table) = signed_up();
+    let rows = Query::rows(group, table, "a".."b");
+    let other_rows = Query::rows(group, table, "g"..);
+    let paid_two = Query::lookup(group, table, tier(table), &2.into());
+    let paid_seven = Query::lookup(group, table, tier(table), &7.into());
 
     let ada = account(&cluster, LAPTOP, "ada").expect("signed up");
     let before = cluster.changes[LAPTOP].len();

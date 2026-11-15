@@ -157,3 +157,26 @@ fn rival_attempts_end_in_one_checkpoint() {
         assert_eq!(sim.committed(device, group, names(group), "alice"), holder);
     }
 }
+
+/// A threshold model shows only what's committed, so nobody acts on a
+/// value that could still be reordered.
+#[test]
+fn a_threshold_value_shows_once_its_committed() {
+    let (mut sim, group) = Sim::group(3, 3);
+    let limits = ModelId::threshold(group, [4; 32]);
+    sim.isolate(PHONE);
+    sim.write_to(PHONE, group, set(limits, "quota", "10"));
+    sim.settle();
+
+    assert_eq!(sim.shown(PHONE, group, limits, "quota"), None);
+
+    sim.connect_all();
+    sim.settle();
+
+    for device in [PHONE, LAPTOP, NAS] {
+        assert_eq!(
+            sim.shown(device, group, limits, "quota").as_deref(),
+            Some("10")
+        );
+    }
+}

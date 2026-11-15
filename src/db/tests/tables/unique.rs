@@ -127,7 +127,7 @@ pub(super) fn holders(cluster: &Sim, device: usize, address: &str) -> Vec<String
 
 #[test]
 fn a_unique_column_is_a_different_column() {
-    let table = ModelId::table(AgreementId::from_bytes([0; 32]), [9; 32]);
+    let table = ModelId::table(GroupId::from_bytes([0; 32]), [9; 32]);
 
     assert_ne!(email(table), ColumnId::text(table, [1; 32]));
     assert_eq!(email(table), email(table).unique());

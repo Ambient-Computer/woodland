@@ -10,9 +10,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::actor::Peer;
+use crate::db::{Changed, keys};
 use crate::encoding;
-use crate::io::Changed;
-use crate::storage::keys;
 use crate::store::{Entry, Order, StoreError, View, Write};
 
 /// How many entries to read from the store at once.

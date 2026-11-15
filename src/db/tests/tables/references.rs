@@ -14,15 +14,15 @@ pub(in crate::db::tests) fn buyer(table: ModelId) -> ColumnId {
 }
 
 /// Accounts and orders, and Ada's account, known to everyone.
-fn shop() -> (Sim, AgreementId) {
+fn shop() -> (Sim, GroupId) {
     let mut cluster = household();
-    let agreement = cluster.home;
+    let group = cluster.home;
     create_accounts(&mut cluster, PHONE);
     open_orders(&mut cluster, PHONE);
     sign_up(&mut cluster, PHONE, "ada", None);
     cluster.settle();
 
-    (cluster, agreement)
+    (cluster, group)
 }
 
 pub(in crate::db::tests) fn open_orders(cluster: &mut Sim, device: usize) {
@@ -58,17 +58,12 @@ pub(in crate::db::tests) fn orders_of(
     buyer_key: &str,
     committed: bool,
 ) -> Vec<Row> {
-    let (agreement, table) = (cluster.home, orders(cluster));
+    let (group, table) = (cluster.home, orders(cluster));
     let store = cluster.reader(device);
-    let settled = |query: Query| if committed { query.committed() } else { query };
-    let found = settled(Query::lookup(
-        agreement,
-        table,
-        buyer(table),
-        &buyer_key.into(),
-    ));
+    let committed = |query: Query| if committed { query.committed() } else { query };
+    let found = committed(Query::lookup(group, table, buyer(table), &buyer_key.into()));
     let row = |key: Vec<u8>| {
-        let read = Table::read(&store.read(&settled(Query::row(agreement, table, &key))))?;
+        let read = Table::read(&store.read(&committed(Query::row(group, table, &key))))?;
 
         read.row(&key).cloned()
     };
@@ -95,7 +90,7 @@ pub(in crate::db::tests) fn retire(cluster: &mut Sim, device: usize, row: &Row) 
 }
 
 /// Closes an account the way an application should, going only by
-/// what has settled: not at all if it has orders and isn't retired,
+/// what is committed: not at all if it has orders and isn't retired,
 /// and along with every order it has if it is.
 pub(in crate::db::tests) fn close_with_orders(cluster: &mut Sim, device: usize, key: &str) {
     let Some(row) = committed_account(cluster, device, key) else {

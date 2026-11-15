@@ -15,9 +15,9 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::actor::{Identity, Peer, Signable, Signed, verify_all};
-use crate::agreement::AgreementId;
 use crate::chain::Digest;
 use crate::clock::Stamp;
+use crate::db::GroupId;
 use crate::encoding;
 use crate::model::{Declaration, Operation};
 
@@ -45,7 +45,7 @@ pub(crate) fn reach(frontier: &Frontier, author: Peer) -> u64 {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Header {
     /// So a signed entry can never be replayed into another group.
-    pub(crate) group: AgreementId,
+    pub(crate) group: GroupId,
     /// Its place in its author's chain, counting from one.
     pub(crate) seq: u64,
     /// The entry before it in its author's chain.
@@ -100,7 +100,7 @@ impl Entry {
     /// Checks everything that can be checked without knowing anything
     /// else: the signature, the group, and that the payload is the one
     /// the header was signed over.
-    pub(crate) fn check(self, group: AgreementId) -> Option<Checked> {
+    pub(crate) fn check(self, group: GroupId) -> Option<Checked> {
         let header = verify_all(vec![self.header.clone()]).pop()?;
         let said = header.payload();
         let intact = said.group == group && said.payload == Hash::of_payload(&self.payload);

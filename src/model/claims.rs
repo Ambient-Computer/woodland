@@ -18,7 +18,7 @@
 //! Among concurrent claims, the one that comes first in the timeline.
 //! That's arbitrary, but the same on every device. A device sees its own
 //! claim succeed until an earlier one arrives, which can happen for as
-//! long as the claim hasn't settled. A committed read shows only the
+//! long as the claim isn't committed. A committed read shows only the
 //! claim that won for good (see [`Query::committed`]).
 //!
 //! # Locks
@@ -31,8 +31,8 @@
 //! lock their device turned out not to get are pruned, like the claim
 //! that didn't get it.
 //!
-//! [release]: crate::TransactionBuilder::release
-//! [expect]: crate::TransactionBuilder::expect
+//! [release]: crate::Transaction::release
+//! [expect]: crate::Transaction::expect
 //! [requires]: Requirement
 //! [`Query::committed`]: crate::Query::committed
 

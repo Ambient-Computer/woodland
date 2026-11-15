@@ -45,7 +45,7 @@ type Claims = BTreeMap<&'static str, String>;
 
 struct Run {
     sim: Sim,
-    group: AgreementId,
+    group: GroupId,
     written: u64,
     claims: Claims,
 }

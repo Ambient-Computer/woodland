@@ -19,16 +19,16 @@
 //!
 //! # Settling
 //!
-//! Once a transaction settles, nothing can land before it in the timeline
+//! Once a transaction is committed, nothing can land before it in the timeline
 //! anymore (see `group::settling`). Its versions are folded, in timeline
-//! order, into the one settled value each key has, and a settled removal
-//! simply leaves no value. So what's kept per key is one settled value,
-//! plus a version for each write that hasn't settled yet.
+//! order, into the one committed value each key has, and a committed removal
+//! simply leaves no value. So what's kept per key is one committed value,
+//! plus a version for each write that isn't committed yet.
 //!
 //! # Reading
 //!
-//! A key's current value is its last version, or its settled value if it
-//! has no versions. Reading only settled values gives the state every
+//! A key's current value is its last version, or its committed value if it
+//! has no versions. Reading only committed values gives the state every
 //! device agrees on, and will never disagree on.
 
 use std::collections::BTreeMap;
@@ -55,9 +55,9 @@ impl Operation {
 }
 
 /// The current value of every key that has one: its last version in the
-/// timeline, or its settled value if nothing has written it since.
+/// timeline, or its committed value if nothing has written it since.
 pub(crate) fn current(
-    settled: impl IntoIterator<Item = (Vec<u8>, Vec<u8>)>,
+    committed: impl IntoIterator<Item = (Vec<u8>, Vec<u8>)>,
     versions: impl IntoIterator<Item = (Vec<u8>, Stamp, Option<Vec<u8>>)>,
 ) -> BTreeMap<Vec<u8>, Vec<u8>> {
     let mut latest: BTreeMap<Vec<u8>, (Stamp, Option<Vec<u8>>)> = BTreeMap::new();
@@ -68,7 +68,7 @@ pub(crate) fn current(
         }
     }
 
-    let mut current: BTreeMap<Vec<u8>, Vec<u8>> = settled.into_iter().collect();
+    let mut current: BTreeMap<Vec<u8>, Vec<u8>> = committed.into_iter().collect();
     for (key, (_, value)) in latest {
         match value {
             Some(value) => current.insert(key, value),
@@ -87,12 +87,12 @@ mod tests {
     use crate::actor::Peer;
     use crate::testing::peers::{laptop, nas, phone};
 
-    /// Plays storage: every settled value, and every version by key and
+    /// Plays storage: every committed value, and every version by key and
     /// stamp. Like storage, a later write to the same place replaces the
     /// earlier one.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     struct Store {
-        settled: BTreeMap<Vec<u8>, Vec<u8>>,
+        committed: BTreeMap<Vec<u8>, Vec<u8>>,
         versions: BTreeMap<(Vec<u8>, Stamp), Option<Vec<u8>>>,
     }
 
@@ -105,13 +105,13 @@ mod tests {
         }
 
         /// Settles one transaction, the way the group does: its writes are
-        /// folded into the settled values, and its versions dropped.
+        /// folded into the committed values, and its versions dropped.
         fn settle(&mut self, stamp: Stamp, operations: &[Operation]) {
             for (key, value) in operations.iter().map(Operation::write) {
                 self.versions.remove(&(key.clone(), stamp));
                 match value {
-                    Some(value) => self.settled.insert(key, value),
-                    None => self.settled.remove(&key),
+                    Some(value) => self.committed.insert(key, value),
+                    None => self.committed.remove(&key),
                 };
             }
         }
@@ -120,7 +120,7 @@ mod tests {
             let versions = self.versions.clone().into_iter();
 
             current(
-                self.settled.clone(),
+                self.committed.clone(),
                 versions.map(|((key, stamp), value)| (key, stamp, value)),
             )
         }
@@ -197,7 +197,7 @@ mod tests {
         store.apply(stamp(2, laptop()), &[remove("color")]);
 
         assert_eq!(store.get("color"), None);
-        assert_eq!(store.settled.get(&b"color"[..]), Some(&b"red".to_vec()));
+        assert_eq!(store.committed.get(&b"color"[..]), Some(&b"red".to_vec()));
     }
 
     #[test]
@@ -286,7 +286,7 @@ mod tests {
         }
 
         /// Settling a prefix of the timeline changes what's stored, never
-        /// what's read. And the settled values are what the prefix alone
+        /// what's read. And the committed values are what the prefix alone
         /// derives.
         #[test]
         fn settling_a_prefix_changes_nothing_a_reader_sees(
@@ -294,15 +294,15 @@ mod tests {
             prefix in any::<prop::sample::Index>(),
         ) {
             let transactions = timeline(transactions);
-            let (settled, _) = transactions.split_at(prefix.index(transactions.len() + 1));
+            let (committed, _) = transactions.split_at(prefix.index(transactions.len() + 1));
 
             let mut store = replay(transactions.iter());
-            for (stamp, operations) in settled {
+            for (stamp, operations) in committed {
                 store.settle(*stamp, operations);
             }
 
             prop_assert_eq!(store.read(), one_at_a_time(&transactions));
-            prop_assert_eq!(store.settled, one_at_a_time(settled));
+            prop_assert_eq!(store.committed, one_at_a_time(committed));
         }
     }
 }

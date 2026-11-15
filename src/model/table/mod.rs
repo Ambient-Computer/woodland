@@ -19,7 +19,7 @@
 //!   another that has since taken its key.
 //!
 //! So a device can create a table and fill it while offline, and none
-//! of it is final until it settles. Until then it either all stands, or
+//! of it is final until it is committed. Until then it either all stands, or
 //! goes together.
 //!
 //! # Rows
@@ -97,8 +97,8 @@
 //!
 //! A row that has been referred to is deleted in two steps. First
 //! it's **retired**: it takes no more references, from there on in
-//! the timeline. Once that has settled, nothing can be placed before
-//! it, so every reference there will ever be has settled too, and a
+//! the timeline. Once that is committed, nothing can be placed before
+//! it, so every reference there will ever be is committed too, and a
 //! committed read finds all of them. Then whoever is deleting the row
 //! deals with what refers to it, and deletes it, in one transaction.
 //! Whether that means deleting those rows too, or giving up and
@@ -106,8 +106,8 @@
 //! retirement it read, so one written before the row was restored
 //! doesn't happen after.
 //!
-//! Waiting for the retirement to settle is the price: it takes every
-//! contributor. A rule about what doesn't exist anywhere can't be
+//! Waiting for the retirement to be committed is the price: it takes a
+//! quorum. A rule about what doesn't exist anywhere can't be
 //! checked by a device on its own.
 //!
 //! # Schema

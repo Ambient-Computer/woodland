@@ -1,33 +1,29 @@
 //! Reading model data, straight from storage.
 //!
-//! Reads don't go through the [`Node`]. Every change the node integrates is
-//! written to storage in the same batch, and writes come before any other
-//! action, so once the application has performed a batch's actions,
-//! storage holds the latest state. Reading it directly means a read never
-//! waits on the state machine, and the application can use whatever its
-//! storage offers: its own thread, snapshots, cursors.
+//! A read doesn't take a step. Everything a step changes reaches storage
+//! as one batch, so a read against a view of storage sees whole steps,
+//! and never waits for one.
 //!
 //! # Two ways to read
 //!
 //! - **Optimistic** (the default): the most recent state this device knows
-//!   of. It includes writes that haven't settled, so it can change in ways
+//!   of. It includes writes that aren't committed, so it can change in ways
 //!   that look like going back: a write that was made earlier, elsewhere,
 //!   can arrive later and take its place in the timeline.
-//! - **Committed** ([`Query::committed`]): only what has settled. Every
+//! - **Committed** ([`Query::committed`]): only what is committed. Every
 //!   device that reads it sees the same history, in the same order, and it
 //!   only ever moves forward. It trails the optimistic state by however
-//!   long the slowest contributor takes to catch up. A [threshold] model
+//!   long a quorum takes to decide a checkpoint. A [threshold] model
 //!   is always read this way.
 //!
 //! # Subscribing
 //!
-//! The node doesn't run queries, so it can't push results. It says what
-//! changed instead ([`Changed`]), after the write that changed it. Keep
+//! The database doesn't keep queries, so it can't push results. Each
+//! step says what it changed instead ([`Changed`]). Keep
 //! the queries you're showing, and run again the ones a change
 //! [affects]. An optimistic query feeding a signal in a UI and a
 //! committed one feeding an index on disk are the same loop.
 //!
-//! [`Node`]: crate::Node
 //! [affects]: Query::is_affected_by
 //! [threshold]: ModelId::threshold
 
@@ -35,10 +31,9 @@ use std::ops::{Bound, RangeBounds};
 
 use super::table::{self, ColumnId, Value};
 use super::{Kind, ModelId, kv};
-use crate::agreement::AgreementId;
+use crate::db::keys::{self, Record};
+use crate::db::{Changed, GroupId};
 use crate::encoding;
-use crate::io::Changed;
-use crate::storage::keys::{self, Record};
 
 /// A read of some of one model's entries: a single key, every key that
 /// starts with a prefix, or some of a [table]'s rows.
@@ -49,11 +44,11 @@ use crate::storage::keys::{self, Record};
 /// [table]: ModelId::table
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Query {
-    agreement: AgreementId,
+    group: GroupId,
     model: ModelId,
     /// The parts of the model that are wanted.
     ranges: Vec<Range>,
-    /// Whether writes that haven't settled are wanted.
+    /// Whether writes that aren't committed are wanted.
     optimistic: bool,
     /// A single-key query also scans keys that extend it, and drops them.
     exact: Option<Vec<u8>>,
@@ -66,8 +61,8 @@ pub(crate) type Range = (Vec<u8>, Option<Vec<u8>>);
 impl Query {
     /// The value of one key.
     #[must_use]
-    pub fn key(agreement: AgreementId, model: ModelId, key: &[u8]) -> Self {
-        let mut query = Self::prefix(agreement, model, key);
+    pub fn key(group: GroupId, model: ModelId, key: &[u8]) -> Self {
+        let mut query = Self::prefix(group, model, key);
         query.exact = Some(key.to_vec());
         query
     }
@@ -75,10 +70,10 @@ impl Query {
     /// Every key starting with `prefix`, in key order. An empty prefix reads
     /// the whole model.
     #[must_use]
-    pub fn prefix(agreement: AgreementId, model: ModelId, prefix: &[u8]) -> Self {
+    pub fn prefix(group: GroupId, model: ModelId, prefix: &[u8]) -> Self {
         let range = (prefix.to_vec(), table::successor(prefix));
 
-        Self::ranges(agreement, model, vec![range])
+        Self::ranges(group, model, vec![range])
     }
 
     /// All of a [table]: decode the results with [`Table::read`].
@@ -86,8 +81,8 @@ impl Query {
     /// [table]: ModelId::table
     /// [`Table::read`]: crate::Table::read
     #[must_use]
-    pub fn table(agreement: AgreementId, table: ModelId) -> Self {
-        Self::prefix(agreement, table, b"")
+    pub fn table(group: GroupId, table: ModelId) -> Self {
+        Self::prefix(group, table, b"")
     }
 
     /// The rows of a [table] whose keys are in a range, such as
@@ -97,15 +92,11 @@ impl Query {
     /// [table]: ModelId::table
     /// [`Table::read`]: crate::Table::read
     #[must_use]
-    pub fn rows<K: AsRef<[u8]>>(
-        agreement: AgreementId,
-        table: ModelId,
-        keys: impl RangeBounds<K>,
-    ) -> Self {
+    pub fn rows<K: AsRef<[u8]>>(group: GroupId, table: ModelId, keys: impl RangeBounds<K>) -> Self {
         let bound = |bound: Bound<&K>| bound.map(|key| key.as_ref().to_vec());
         let rows = table::rows(bound(keys.start_bound()), bound(keys.end_bound()));
 
-        Self::ranges(agreement, table, vec![table::schema(), rows])
+        Self::ranges(group, table, vec![table::schema(), rows])
     }
 
     /// One row of a [table], and the table's columns. Like
@@ -113,8 +104,8 @@ impl Query {
     ///
     /// [table]: ModelId::table
     #[must_use]
-    pub fn row(agreement: AgreementId, table: ModelId, key: &[u8]) -> Self {
-        Self::rows(agreement, table, key..=key)
+    pub fn row(group: GroupId, table: ModelId, key: &[u8]) -> Self {
+        Self::rows(group, table, key..=key)
     }
 
     /// Which rows of a [table] hold a value in a range, such as
@@ -129,14 +120,14 @@ impl Query {
     /// [`Table::row_keys`]: crate::Table::row_keys
     #[must_use]
     pub fn index(
-        agreement: AgreementId,
+        group: GroupId,
         table: ModelId,
         column: ColumnId,
         values: impl RangeBounds<Value>,
     ) -> Self {
         let range = table::values(column, values.start_bound(), values.end_bound());
 
-        Self::ranges(agreement, table, range.into_iter().collect())
+        Self::ranges(group, table, range.into_iter().collect())
     }
 
     /// Which rows of a [table] hold exactly `value` in a column. Like
@@ -144,11 +135,11 @@ impl Query {
     ///
     /// [table]: ModelId::table
     #[must_use]
-    pub fn lookup(agreement: AgreementId, table: ModelId, column: ColumnId, value: &Value) -> Self {
-        Self::index(agreement, table, column, value..=value)
+    pub fn lookup(group: GroupId, table: ModelId, column: ColumnId, value: &Value) -> Self {
+        Self::index(group, table, column, value..=value)
     }
 
-    /// Reads only what has settled, leaving out writes that could still be
+    /// Reads only what is committed, leaving out writes that could still be
     /// reordered.
     #[must_use]
     pub fn committed(mut self) -> Self {
@@ -161,14 +152,14 @@ impl Query {
     /// model it wants. An optimistic one scans two, and one more.
     #[must_use]
     pub fn storage_ranges(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
-        let (agreement, model) = (self.agreement, self.model);
-        let stored = |within: fn(AgreementId, ModelId, &[u8]) -> Vec<u8>| {
-            let (_, model_end) = keys::range(within(agreement, model, b""));
+        let (group, model) = (self.group, self.model);
+        let stored = |within: fn(GroupId, ModelId, &[u8]) -> Vec<u8>| {
+            let (_, model_end) = keys::range(within(group, model, b""));
             let range = move |(start, end): &Range| {
-                let end = end.as_ref().map(|end| within(agreement, model, end));
+                let end = end.as_ref().map(|end| within(group, model, end));
 
                 (
-                    within(agreement, model, start),
+                    within(group, model, start),
                     end.unwrap_or(model_end.clone()),
                 )
             };
@@ -176,14 +167,14 @@ impl Query {
             self.ranges.iter().map(range)
         };
 
-        let settled = stored(keys::settled_value);
+        let committed = stored(keys::committed_value);
         if !self.optimistic {
-            return settled.collect();
+            return committed.collect();
         }
 
-        let drops = keys::range(keys::drops(agreement, model));
+        let drops = keys::range(keys::drops(group, model));
 
-        settled
+        committed
             .chain(stored(keys::versions))
             .chain([drops])
             .collect()
@@ -194,14 +185,14 @@ impl Query {
     #[must_use]
     pub fn is_affected_by(&self, change: &Changed) -> bool {
         match change {
-            Changed::Everything { agreement } => *agreement == self.agreement,
+            Changed::Everything { group } => *group == self.group,
             Changed::Key {
-                agreement,
+                group,
                 model,
                 key,
                 committed,
             } => {
-                let ours = *agreement == self.agreement && *model == self.model;
+                let ours = *group == self.group && *model == self.model;
 
                 ours && *committed != self.optimistic && self.wants(key)
             }
@@ -214,30 +205,28 @@ impl Query {
     #[must_use]
     pub fn results(&self, scanned: &[(Vec<u8>, Vec<u8>)]) -> Vec<(Vec<u8>, Vec<u8>)> {
         // A dropped model is empty, whatever it still holds in storage.
-        let drops = keys::drops(self.agreement, self.model);
+        let drops = keys::drops(self.group, self.model);
         let dropped = |(stored, _): &(Vec<u8>, Vec<u8>)| stored.starts_with(&drops);
         if self.optimistic && scanned.iter().any(dropped) {
             return Vec::new();
         }
 
-        let ours = |agreement, model| agreement == self.agreement && model == self.model;
-        let mut settled = Vec::new();
+        let ours = |group, model| group == self.group && model == self.model;
+        let mut committed = Vec::new();
         let mut versions = Vec::new();
         for (stored, value) in scanned {
             match keys::parse(stored) {
-                Some(Record::Settled {
-                    agreement,
-                    model,
-                    key,
-                }) if ours(agreement, model) && self.wants(&key) => {
-                    settled.push((key, value.clone()));
+                Some(Record::Committed { group, model, key })
+                    if ours(group, model) && self.wants(&key) =>
+                {
+                    committed.push((key, value.clone()));
                 }
                 Some(Record::Version {
-                    agreement,
+                    group,
                     model,
                     key,
                     stamp,
-                }) if self.optimistic && ours(agreement, model) && self.wants(&key) => {
+                }) if self.optimistic && ours(group, model) && self.wants(&key) => {
                     if let Some(value) = encoding::decode(value) {
                         versions.push((key, *stamp, value));
                     }
@@ -246,7 +235,7 @@ impl Query {
             }
         }
 
-        kv::current(settled, versions).into_iter().collect()
+        kv::current(committed, versions).into_iter().collect()
     }
 
     /// Whether a key of the model is one this query asked for.
@@ -258,12 +247,12 @@ impl Query {
         self.exact.as_ref().is_none_or(|exact| exact == key) && self.ranges.iter().any(within)
     }
 
-    fn ranges(agreement: AgreementId, model: ModelId, ranges: Vec<Range>) -> Self {
+    fn ranges(group: GroupId, model: ModelId, ranges: Vec<Range>) -> Self {
         Self {
-            agreement,
+            group,
             model,
             ranges,
-            optimistic: model.kind().is_some_and(Kind::shows_unsettled),
+            optimistic: model.kind().is_some_and(Kind::shows_uncommitted),
             exact: None,
         }
     }
@@ -272,31 +261,30 @@ impl Query {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agreement::Genesis;
     use crate::clock::Stamp;
     use crate::testing::peers::{laptop, phone};
 
-    fn agreement() -> AgreementId {
-        Genesis::new([1; 32], [phone().id()]).id()
+    fn group() -> GroupId {
+        GroupId::from_bytes([1; 32])
     }
 
     fn model() -> ModelId {
-        ModelId::kv(agreement(), [2; 32])
+        ModelId::kv(group(), [2; 32])
     }
 
-    fn settled(key: &str, value: &str) -> (Vec<u8>, Vec<u8>) {
-        let key = keys::settled_value(agreement(), model(), key.as_bytes());
+    fn committed(key: &str, value: &str) -> (Vec<u8>, Vec<u8>) {
+        let key = keys::committed_value(group(), model(), key.as_bytes());
 
         (key, value.into())
     }
 
-    /// A version that hasn't settled, written at `lamport`.
+    /// A version that isn't committed, written at `lamport`.
     fn version(lamport: u64, key: &str, value: Option<&str>) -> (Vec<u8>, Vec<u8>) {
         let author = phone();
         let stamp = Stamp { lamport, author };
         let value: Option<Vec<u8>> = value.map(Into::into);
 
-        let key = keys::version(agreement(), model(), key.as_bytes(), stamp);
+        let key = keys::version(group(), model(), key.as_bytes(), stamp);
         (key, encoding::encode(&value))
     }
 
@@ -307,11 +295,11 @@ mod tests {
     #[test]
     fn a_key_query_ignores_longer_keys() {
         let scanned = [
-            settled("color", "blue"),
-            settled("colors", "many"),
+            committed("color", "blue"),
+            committed("colors", "many"),
             version(1, "colorful", Some("very")),
         ];
-        let query = Query::key(agreement(), model(), b"color");
+        let query = Query::key(group(), model(), b"color");
 
         assert_eq!(query.results(&scanned), [result("color", "blue")]);
     }
@@ -325,7 +313,7 @@ mod tests {
             version(1, "size", Some("large")),
             version(2, "size", None),
         ];
-        let query = Query::prefix(agreement(), model(), b"");
+        let query = Query::prefix(group(), model(), b"");
 
         assert_eq!(query.results(&scanned), [result("color", "blue")]);
     }
@@ -333,13 +321,13 @@ mod tests {
     #[test]
     fn versions_take_the_place_of_settled_values() {
         let scanned = [
-            settled("color", "red"),
-            settled("size", "large"),
-            settled("shape", "round"),
+            committed("color", "red"),
+            committed("size", "large"),
+            committed("shape", "round"),
             version(1, "color", Some("blue")),
             version(1, "size", None),
         ];
-        let query = Query::prefix(agreement(), model(), b"");
+        let query = Query::prefix(group(), model(), b"");
 
         assert_eq!(
             query.results(&scanned),
@@ -350,11 +338,11 @@ mod tests {
     #[test]
     fn a_committed_query_reads_only_whats_settled() {
         let scanned = [
-            settled("color", "red"),
+            committed("color", "red"),
             version(1, "color", Some("blue")),
             version(1, "size", Some("large")),
         ];
-        let query = Query::prefix(agreement(), model(), b"").committed();
+        let query = Query::prefix(group(), model(), b"").committed();
 
         assert_eq!(query.storage_ranges().len(), 1);
         assert_eq!(query.results(&scanned), [result("color", "red")]);
@@ -366,13 +354,13 @@ mod tests {
             lamport: 2,
             author: phone(),
         };
-        let dropped = (keys::drop(agreement(), model(), stamp), Vec::new());
+        let dropped = (keys::drop(group(), model(), stamp), Vec::new());
         let scanned = [
-            settled("color", "red"),
+            committed("color", "red"),
             version(1, "size", Some("large")),
             dropped,
         ];
-        let query = Query::prefix(agreement(), model(), b"");
+        let query = Query::prefix(group(), model(), b"");
 
         assert_eq!(query.results(&scanned), []);
         assert_eq!(
@@ -383,15 +371,15 @@ mod tests {
 
     #[test]
     fn a_threshold_model_is_always_read_committed() {
-        let model = ModelId::threshold(agreement(), [2; 32]);
-        let query = Query::prefix(agreement(), model, b"");
+        let model = ModelId::threshold(group(), [2; 32]);
+        let query = Query::prefix(group(), model, b"");
 
         assert_eq!(query, query.clone().committed());
     }
 
     fn changed(key: &str, committed: bool) -> Changed {
         Changed::Key {
-            agreement: agreement(),
+            group: group(),
             model: model(),
             key: key.into(),
             committed,
@@ -400,15 +388,15 @@ mod tests {
 
     #[test]
     fn a_query_is_affected_by_changes_to_the_keys_it_reads() {
-        let one = Query::key(agreement(), model(), b"pet");
-        let many = Query::prefix(agreement(), model(), b"pet");
+        let one = Query::key(group(), model(), b"pet");
+        let many = Query::prefix(group(), model(), b"pet");
 
         assert!(one.is_affected_by(&changed("pet", false)));
         assert!(!one.is_affected_by(&changed("pet/cat", false)));
         assert!(many.is_affected_by(&changed("pet/cat", false)));
         assert!(!many.is_affected_by(&changed("color", false)));
 
-        let elsewhere = Query::key(agreement(), ModelId::kv(agreement(), [9; 32]), b"pet");
+        let elsewhere = Query::key(group(), ModelId::kv(group(), [9; 32]), b"pet");
         assert!(!elsewhere.is_affected_by(&changed("pet", false)));
     }
 
@@ -416,7 +404,7 @@ mod tests {
     /// already.
     #[test]
     fn a_query_is_affected_by_changes_to_its_kind_of_read() {
-        let optimistic = Query::key(agreement(), model(), b"pet");
+        let optimistic = Query::key(group(), model(), b"pet");
         let committed = optimistic.clone().committed();
 
         assert!(optimistic.is_affected_by(&changed("pet", false)));
@@ -427,19 +415,18 @@ mod tests {
 
     #[test]
     fn every_query_of_an_agreement_is_affected_when_everything_changed() {
-        let query = Query::key(agreement(), model(), b"pet");
-        let other = Genesis::new([2; 32], [phone().id()]).id();
+        let query = Query::key(group(), model(), b"pet");
+        let other = GroupId::from_bytes([2; 32]);
 
-        assert!(query.is_affected_by(&Changed::Everything {
-            agreement: agreement()
-        }));
-        assert!(query.committed().is_affected_by(&Changed::Everything {
-            agreement: agreement()
-        }));
+        assert!(query.is_affected_by(&Changed::Everything { group: group() }));
         assert!(
-            !Query::key(other, model(), b"pet").is_affected_by(&Changed::Everything {
-                agreement: agreement()
-            })
+            query
+                .committed()
+                .is_affected_by(&Changed::Everything { group: group() })
+        );
+        assert!(
+            !Query::key(other, model(), b"pet")
+                .is_affected_by(&Changed::Everything { group: group() })
         );
     }
 
@@ -451,11 +438,11 @@ mod tests {
             lamport: 1,
             author: laptop(),
         };
-        let long = keys::version(agreement(), model(), b"color", stamp);
-        let long = &long[keys::versions(agreement(), model(), b"").len()..];
+        let long = keys::version(group(), model(), b"color", stamp);
+        let long = &long[keys::versions(group(), model(), b"").len()..];
 
         let scanned = [version(1, "color", Some("blue"))];
-        let query = Query::key(agreement(), model(), long);
+        let query = Query::key(group(), model(), long);
 
         assert_eq!(query.results(&scanned), []);
     }
@@ -463,11 +450,11 @@ mod tests {
     #[test]
     fn a_prefix_query_leaves_out_removed_keys() {
         let scanned = [
-            settled("pet/cat", "tabby"),
+            committed("pet/cat", "tabby"),
             version(1, "pet/dog", None),
             version(1, "pet/fish", Some("goldfish")),
         ];
-        let query = Query::prefix(agreement(), model(), b"pet/");
+        let query = Query::prefix(group(), model(), b"pet/");
 
         assert_eq!(
             query.results(&scanned),

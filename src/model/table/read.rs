@@ -196,8 +196,8 @@ impl Row {
     /// Whether anything has ever [referred] to the row. If so, it has
     /// to be [retired] before it can be deleted.
     ///
-    /// [referred]: crate::TransactionBuilder::refer
-    /// [retired]: crate::TransactionBuilder::retire
+    /// [referred]: crate::Transaction::refer
+    /// [retired]: crate::Transaction::retire
     #[must_use]
     pub fn is_referred(&self) -> bool {
         self.referred
@@ -205,7 +205,7 @@ impl Row {
 
     /// Whether the row is [retired]: nothing can refer to it.
     ///
-    /// [retired]: crate::TransactionBuilder::retire
+    /// [retired]: crate::Transaction::retire
     #[must_use]
     pub fn is_retired(&self) -> bool {
         self.retired.is_some()

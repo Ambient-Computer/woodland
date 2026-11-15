@@ -1,6 +1,6 @@
 //! Models: application data, derived from the log's timeline.
 //!
-//! A model knows nothing about agreements, quorums or peers. It declares
+//! A model knows nothing about groups, quorums or peers. It declares
 //! a few things, and everything else follows from the timeline. About
 //! each of its operations:
 //!
@@ -13,7 +13,7 @@
 //!   and none of its operations happen.
 //!
 //! And about itself: whether readers may see writes that **haven't
-//! settled** ([`Kind::shows_unsettled`]).
+//! committed** ([`Kind::shows_uncommitted`]).
 //!
 //! A key holds whatever the last transaction that wasn't pruned wrote
 //! there. The kinds of model differ only in what they declare:
@@ -29,7 +29,7 @@
 //! (`Change::Expect`), whatever the model. That's what makes a write
 //! conditional, and a claim a lock.
 //! - A **threshold** map takes the same operations as `kv`, but only
-//!   shows what has settled. A reader never sees a value that some
+//!   shows what is committed. A reader never sees a value that some
 //!   contributor might not have, or one that an earlier write could
 //!   still displace, and what it sees never goes back. It's for values
 //!   that others act on: a schema version to migrate to, a key to
@@ -57,12 +57,12 @@
 //! doesn't belong to it. A transaction holding one is pruned, so a `Set`
 //! can never take a claimed key.
 //!
-//! # Many models per agreement
+//! # Many models per group
 //!
-//! An agreement can hold any number of models, and a transaction can
+//! A group can hold any number of models, and a transaction can
 //! change several of them at once: each operation names the model it's
-//! for. The agreement's clock counts transactions, not models, so one
-//! version vector (and one settled cut) covers every model. A model is
+//! for. The group's clock counts transactions, not models, so one
+//! version vector (and one committed cut) covers every model. A model is
 //! just a namespace inside that history: creating one is choosing an ID,
 //! and the first operation that names it brings it into existence
 //! everywhere. Two models never see each other's keys.
@@ -85,7 +85,7 @@ pub use query::Query;
 pub use table::{ColumnId, Row, Table, Value};
 
 use crate::actor::Peer;
-use crate::agreement::AgreementId;
+use crate::db::GroupId;
 use crate::encoding;
 
 /// One step of a transaction: a change to one model.
@@ -131,7 +131,7 @@ pub(crate) enum Requirement {
 }
 
 /// Stands for a value where only "is it the same one" matters: a hash
-/// of it, short enough to keep for every write that hasn't settled.
+/// of it, short enough to keep for every write that isn't committed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) struct Fingerprint([u8; 16]);
 
@@ -186,9 +186,9 @@ pub(crate) enum Kind {
 }
 
 impl Kind {
-    /// Whether readers see writes that haven't settled. If not, they
+    /// Whether readers see writes that aren't committed. If not, they
     /// aren't kept as versions at all: they wait in the log.
-    pub(crate) fn shows_unsettled(self) -> bool {
+    pub(crate) fn shows_uncommitted(self) -> bool {
         !matches!(self, Self::Threshold)
     }
 }
@@ -348,8 +348,8 @@ impl Operation {
 /// What one operation leaves under a key, at its transaction's place in
 /// the timeline. Both the key and the value are the model's to interpret.
 ///
-/// It's kept as a version of the key until the transaction settles, and
-/// then becomes the key's settled value (see `group::settling`).
+/// It's kept as a version of the key until the transaction is committed, and
+/// then becomes the key's committed value.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Write {
     pub(crate) model: ModelId,
@@ -358,10 +358,10 @@ pub(crate) struct Write {
     pub(crate) value: Option<Vec<u8>>,
 }
 
-/// Names a model within an agreement: its kind, then the BLAKE3 hash of
-/// the agreement's ID and a nonce.
+/// Names a model within a group: its kind, then the BLAKE3 hash of
+/// the group's ID and a nonce.
 ///
-/// Like an agreement ID, it's derived from how the model began, so models
+/// Like a group ID, it's derived from how the model began, so models
 /// created independently on different devices never collide. The model's
 /// initial state is always empty, so the nonce is the only input that varies.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -369,38 +369,36 @@ pub struct ModelId([u8; 32]);
 
 impl ModelId {
     /// A key-value map: the last write to a key wins. The application
-    /// supplies the nonce, as with [`Genesis`].
-    ///
-    /// [`Genesis`]: crate::Genesis
+    /// supplies the nonce: random bytes.
     #[must_use]
-    pub fn kv(agreement: AgreementId, nonce: [u8; 32]) -> Self {
-        Self::new(Kind::Kv, agreement, nonce)
+    pub fn kv(group: GroupId, nonce: [u8; 32]) -> Self {
+        Self::new(Kind::Kv, group, nonce)
     }
 
     /// A map of claims: the first claim on a key wins, and a transaction
     /// that loses one doesn't happen at all.
     #[must_use]
-    pub fn claims(agreement: AgreementId, nonce: [u8; 32]) -> Self {
-        Self::new(Kind::Claims, agreement, nonce)
+    pub fn claims(group: GroupId, nonce: [u8; 32]) -> Self {
+        Self::new(Kind::Claims, group, nonce)
     }
 
-    /// A key-value map that only shows what has settled: values every
+    /// A key-value map that only shows what is committed: values every
     /// contributor holds, in an order that's final. Reads of it never go
     /// back. Written like a [key-value] map.
     ///
     /// [key-value]: ModelId::kv
     #[must_use]
-    pub fn threshold(agreement: AgreementId, nonce: [u8; 32]) -> Self {
-        Self::new(Kind::Threshold, agreement, nonce)
+    pub fn threshold(group: GroupId, nonce: [u8; 32]) -> Self {
+        Self::new(Kind::Threshold, group, nonce)
     }
 
     /// A table: rows of typed cells, in columns that are themselves
     /// part of the data. It exists once a transaction [creates] it.
     ///
-    /// [creates]: crate::TransactionBuilder::create_table
+    /// [creates]: crate::Transaction::create_table
     #[must_use]
-    pub fn table(agreement: AgreementId, nonce: [u8; 32]) -> Self {
-        Self::new(Kind::Table, agreement, nonce)
+    pub fn table(group: GroupId, nonce: [u8; 32]) -> Self {
+        Self::new(Kind::Table, group, nonce)
     }
 
     /// `None` for an ID this version of the library didn't make.
@@ -410,8 +408,8 @@ impl ModelId {
             .find(|&kind| kind as u8 == self.0[0])
     }
 
-    fn new(kind: Kind, agreement: AgreementId, nonce: [u8; 32]) -> Self {
-        let mut id = encoding::hash("woodland/model", &(agreement.as_bytes(), nonce));
+    fn new(kind: Kind, group: GroupId, nonce: [u8; 32]) -> Self {
+        let mut id = encoding::hash("woodland/model", &(group.as_bytes(), nonce));
         id[0] = kind as u8;
 
         Self(id)

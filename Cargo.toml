@@ -1,6 +1,6 @@
 [package]
 name = "woodland"
-description = "An append-only log designed for peer-to-peer applications."
+description = "A replicated database for devices that are mostly offline."
 version = "0.0.0"
 edition = "2024"
 publish = false

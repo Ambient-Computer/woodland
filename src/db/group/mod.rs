@@ -11,12 +11,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::actor::{Identity, Peer};
-use crate::agreement::AgreementId;
 use crate::chain::{Chain, Checkpoint, Electorate, Saved};
 use crate::clock::Stamp;
+use crate::db::{GroupId, keys};
 use crate::encoding;
 use crate::model::{ModelId, Operation};
-use crate::storage::keys;
 use crate::store::{StoreError, View};
 
 use super::entry::{Checked, Entry, Frontier, Hash, Header, Outline, reach};
@@ -27,7 +26,7 @@ use sync::Remote;
 
 #[derive(Debug)]
 pub(crate) struct Group {
-    id: AgreementId,
+    id: GroupId,
     chain: Chain,
     history: History,
     /// The height of the last checkpoint whose entries are committed
@@ -60,12 +59,12 @@ struct Meta {
 }
 
 /// A group is named by the checkpoint it starts from.
-pub(crate) fn id_of(founding: &Checkpoint) -> AgreementId {
-    AgreementId::from_bytes(*founding.digest().as_bytes())
+pub(crate) fn id_of(founding: &Checkpoint) -> GroupId {
+    GroupId::from_bytes(*founding.digest().as_bytes())
 }
 
 impl Group {
-    fn new(id: AgreementId, chain: Chain) -> Self {
+    fn new(id: GroupId, chain: Chain) -> Self {
         Self {
             id,
             chain,
@@ -84,7 +83,7 @@ impl Group {
     /// Starts holding a group, from its first checkpoint.
     pub(crate) fn start<V: View>(founding: Checkpoint, step: &mut Step<V>) -> Self {
         let id = id_of(&founding);
-        step.save(keys::genesis(id), &founding);
+        step.save(keys::founding(id), &founding);
         let mut group = Self::new(id, Chain::new(founding));
         group.said = true;
         group.persist(step);
@@ -94,11 +93,11 @@ impl Group {
 
     /// Picks a group up from storage.
     pub(crate) async fn load<V: View>(
-        id: AgreementId,
+        id: GroupId,
         step: &Step<V>,
     ) -> Result<Option<Self>, StoreError> {
-        let saved = step.load::<Saved>(&keys::view(id)).await?;
-        let meta = step.load::<Meta>(&keys::clock(id)).await?;
+        let saved = step.load::<Saved>(&keys::chain(id)).await?;
+        let meta = step.load::<Meta>(&keys::meta(id)).await?;
         let (Some(saved), Some(meta)) = (saved, meta) else {
             return Ok(None);
         };
@@ -146,9 +145,9 @@ impl Group {
             dropped: self.dropped.clone(),
             wanted: self.wanted.clone(),
         };
-        step.save(keys::clock(self.id), &meta);
+        step.save(keys::meta(self.id), &meta);
         if self.said {
-            step.save(keys::view(self.id), &self.chain.save());
+            step.save(keys::chain(self.id), &self.chain.save());
         }
     }
 

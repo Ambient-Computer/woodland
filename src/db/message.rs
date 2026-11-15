@@ -2,8 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::agreement::AgreementId;
 use crate::chain::Gossip;
+use crate::db::GroupId;
 
 use super::entry::{Entry, Frontier};
 
@@ -11,7 +11,7 @@ use super::entry::{Entry, Frontier};
 /// part is safe to hear twice, late, or from someone else.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Message {
-    pub(crate) group: AgreementId,
+    pub(crate) group: GroupId,
     pub(crate) summary: Summary,
     pub(crate) chain: Gossip,
     pub(crate) entries: Vec<Entry>,

@@ -84,7 +84,7 @@ impl fmt::Display for StoreError {
 
 impl Error for StoreError {}
 
-/// Somewhere to keep data. See the [module](self) for what's promised.
+/// Somewhere to keep data. What it promises is in `docs/spec/storage.md`.
 ///
 /// Its futures aren't required to be `Send`. A store in a browser can't
 /// be, and the library never needs to move one between threads.

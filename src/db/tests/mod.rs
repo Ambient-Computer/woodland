@@ -15,10 +15,8 @@ use std::collections::{BTreeSet, VecDeque};
 
 use ed25519_dalek::VerifyingKey;
 
-use crate::agreement::AgreementId;
-use crate::io::Changed;
+use crate::db::{Changed, GroupId, keys};
 use crate::model::{ModelId, Query};
-use crate::storage::keys;
 use crate::store::{MemoryStore, Store};
 use crate::testing::block_on;
 
@@ -36,7 +34,7 @@ struct Sim {
     links: BTreeSet<(usize, usize)>,
     changes: Vec<Vec<Changed>>,
     /// The group most tests are about.
-    home: AgreementId,
+    home: GroupId,
 }
 
 /// One device's view of what's stored.
@@ -62,13 +60,13 @@ impl Sim {
             queue: VecDeque::new(),
             links: BTreeSet::new(),
             changes: vec![Vec::new(); 8],
-            home: AgreementId::from_bytes([0; 32]),
+            home: GroupId::from_bytes([0; 32]),
         }
     }
 
     /// A group founded by the phone and held by everyone, with the first
     /// `contributors` devices as equal contributors, all connected.
-    fn group(devices: usize, contributors: usize) -> (Self, AgreementId) {
+    fn group(devices: usize, contributors: usize) -> (Self, GroupId) {
         let mut sim = Self::new(devices);
         let (group, outputs) = block_on(sim.devices[PHONE].found([7; 32])).expect("founded");
         sim.absorb(PHONE, outputs);
@@ -194,7 +192,7 @@ impl Sim {
         }
     }
 
-    fn write_to(&mut self, device: usize, group: AgreementId, transaction: Transaction) {
+    fn write_to(&mut self, device: usize, group: GroupId, transaction: Transaction) {
         let outputs = block_on(self.devices[device].write(group, transaction));
         self.absorb(device, outputs.expect("written"));
     }
@@ -207,7 +205,7 @@ impl Sim {
     fn reconfigure(
         &mut self,
         device: usize,
-        group: AgreementId,
+        group: GroupId,
         contributors: impl IntoIterator<Item = usize>,
     ) {
         let weights: Vec<_> = contributors
@@ -236,13 +234,7 @@ impl Sim {
     }
 
     /// What `key` holds, as the device would show it right now.
-    fn shown(
-        &self,
-        device: usize,
-        group: AgreementId,
-        model: ModelId,
-        key: &str,
-    ) -> Option<String> {
+    fn shown(&self, device: usize, group: GroupId, model: ModelId, key: &str) -> Option<String> {
         let found = self.read(device, &Query::key(group, model, key.as_bytes()));
 
         found.into_iter().next().map(|(_, value)| text(value))
@@ -252,7 +244,7 @@ impl Sim {
     fn committed(
         &self,
         device: usize,
-        group: AgreementId,
+        group: GroupId,
         model: ModelId,
         key: &str,
     ) -> Option<String> {
@@ -269,11 +261,11 @@ fn text(value: Vec<u8>) -> String {
     String::from_utf8(value).expect("tests write text")
 }
 
-fn notes(group: AgreementId) -> ModelId {
+fn notes(group: GroupId) -> ModelId {
     ModelId::kv(group, [1; 32])
 }
 
-fn names(group: AgreementId) -> ModelId {
+fn names(group: GroupId) -> ModelId {
     ModelId::claims(group, [2; 32])
 }
 
@@ -345,7 +337,7 @@ fn run_query(cluster: &Sim, device: usize, query: &Query) -> Option<String> {
 
 /// Every version in a device's storage that isn't committed, as stored.
 fn stored_frontier(cluster: &Sim, device: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
-    let (start, end) = keys::range(keys::frontier(cluster.home));
+    let (start, end) = keys::range(keys::uncommitted(cluster.home));
     let view = cluster.devices[device].store.view();
 
     block_on(super::step::scan(&view, &start, &end)).expect("scanned")

@@ -9,8 +9,11 @@
 //! as one batch, and what it wants said is handed back only after that
 //! batch is durable, so a device never says something it could forget.
 
+mod changed;
 mod entry;
 mod group;
+mod id;
+pub(crate) mod keys;
 mod message;
 mod step;
 #[cfg(test)]
@@ -23,15 +26,14 @@ use std::fmt;
 use ed25519_dalek::VerifyingKey;
 
 use crate::actor::{Identity, Peer};
-use crate::agreement::AgreementId;
 use crate::chain::{Checkpoint, Electorate};
 use crate::encoding;
-use crate::io::Changed;
 use crate::model::Query;
-use crate::storage::keys;
 use crate::store::{Store, StoreError};
 
+pub use changed::Changed;
 use group::Group;
+pub use id::GroupId;
 use message::Message;
 use step::Step;
 pub use transaction::Transaction;
@@ -41,7 +43,7 @@ pub use transaction::Transaction;
 pub struct Database<S> {
     store: S,
     identity: Identity,
-    groups: BTreeMap<AgreementId, Group>,
+    groups: BTreeMap<GroupId, Group>,
     peers: BTreeSet<Peer>,
     /// Set when a step failed partway. What's in memory can no longer be
     /// trusted to match the store.
@@ -112,7 +114,7 @@ impl<S: Store> Database<S> {
 
         let identity = Identity::from_secret_key(stored.unwrap_or(secret));
         let mut groups = BTreeMap::new();
-        let (start, end) = keys::range(keys::geneses());
+        let (start, end) = keys::range(keys::foundings());
         for (_, founding) in step.scan(&start, &end).await? {
             let Some(founding) = encoding::decode::<Checkpoint>(&founding) else {
                 continue;
@@ -141,7 +143,7 @@ impl<S: Store> Database<S> {
     }
 
     /// The groups this device holds.
-    pub fn groups(&self) -> impl Iterator<Item = AgreementId> + '_ {
+    pub fn groups(&self) -> impl Iterator<Item = GroupId> + '_ {
         self.groups.keys().copied()
     }
 
@@ -151,7 +153,7 @@ impl<S: Store> Database<S> {
     /// # Errors
     ///
     /// If the store fails.
-    pub async fn found(&mut self, seed: [u8; 32]) -> Result<(AgreementId, Outputs), Error> {
+    pub async fn found(&mut self, seed: [u8; 32]) -> Result<(GroupId, Outputs), Error> {
         let me = self.identity.peer();
         let founding = Checkpoint::founding(seed, Electorate::new([(me, 1)]));
 
@@ -161,7 +163,7 @@ impl<S: Store> Database<S> {
     /// What another device needs to [join] a group this one holds.
     ///
     /// [join]: Self::join
-    pub fn invite(&self, group: AgreementId) -> Option<Vec<u8>> {
+    pub fn invite(&self, group: GroupId) -> Option<Vec<u8>> {
         let founding = self.groups.get(&group)?.founding()?;
 
         Some(encoding::encode(founding))
@@ -176,14 +178,14 @@ impl<S: Store> Database<S> {
     /// # Errors
     ///
     /// If the invitation is unreadable, or the store fails.
-    pub async fn join(&mut self, invitation: &[u8]) -> Result<(AgreementId, Outputs), Error> {
+    pub async fn join(&mut self, invitation: &[u8]) -> Result<(GroupId, Outputs), Error> {
         let founding = encoding::decode::<Checkpoint>(invitation);
         let founding = founding.filter(|it| it.height == 0);
 
         self.hold(founding.ok_or(Error::BadInvitation)?).await
     }
 
-    async fn hold(&mut self, founding: Checkpoint) -> Result<(AgreementId, Outputs), Error> {
+    async fn hold(&mut self, founding: Checkpoint) -> Result<(GroupId, Outputs), Error> {
         let id = group::id_of(&founding);
         let mut step = self.begin()?;
         if !self.groups.contains_key(&id) {
@@ -207,7 +209,7 @@ impl<S: Store> Database<S> {
     /// If this device isn't a contributor to `group`, or the store fails.
     pub async fn write(
         &mut self,
-        group: AgreementId,
+        group: GroupId,
         transaction: Transaction,
     ) -> Result<Outputs, Error> {
         let mut step = self.begin()?;
@@ -232,7 +234,7 @@ impl<S: Store> Database<S> {
     /// left with a say, or the store fails.
     pub async fn reconfigure(
         &mut self,
-        group: AgreementId,
+        group: GroupId,
         weights: impl IntoIterator<Item = (VerifyingKey, u32)>,
     ) -> Result<Outputs, Error> {
         let weights = weights.into_iter();
