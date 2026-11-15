@@ -174,14 +174,11 @@ impl Group {
     /// Commits what the next decided checkpoint covers, once all of it
     /// is held. Returns whether it did.
     pub(super) async fn fold<V: View>(&mut self, step: &mut Step<V>) -> Result<bool, StoreError> {
-        let next =
-            usize::try_from(self.folded).map_or(usize::MAX, |folded| folded.saturating_add(1));
-        let mut pair = self.chain.checkpoints().skip(next - 1).take(2).cloned();
-        let (Some(before), Some(checkpoint)) = (pair.next(), pair.next()) else {
+        let before = self.chain.electorates_since(self.folded).next().cloned();
+        let checkpoint = self.chain.at(self.folded + 1).cloned();
+        let (Some(before), Some(checkpoint)) = (before, checkpoint) else {
             return Ok(false);
         };
-        drop(pair);
-        let before = before.electorate;
 
         let covers = covers_of(&checkpoint);
         let named = covers.as_ref().map(|covers| covers.state);
@@ -245,19 +242,24 @@ impl Group {
         let removed = authors.filter(|&author| !checkpoint.electorate.includes(author));
         let removed: BTreeSet<Peer> = removed.collect();
         for author in removed {
-            let entries = self.history.cut(author);
-            tracing::info!(
-                group = ?self.id,
-                ?author,
-                entries = entries.len(),
-                "dropped what a removed contributor wrote after its last checkpoint"
-            );
-            for entry in entries {
-                step.delete(keys::log(self.id, author, entry.link.seq));
-                judge::hide(self.id, &entry, step);
-                judge::notify(self.id, &entry, false, step);
-                self.live.remove(&entry.stamp());
-            }
+            self.void(author, step);
+        }
+    }
+
+    /// Drops everything `author` wrote that isn't committed.
+    pub(super) fn void<V: View>(&mut self, author: Peer, step: &mut Step<V>) {
+        let entries = self.history.cut(author);
+        tracing::info!(
+            group = ?self.id,
+            ?author,
+            entries = entries.len(),
+            "dropped what a removed contributor wrote after its last checkpoint"
+        );
+        for entry in entries {
+            step.delete(keys::log(self.id, author, entry.link.seq));
+            judge::hide(self.id, &entry, step);
+            judge::notify(self.id, &entry, false, step);
+            self.live.remove(&entry.stamp());
         }
     }
 }

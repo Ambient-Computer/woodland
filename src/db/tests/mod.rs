@@ -4,6 +4,7 @@
 //! asks to send, in an order the test controls, and nothing else moves.
 
 mod checkpoints;
+mod compaction;
 mod guards;
 mod membership;
 mod random;
@@ -214,6 +215,21 @@ impl Sim {
             .collect();
         let outputs = block_on(self.devices[device].reconfigure(group, weights));
         self.absorb(device, outputs.expect("asked"));
+    }
+
+    fn compact(&mut self, device: usize, group: GroupId) {
+        let outputs = block_on(self.devices[device].compact(group)).expect("compacted");
+        self.absorb(device, outputs);
+    }
+
+    /// How many entries a device still keeps.
+    fn entries_kept(&self, device: usize, group: GroupId) -> usize {
+        let (start, end) = keys::range(keys::logs(group));
+        let view = self.devices[device].store.view();
+
+        block_on(super::step::scan(&view, &start, &end))
+            .expect("scanned")
+            .len()
     }
 
     /// Stops a device and starts it again from its store. Its

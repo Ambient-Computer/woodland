@@ -155,8 +155,24 @@ impl Certificate {
     /// Whether a quorum of `tip`'s electorate voted for this checkpoint,
     /// in one attempt, as the link after `tip`.
     pub(crate) fn proves(&self, tip: &Checkpoint) -> bool {
+        self.checkpoint.extends(tip) && self.voted(tip)
+    }
+
+    /// Whether a quorum of `tip`'s electorate voted for this checkpoint,
+    /// in one attempt, somewhere further along the chain.
+    ///
+    /// The links between may be missing: a device that sheds history
+    /// keeps only the checkpoints that changed the electorate, and the
+    /// latest. An electorate that hasn't changed since `tip` is still the
+    /// one whose votes count, so its quorum is proof enough, and a quorum
+    /// only ever votes for a checkpoint that extends its own chain.
+    pub(crate) fn proves_beyond(&self, tip: &Checkpoint) -> bool {
+        self.checkpoint.height > tip.height && self.voted(tip)
+    }
+
+    fn voted(&self, tip: &Checkpoint) -> bool {
         let expected = Vote {
-            slot: tip.digest(),
+            slot: self.checkpoint.previous,
             ballot: self.ballot,
             checkpoint: self.checkpoint.digest(),
         };
@@ -166,6 +182,6 @@ impl Certificate {
             .map(Verified::author)
             .collect();
 
-        self.checkpoint.extends(tip) && tip.electorate.has_quorum(&voters)
+        tip.electorate.has_quorum(&voters)
     }
 }

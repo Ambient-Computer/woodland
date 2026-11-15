@@ -6,7 +6,7 @@
 //! twice, and two peers with the same things have nothing to say.
 
 use crate::actor::{Identity, Peer};
-use crate::chain::{Digest, Gossip};
+use crate::chain::Gossip;
 use crate::clock::Stamp;
 use crate::db::keys;
 use crate::encoding;
@@ -17,6 +17,7 @@ use super::super::message::{Message, Summary};
 use super::super::step::Step;
 use super::Group;
 use super::commit::covers_of;
+use super::compact::Sending;
 
 /// How many entries go in one message. A peer that's far behind gets
 /// the rest as it answers.
@@ -27,7 +28,13 @@ const PAGE: usize = 64;
 #[derive(Debug, Default)]
 pub(super) struct Remote {
     height: u64,
+    /// The height of the latest checkpoint it has committed.
+    folded: u64,
     heads: Frontier,
+    /// How far it says it has got with a snapshot.
+    pub(super) staged: Option<(u64, Option<Vec<u8>>)>,
+    /// The snapshot this device is sending it.
+    pub(super) sending: Option<Sending>,
 }
 
 impl Remote {
@@ -63,6 +70,8 @@ impl Group {
     ) -> Result<(), StoreError> {
         let remote = self.remotes.entry(from).or_default();
         remote.height = remote.height.max(message.summary.height);
+        remote.folded = remote.folded.max(message.summary.folded);
+        remote.staged = message.summary.staged;
         for (&author, &link) in &message.summary.heads {
             remote.holds(author, link);
         }
@@ -77,11 +86,17 @@ impl Group {
             .map(|covers| covers.frontier)
             .unwrap_or_default();
 
-        // A peer that sent entries is waiting to hear how far they got.
-        let owed = (!message.entries.is_empty()).then_some(from);
+        // A peer that sent entries, or part of a snapshot, is waiting to
+        // hear how far they got.
+        let sent = !message.entries.is_empty() || message.snapshot.is_some();
+        let owed = sent.then_some(from);
+        if let Some(piece) = message.snapshot {
+            self.stage(piece, step).await?;
+        }
+
         let check = |entry: Entry| {
             let entry = entry.check(self.id)?;
-            let standing = self.standing(entry.author(), entry.header().checkpoint);
+            let standing = self.standing(entry.author(), entry.header().under.height);
 
             Some((entry, standing))
         };
@@ -116,15 +131,13 @@ impl Group {
         self.progress(identity, owed, step).await
     }
 
-    /// Whether `author` has been a contributor in every checkpoint since
-    /// the one named `since`. If not, whatever it wrote under that
-    /// checkpoint was cut when it was removed, and coming back doesn't
-    /// bring it back.
-    fn standing(&self, author: Peer, since: Digest) -> bool {
-        let checkpoints = self.chain.checkpoints();
-        let mut later = checkpoints.skip_while(|it| it.digest() != since).peekable();
+    /// Whether `author` has been a contributor ever since the checkpoint
+    /// at `height`. If not, whatever it wrote under that checkpoint was
+    /// cut when it was removed, and coming back doesn't bring it back.
+    pub(super) fn standing(&self, author: Peer, height: u64) -> bool {
+        let mut electorates = self.chain.electorates_since(height);
 
-        later.peek().is_some() && later.all(|it| it.electorate.includes(author))
+        height <= self.chain.tip().height && electorates.all(|it| it.includes(author))
     }
 
     /// Sends `peer` what it's thought to lack. With `always`, sends even
@@ -141,7 +154,20 @@ impl Group {
             return Ok(());
         };
 
-        let entries = self.missing(remote, step).await?;
+        // A peer behind what's been shed here can't be sent the entries
+        // it lacks. It gets committed state instead, and then the rest.
+        let behind = remote.folded < self.base;
+        let snapshot = if behind {
+            self.piece(remote, step).await?
+        } else {
+            None
+        };
+        let entries = if behind {
+            Vec::new()
+        } else {
+            self.missing(remote, step).await?
+        };
+        let (snapshot, sending) = snapshot.unzip();
         let height = self.chain.tip().height;
         let chain = if statements || remote.height < height {
             self.chain.gossip(remote.height)
@@ -149,7 +175,8 @@ impl Group {
             Gossip::default()
         };
 
-        let news = !entries.is_empty() || statements || remote.height < height;
+        let news =
+            !entries.is_empty() || snapshot.is_some() || statements || remote.height < height;
         if !(news || always) {
             return Ok(());
         }
@@ -159,10 +186,14 @@ impl Group {
             summary: self.summary(),
             chain,
             entries,
+            snapshot,
         };
         step.send(peer, &message);
         if let Some(remote) = self.remotes.get_mut(&peer) {
             remote.height = remote.height.max(height);
+            if sending.is_some() {
+                remote.sending = sending;
+            }
             for entry in &message.entries {
                 remote.holds(entry.header.author(), entry.link());
             }
@@ -174,6 +205,11 @@ impl Group {
     fn summary(&self) -> Summary {
         Summary {
             height: self.chain.tip().height,
+            folded: self.folded,
+            staged: self
+                .staging
+                .as_ref()
+                .map(|it| (it.height, it.after.clone())),
             heads: self.history.heads.clone(),
         }
     }

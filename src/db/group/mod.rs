@@ -2,6 +2,7 @@
 //! entries, and which of them have happened.
 
 mod commit;
+mod compact;
 mod history;
 mod judge;
 mod root;
@@ -19,8 +20,9 @@ use crate::encoding;
 use crate::model::{ModelId, Operation};
 use crate::store::{StoreError, View};
 
-use super::entry::{Checked, Entry, Frontier, Hash, Header, Outline, reach};
+use super::entry::{Checked, Entry, Frontier, Hash, Header, Outline, Under, reach};
 use super::step::Step;
+use compact::Staging;
 use history::History;
 use judge::Written;
 use sync::Remote;
@@ -33,6 +35,12 @@ pub(crate) struct Group {
     /// The height of the last checkpoint whose entries are committed
     /// here. Behind the chain's tip while those entries are on their way.
     folded: u64,
+    /// The height below which history has been shed.
+    base: u64,
+    /// The last entry of each author's chain that's been shed.
+    shed: Frontier,
+    /// A snapshot that's part of the way in.
+    staging: Option<Staging>,
     /// Models dropped by committed entries.
     dropped: BTreeSet<ModelId>,
     /// The uncommitted entries that happen, as storage shows them.
@@ -58,6 +66,9 @@ struct Meta {
     heads: Frontier,
     committed: Frontier,
     folded: u64,
+    base: u64,
+    shed: Frontier,
+    staging: Option<Staging>,
     dropped: BTreeSet<ModelId>,
     wanted: Option<Electorate>,
 }
@@ -74,6 +85,9 @@ impl Group {
             chain,
             history: History::default(),
             folded: 0,
+            base: 0,
+            shed: Frontier::new(),
+            staging: None,
             dropped: BTreeSet::new(),
             live: BTreeSet::new(),
             remotes: BTreeMap::new(),
@@ -109,6 +123,9 @@ impl Group {
 
         let mut group = Self::new(id, Chain::restore(saved));
         group.folded = meta.folded;
+        group.base = meta.base;
+        group.shed = meta.shed;
+        group.staging = meta.staging;
         group.dropped = meta.dropped;
         group.wanted = meta.wanted;
         group.history = History::resume(meta.heads, meta.committed);
@@ -147,6 +164,9 @@ impl Group {
             heads: self.history.heads.clone(),
             committed: self.history.committed.clone(),
             folded: self.folded,
+            base: self.base,
+            shed: self.shed.clone(),
+            staging: self.staging.clone(),
             dropped: self.dropped.clone(),
             wanted: self.wanted.clone(),
         };
@@ -183,7 +203,10 @@ impl Group {
             previous: self.history.hash_of_head(me),
             after,
             lamport: self.history.lamport() + 1,
-            checkpoint: tip.digest(),
+            under: Under {
+                height: tip.height,
+                checkpoint: tip.digest(),
+            },
             payload: Hash::NONE,
         };
         let entry = Entry::author(identity, header, operations);
@@ -210,6 +233,17 @@ impl Group {
         self.progress(identity, None, step).await?;
 
         Ok(true)
+    }
+
+    /// Sheds history that's committed. Reads are the same afterwards.
+    pub(crate) async fn shed<V: View>(
+        &mut self,
+        identity: &Identity,
+        step: &mut Step<V>,
+    ) -> Result<(), StoreError> {
+        self.compact(step).await?;
+
+        self.progress(identity, None, step).await
     }
 
     /// Time has passed. It's when a checkpoint is attempted, and when a

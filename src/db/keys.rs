@@ -11,6 +11,7 @@
 //! [GROUP][group][COMMITTED][model][key…]        → the key's committed value
 //! [GROUP][group][UNCOMMITTED][model][key…][stamp] → a version: a value, or none
 //! [GROUP][group][DROPPED][model][stamp]         → the model was dropped, uncommitted
+//! [GROUP][group][STAGED][model][key…]           → a value from a snapshot not yet checked
 //! ```
 //!
 //! Identifiers are fixed width and counters are big-endian, so byte order
@@ -50,6 +51,7 @@ const PROTOCOL: u8 = 1;
 const COMMITTED: u8 = 2;
 const UNCOMMITTED: u8 = 3;
 const DROPPED: u8 = 4;
+const STAGED: u8 = 5;
 
 const CHAIN: u8 = 1;
 const META: u8 = 2;
@@ -190,6 +192,17 @@ pub(crate) fn drop(id: GroupId, model: ModelId, stamp: Stamp) -> Vec<u8> {
     let author = stamp.author.as_bytes();
 
     [drops(id, model), lamport.to_vec(), author.to_vec()].concat()
+}
+
+/// Every value of a snapshot that's still arriving.
+pub(crate) fn staged(id: GroupId) -> Vec<u8> {
+    [group(id), vec![STAGED]].concat()
+}
+
+/// A value of a snapshot that's still arriving. `key` is a model and
+/// then the model's own key.
+pub(crate) fn staged_value(id: GroupId, key: &[u8]) -> Vec<u8> {
+    [&staged(id)[..], key].concat()
 }
 
 /// Reads a key of model data written by this module. `None` means it

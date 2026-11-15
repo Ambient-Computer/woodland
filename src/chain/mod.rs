@@ -137,11 +137,43 @@ impl Chain {
             .map_or(&self.founding, |link| &link.checkpoint)
     }
 
-    /// Every checkpoint from the founding to the tip.
+    /// Every checkpoint held, from the founding to the tip. Some between
+    /// may have been [shed].
+    ///
+    /// [shed]: Self::compact
     pub(crate) fn checkpoints(&self) -> impl Iterator<Item = &Checkpoint> {
         let decided = self.decided.iter().map(|link| &link.checkpoint);
 
         std::iter::once(&self.founding).chain(decided)
+    }
+
+    /// The checkpoint at `height`, if it's held.
+    pub(crate) fn at(&self, height: u64) -> Option<&Checkpoint> {
+        self.checkpoints().find(|it| it.height == height)
+    }
+
+    /// Who decided each checkpoint after `height`, and decides the next:
+    /// the electorate in force at `height`, and every one since. A
+    /// checkpoint that was shed changed nothing, so the one held before
+    /// it speaks for it.
+    pub(crate) fn electorates_since(&self, height: u64) -> impl Iterator<Item = &Electorate> {
+        let held: Vec<&Checkpoint> = self.checkpoints().collect();
+        let from = held.iter().rposition(|it| it.height <= height).unwrap_or(0);
+
+        held.into_iter().skip(from).map(|it| &it.electorate)
+    }
+
+    /// Sheds every checkpoint below `height` that isn't needed to prove
+    /// the ones after it: those that left the electorate as it was.
+    pub(crate) fn compact(&mut self, height: u64) {
+        let mut electorate = self.founding.electorate.clone();
+        self.decided.retain(|link| {
+            let checkpoint = &link.checkpoint;
+            let changed = checkpoint.electorate != electorate;
+            electorate = checkpoint.electorate.clone();
+
+            changed || checkpoint.height >= height
+        });
     }
 
     /// Every checkpoint someone has proposed for the slot after the tip.
@@ -299,12 +331,20 @@ impl Chain {
         }
     }
 
-    /// Takes the next link from a peer, if its proof holds.
+    /// Takes a later link from a peer, if its proof holds.
     fn adopt(&mut self, link: Certificate) -> bool {
-        if link.checkpoint.height != self.tip().height + 1 {
+        let tip = self.tip();
+        if link.checkpoint.height <= tip.height {
             return false;
         }
-        if !link.proves(self.tip()) {
+
+        let next = link.checkpoint.height == tip.height + 1;
+        let proven = if next {
+            link.proves(tip)
+        } else {
+            link.proves_beyond(tip)
+        };
+        if !proven {
             tracing::warn!(
                 height = link.checkpoint.height,
                 "ignored a checkpoint without proof"

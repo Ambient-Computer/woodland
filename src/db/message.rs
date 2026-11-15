@@ -1,9 +1,12 @@
 //! What peers say to each other.
 
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::chain::Gossip;
 use crate::db::GroupId;
+use crate::model::ModelId;
 
 use super::entry::{Entry, Frontier};
 
@@ -15,6 +18,7 @@ pub(crate) struct Message {
     pub(crate) summary: Summary,
     pub(crate) chain: Gossip,
     pub(crate) entries: Vec<Entry>,
+    pub(crate) snapshot: Option<Piece>,
 }
 
 /// How much a peer holds, so the other side can work out what it lacks.
@@ -22,6 +26,24 @@ pub(crate) struct Message {
 pub(crate) struct Summary {
     /// The height of its latest checkpoint.
     pub(crate) height: u64,
+    /// The height of the latest checkpoint it has committed.
+    pub(crate) folded: u64,
+    /// The snapshot it's part of the way through receiving: the height
+    /// it's for, and the last key it has.
+    pub(crate) staged: Option<(u64, Option<Vec<u8>>)>,
     /// The last entry it holds of each author's chain.
     pub(crate) heads: Frontier,
+}
+
+/// Part of a snapshot: committed values, in key order.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct Piece {
+    /// The checkpoint this is the state of.
+    pub(crate) height: u64,
+    /// The key this piece comes after. `None` for the first.
+    pub(crate) start: Option<Vec<u8>>,
+    /// Each key is a model and then the model's own key.
+    pub(crate) values: Vec<(Vec<u8>, Vec<u8>)>,
+    /// With the last piece: every model that's been dropped.
+    pub(crate) end: Option<BTreeSet<ModelId>>,
 }

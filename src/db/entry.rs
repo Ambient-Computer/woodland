@@ -55,8 +55,15 @@ pub(crate) struct Header {
     /// Greater than that of everything it was written on top of.
     pub(crate) lamport: u64,
     /// The latest checkpoint its author held.
-    pub(crate) checkpoint: Digest,
+    pub(crate) under: Under,
     pub(crate) payload: Hash,
+}
+
+/// The checkpoint an entry was written under.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Under {
+    pub(crate) height: u64,
+    pub(crate) checkpoint: Digest,
 }
 
 impl Signable for Header {
@@ -181,6 +188,7 @@ impl Checked {
             author: self.author(),
             link: self.link(),
             after: self.header().after.clone(),
+            under: self.header().under.height,
             declared: operations.flat_map(Operation::declares).collect(),
         }
     }
@@ -194,6 +202,8 @@ pub(crate) struct Outline {
     pub(crate) author: Peer,
     pub(crate) link: Link,
     pub(crate) after: Frontier,
+    /// The height of the checkpoint it was written under.
+    pub(crate) under: u64,
     pub(crate) declared: Vec<Declaration>,
 }
 

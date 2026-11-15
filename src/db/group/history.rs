@@ -164,6 +164,17 @@ impl History {
         }
     }
 
+    /// Takes `frontier` as committed without holding what it covers: the
+    /// state it led to came from a snapshot.
+    pub(super) fn adopt(&mut self, frontier: &Frontier) {
+        for (&author, &link) in frontier {
+            if reach(&self.heads, author) < link.seq {
+                self.heads.insert(author, link);
+            }
+        }
+        self.commit(frontier);
+    }
+
     /// Lets go of everything `author` wrote that isn't committed.
     pub(super) fn cut(&mut self, author: Peer) -> Vec<Outline> {
         let theirs = |outline: &&Outline| outline.author == author;

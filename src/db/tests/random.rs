@@ -19,6 +19,7 @@ enum Action {
     Connect { a: usize, b: usize },
     Disconnect { a: usize, b: usize },
     Restart { device: usize },
+    Compact { device: usize },
     Reconfigure { device: usize, members: Vec<usize> },
 }
 
@@ -36,6 +37,7 @@ fn action() -> impl Strategy<Value = Action> {
         3 => (device(), device()).prop_map(|(a, b)| Action::Connect { a, b }),
         3 => (device(), device()).prop_map(|(a, b)| Action::Disconnect { a, b }),
         1 => device().prop_map(|device| Action::Restart { device }),
+        2 => device().prop_map(|device| Action::Compact { device }),
         1 => (device(), members).prop_map(|(device, members)| Action::Reconfigure { device, members }),
     ]
 }
@@ -98,6 +100,7 @@ impl Run {
             Action::Disconnect { a, b } if a != b => sim.disconnect(a, b),
             Action::Connect { .. } | Action::Disconnect { .. } => {}
             Action::Restart { device } => sim.restart(device),
+            Action::Compact { device } => sim.compact(device, group),
             Action::Reconfigure { device, members } => {
                 let weights: Vec<_> = members.iter().map(|&it| (sim.id(it), 1)).collect();
                 match block_on(sim.devices[device].reconfigure(group, weights)) {

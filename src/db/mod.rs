@@ -251,6 +251,26 @@ impl<S: Store> Database<S> {
         self.finish(step).await
     }
 
+    /// Sheds the history of `group` that's committed, keeping committed
+    /// state and whatever isn't committed yet. Nothing reads differently
+    /// afterwards. A peer that needs what was shed is sent the state
+    /// instead.
+    ///
+    /// A device that never calls this is an archive: it can hand any
+    /// peer the group's whole history.
+    ///
+    /// # Errors
+    ///
+    /// If this device doesn't hold `group`, or the store fails.
+    pub async fn compact(&mut self, group: GroupId) -> Result<Outputs, Error> {
+        let mut step = self.begin()?;
+        let held = self.groups.get_mut(&group).ok_or(Error::UnknownGroup)?;
+        let shed = held.shed(&self.identity, &mut step).await;
+        self.guard(shed)?;
+
+        self.finish(step).await
+    }
+
     /// A peer can be reached.
     ///
     /// # Errors
