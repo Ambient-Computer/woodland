@@ -1,0 +1,37 @@
+# Models
+
+A model is one kind of data inside a [clock](groups.md): a namespace of keys and the operations that write them. [Tables](tables.md) are the primary model; others live beside them in the same history.
+
+## Contract
+
+- A model declares, for each operation, what it writes and what it [requires](transactions.md).
+- Everything else follows from the [timeline](log.md) without the model's involvement: who wins, what is pruned, what is final, what is [compacted](compaction.md).
+- No layer beneath a model interprets its values.
+- A model knows nothing of peers, quorums, or checkpoints.
+- Two models never see each other's keys. One transaction may change several.
+
+## Lifetime
+
+- A model comes into existence with the first operation that names it; creating one needs no agreement.
+- A model's identity includes its kind. An operation of another kind is not valid in it.
+- Dropping a model is an operation at a place in the timeline. After it the model is gone for good, and transactions that name it are pruned.
+
+## Built-in kinds
+
+- A table: see [tables](tables.md).
+- A map where the last write to a key is what is read.
+- A map where the first write to a key holds it: names, locks, anything exactly one writer should get.
+- Any map may be restricted to [committed reads](reads.md). Readers then never see a value that could be displaced.
+
+## Merging kinds
+
+- Some data merges rather than replaces: text, ordered lists, trees that move.
+- Such a model also declares how concurrent writes to one key combine, as a pure function of those writes.
+- That function is held to the same determinism as a [commit operation](commit-operations.md), and its meaning is fixed once released.
+- A merging model still commits and compacts by the same rules. Finality lets it discard the metadata merging needed.
+
+## Extension
+
+- A kind of model is added by the library or by an application built on it, in native code that every peer of the group must have.
+- A peer that meets a kind it does not have cannot verify state for that clock. It may still relay it.
+- Adding a kind never changes the log, the checkpoint chain, or sync.
