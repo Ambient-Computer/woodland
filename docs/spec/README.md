@@ -19,7 +19,7 @@ Woodland is a replicated relational database for small groups of devices that ar
 - Devices connect in any shape; two contributors may never meet directly.
 - Nothing assumes an application stays open long enough to finish an exchange.
 - The library runs on client devices, native and WebAssembly, and behaves identically on both.
-- The library is a [deterministic core](library.md). The network, the clock, and the [store](storage.md) belong to the application.
+- The library is a [deterministic core](library.md) with its own [storage](storage.md). The network and the clock belong to the application.
 
 ## Non-goals
 
@@ -48,4 +48,4 @@ Woodland is a replicated relational database for small groups of devices that ar
 - [sync](sync.md): what two peers exchange, and what is checked on arrival.
 - [confidentiality](confidentiality.md): sealed groups, secrets, and what removal guarantees.
 - [library](library.md): the deterministic core, steps, and what the application owns.
-- [storage](storage.md): the contract a store meets, and what losing one means.
+- [storage](storage.md): the contract a store meets, the drivers that meet it, and what losing a store means.

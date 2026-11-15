@@ -1,25 +1,30 @@
-//! The store: what the library asks of whatever keeps its data.
+//! The store: where the library keeps its data.
 //!
 //! An ordered map from bytes to bytes, with atomic batches and consistent
 //! views. Nothing richer is asked for, so that the same contract can be
-//! met by a file on a server and by a browser's private file system, and
-//! so that everything built on top behaves the same on both.
+//! met by a file on a server and by a browser's database, and so that
+//! everything built on top behaves the same on both.
+//!
+//! Stores are the library's own: one driver per place it runs, each
+//! behind a feature, all held to this contract by the same tests. An
+//! application chooses one. It doesn't write one.
 //!
 //! # The contract
 //!
 //! - **Batches are atomic.** All of a batch is applied, or none of it,
 //!   whenever the process dies.
-//! - **Batches are durable on return.** Once [`Store::apply`] returns,
-//!   the batch survives a crash. The library tells no peer anything
-//!   until then, because a device that forgets what it said can break
-//!   agreement.
+//! - **Batches are durable once applied.** When [`Store::apply`]
+//!   finishes, the batch survives a crash. The library tells no peer
+//!   anything until then, because a device that forgets what it said can
+//!   break agreement.
 //! - **Views are consistent.** A [`View`] sees every batch applied before
-//!   it was taken, and none applied after, for as long as it's held.
-//! - **Calls are synchronous.** Working out what happens at a place in
-//!   history means reading, and a read that had to be waited for would
-//!   make every such step a suspension.
-//! - **One writer.** Nothing else writes to a store while the library
-//!   has it.
+//!   it was taken, and none applied after. It's held briefly: a store may
+//!   make batches wait for it.
+//! - **Calls are awaited.** Some stores answer at once and some can't.
+//!   The library waits for nothing else, so with a store that answers at
+//!   once it never waits at all.
+//! - **One owner.** Nothing else writes to a store while the library has
+//!   it, and a driver refuses a second owner where it can tell.
 //!
 //! # Losing a store
 //!
@@ -34,7 +39,7 @@ mod memory;
 use std::error::Error;
 use std::fmt;
 
-pub use memory::MemoryStore;
+pub use memory::{MemoryStore, MemoryView};
 
 /// One change within a batch.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,20 +85,21 @@ impl fmt::Display for StoreError {
 impl Error for StoreError {}
 
 /// Somewhere to keep data. See the [module](self) for what's promised.
+///
+/// Its futures aren't required to be `Send`. A store in a browser can't
+/// be, and the library never needs to move one between threads.
 pub trait Store {
+    type View: View;
+
     /// Applies every change in `batch`, in order, or none of them.
     ///
     /// # Errors
     ///
     /// If the batch couldn't be made durable. None of it was applied.
-    fn apply(&mut self, batch: Vec<Write>) -> Result<(), StoreError>;
+    fn apply(&mut self, batch: Vec<Write>) -> impl Future<Output = Result<(), StoreError>>;
 
-    /// The store as it is now, to read from while it moves on.
-    ///
-    /// # Errors
-    ///
-    /// If the store can't be read.
-    fn view(&self) -> Result<Box<dyn View>, StoreError>;
+    /// The store as it is now, to read from.
+    fn view(&self) -> Self::View;
 }
 
 /// A store at one moment.
@@ -103,7 +109,7 @@ pub trait View {
     /// # Errors
     ///
     /// If the store can't be read.
-    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError>;
+    fn get(&self, key: &[u8]) -> impl Future<Output = Result<Option<Vec<u8>>, StoreError>>;
 
     /// Up to `limit` entries with keys in `start..end`, in `order`. With
     /// no `end`, the range runs to the last key.
@@ -120,5 +126,5 @@ pub trait View {
         end: Option<&[u8]>,
         order: Order,
         limit: usize,
-    ) -> Result<Vec<Entry>, StoreError>;
+    ) -> impl Future<Output = Result<Vec<Entry>, StoreError>>;
 }

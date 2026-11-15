@@ -181,4 +181,4 @@ pub use io::{Action, Changed, NetworkAction};
 pub use model::{ColumnId, ModelId, Query, Row, Table, Value};
 pub use node::{Batch, Node, TransactionBuilder};
 pub use storage::{StorageAction, StorageWrite};
-pub use store::{Entry, MemoryStore, Order, Store, StoreError, View, Write};
+pub use store::{Entry, MemoryStore, MemoryView, Order, Store, StoreError, View, Write};

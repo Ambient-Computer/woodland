@@ -7,7 +7,8 @@ Woodland runs inside other people's programs, on other people's devices. This pa
 - A web application, with the core compiled to WebAssembly.
 - A host language calling the core through foreign-function bindings.
 - A native Rust program, such as a daemon or a command-line tool.
-- All three are expected to share one core. That is why it is a library with no runtime; see [library](../spec/library.md).
+- All three are expected to share one core. That is why it is a library that brings no runtime; see [library](../spec/library.md).
+- A native program may block a thread on storage. A browser cannot block at all. The core is written once for both by awaiting.
 
 ## Transport
 
@@ -20,21 +21,34 @@ Woodland runs inside other people's programs, on other people's devices. This pa
 
 ## Storage by environment
 
-- Native targets have real files and real fsync. Any embedded ordered store meets the [contract](../spec/storage.md).
-- Browsers offer one synchronous, durable-ish primitive: sync access handles on the origin-private file system.
-- Those handles exist only in a dedicated worker. A core with synchronous storage therefore lives in a worker, and the page talks to it by messages.
-- A handle locks its file exclusively. One tab's worker owns the store; other tabs go through it. This matches the [one-owner rule](../spec/library.md).
-- No pure-Rust ordered store was found that runs on those handles. The browser store is ours to write, or sits on SQLite's.
-- IndexedDB is asynchronous. Calling it synchronously needs a WebAssembly feature that had only just reached every major browser, so it is a fallback and not the plan.
+- Native targets have real files and real fsync. Any embedded ordered store can sit under a driver.
+- Browsers offer two places to keep data: IndexedDB, and the origin-private file system.
+- IndexedDB is the browser driver. It is an ordered key-value store with atomic transactions, which is the [contract](../spec/storage.md) almost word for word.
+- It works in every context a core might run in: a page, any kind of worker, a service worker. The core is not forced anywhere.
+- A transaction opened with strict durability completes only after the platform has tried to reach the disk. Chrome's default is weaker, so the driver always asks.
+- Its answers arrive later, never at once. That is why the core [awaits](../spec/library.md) storage rather than calling it.
+- An IndexedDB transaction closes itself when its creator waits on anything but the database. A step waits only on storage, which is what keeps one transaction usable for a whole batch.
+- Several tabs can write to one database. For Woodland that is a hazard and not a feature: two cores on one store are one peer twice.
+- The driver holds a named lock for as long as it has the store, so a second tab is refused and routes through the first.
+
+## Why not the origin-private file system
+
+- Its only durable interface is synchronous, and exists only in a dedicated worker: not a shared worker, not a service worker, not the page.
+- That would move the core into a worker, and the connection with it, and then every query, subscription, and action would cross a message port.
+- It is a file, not a database. Atomicity and protection against corruption would be ours to build, on devices we cannot repair.
+- A handle locks its file to one tab, so the multi-tab problem remains and is harder to share around.
+- It is invisible to browser developer tools.
+- It was the first choice here, made to keep storage synchronous. Awaiting storage removed the reason, and experience with both argued against it.
+- It remains possible as a later driver if IndexedDB's read latency proves to matter.
 
 ## What the browser takes away
 
-- Durability. The platform's flush promises an attempt, not a result.
-- Permanence. A browser may evict an origin's storage under pressure, and Safari may delete it after a week without use. Persistence can be requested and is not guaranteed.
-- Presence. Background tabs are frozen or discarded within minutes, sooner on phones. A browser peer is never an always-on peer.
+- Permanence, in principle. A browser may evict an origin's storage under pressure, and Safari may delete it after a week without use. Persistence can be requested.
+- In practice this is rare on Chrome, desktop and Android, and for installed applications. How much to worry is the application's call, by platform.
+- Presence. Background tabs are frozen or discarded within minutes, sooner on phones. A browser peer is rarely an always-on peer.
 - Private windows keep nothing past the session.
-- A browser peer should therefore expect [amnesia](../spec/storage.md), and a group should not need it for a quorum.
-- An application that installs to the home screen gets better treatment on every platform checked. It is still not a guarantee.
+- None of this stops a browser being a full peer: a contributor, with weight, holding everything. The library assumes neither that it is nor that it is not.
+- What the library does require is that a browser that loses its store is treated as [amnesia](../spec/storage.md), like any other device that does.
 
 ## Keys
 
@@ -47,4 +61,5 @@ Woodland runs inside other people's programs, on other people's devices. This pa
 - File system access handles: MDN and the WHATWG File System standard.
 - Storage eviction: MDN's storage quota page and WebKit's storage policy posts.
 - Iroh: its documentation on browser support, deployment, and endpoint identity.
-- Not verified: whether any browser's flush reaches the disk, Android WebView support for sync handles, and whether a persistence grant exempts an origin from Safari's week limit.
+- IndexedDB durability and multi-tab behaviour: long use of both browser stores by the project's author, and the IndexedDB standard.
+- Not verified: what strict durability does on each browser's disk, and whether a persistence grant exempts an origin from Safari's week limit.

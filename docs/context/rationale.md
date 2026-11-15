@@ -11,7 +11,7 @@ The spec states decisions without their history. This page keeps the history: wh
 - Membership changes were hard for the same reason: each had to be acknowledged by everyone before anything else could settle.
 - Removing a contributor had no clean moment. Deciding which of its writes counted needed vouching, and peers that had taken the wrong ones had to rewind.
 - Storing indexes as logged writes made indexed columns exclude concurrent edits. An index is derivable, and is now [derived](../spec/tables.md).
-- Requesting storage through the state machine made every read a round trip, and added a third verdict for "waiting on storage". Storage is now [called directly](../spec/library.md).
+- Requesting storage through the state machine made every read a round trip, and added a third verdict for "waiting on storage". Storage is now [awaited](../spec/library.md).
 
 ## Why a chain and not a lattice
 
@@ -40,6 +40,16 @@ The spec states decisions without their history. This page keeps the history: wh
 - Replaying effects means devices agree only on the library. Impure work happens once, on the author's device.
 - The cost is that an effect cannot say "every row where". Those cases are [commit operations](../spec/commit-operations.md), evaluated once on final history.
 - The split follows a known result: an invariant can be kept without coordination only if concurrent valid changes always merge into a valid state. The rest must wait for agreement, and here that means waiting for a checkpoint.
+
+## Why storage is awaited
+
+- Three shapes were considered: storage as requests and replies through the state machine, storage called synchronously, and storage awaited.
+- Requests were the prototype's shape. They kept the core pure and made every read a continuation written by hand.
+- Synchronous calls fixed that and were briefly the decision. In a browser they leave one option, a file in a dedicated worker, which drags the whole application behind a message port.
+- Awaiting gets the same code as synchronous calls, with the suspension written by the compiler. It works over a browser database, a blocking native store, and memory alike.
+- The price is that a step can be abandoned halfway, and that code on the read path is marked as waiting. Both are contained: an abandoned core reloads, and only storage is ever waited on.
+- Determinism survives because a step runs alone and waits on nothing but its store.
+- Owning the drivers, rather than accepting any store an application brings, was the project author's suggestion. It removes storage callbacks from every binding and lets one test suite vouch for every store.
 
 ## Why confidentiality is simple here
 

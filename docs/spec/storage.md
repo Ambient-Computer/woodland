@@ -1,15 +1,24 @@
 # Storage
 
-Storage is an ordered key-value store the application provides and the [core](library.md) calls. The contract is small so that it can be met everywhere the library runs, the browser included.
+Storage is an ordered key-value store that the [core](library.md) reads and writes. The contract is small so that it can be met everywhere the library runs, the browser included.
 
 ## Contract
 
 - Keys and values are bytes. Keys are ordered bytewise.
 - A batch of writes and deletes is applied atomically: all of it, or none.
-- A batch is durable when the call that applies it returns.
-- A key is read by point lookup, and a range of keys by an ordered scan in either direction.
-- A reader can hold a consistent view while later batches are applied.
-- Every call is synchronous.
+- A batch is durable when applying it completes.
+- A key is read by point lookup, and a range of keys by an ordered scan in either direction, a bounded number at a time.
+- A reader can hold a consistent view: every batch applied before it, none after. A view is held briefly, since a store may make batches wait for it.
+- A call may answer at once or later. The core [waits](library.md) for it either way.
+
+## Drivers
+
+- Stores are part of the library, not supplied by the application. There is one driver per kind of place the library runs, and an application chooses among them.
+- A driver is included only when asked for, so an application carries only the stores it uses.
+- Every driver passes the same tests of the contract, including being stopped mid-batch.
+- Nothing above a driver knows which one it is on. Behaviour that differs between drivers is a defect in one of them.
+- An in-memory driver exists for tests and simulation, and is available to applications for theirs.
+- Owning the drivers is what lets the contract stay small: nothing has to be promised to code the library does not control.
 
 ## What is not assumed
 

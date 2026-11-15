@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::future::ready;
 use std::ops::Bound;
 use std::sync::Arc;
 
@@ -8,8 +9,9 @@ type Entries = BTreeMap<Vec<u8>, Vec<u8>>;
 
 /// The whole contract in a map in memory, for tests and simulations.
 ///
-/// It keeps nothing when the process ends, so a device that uses it for
-/// real is a new device every time it starts.
+/// It answers at once, so nothing built on it ever waits. And it keeps
+/// nothing when the process ends, so a device that uses it for real is a
+/// new device every time it starts.
 #[derive(Clone, Debug, Default)]
 pub struct MemoryStore {
     /// Shared with every view taken since the last batch. A batch copies
@@ -25,7 +27,9 @@ impl MemoryStore {
 }
 
 impl Store for MemoryStore {
-    fn apply(&mut self, batch: Vec<Write>) -> Result<(), StoreError> {
+    type View = MemoryView;
+
+    fn apply(&mut self, batch: Vec<Write>) -> impl Future<Output = Result<(), StoreError>> {
         let entries = Arc::make_mut(&mut self.entries);
         for write in batch {
             match write {
@@ -34,20 +38,38 @@ impl Store for MemoryStore {
             };
         }
 
-        Ok(())
+        ready(Ok(()))
     }
 
-    fn view(&self) -> Result<Box<dyn View>, StoreError> {
-        Ok(Box::new(MemoryView(Arc::clone(&self.entries))))
+    fn view(&self) -> MemoryView {
+        MemoryView(Arc::clone(&self.entries))
     }
 }
 
-#[derive(Debug)]
-struct MemoryView(Arc<Entries>);
+/// A [`MemoryStore`] at one moment.
+#[derive(Clone, Debug)]
+pub struct MemoryView(Arc<Entries>);
+
+impl MemoryView {
+    fn range(&self, start: &[u8], end: Option<&[u8]>, order: Order, limit: usize) -> Vec<Entry> {
+        if end.is_some_and(|end| end <= start) {
+            return Vec::new();
+        }
+
+        let end = end.map_or(Bound::Unbounded, Bound::Excluded);
+        let range = self.0.range::<[u8], _>((Bound::Included(start), end));
+        let owned = |(key, value): (&Vec<u8>, &Vec<u8>)| (key.clone(), value.clone());
+
+        match order {
+            Order::Ascending => range.take(limit).map(owned).collect(),
+            Order::Descending => range.rev().take(limit).map(owned).collect(),
+        }
+    }
+}
 
 impl View for MemoryView {
-    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
-        Ok(self.0.get(key).cloned())
+    fn get(&self, key: &[u8]) -> impl Future<Output = Result<Option<Vec<u8>>, StoreError>> {
+        ready(Ok(self.0.get(key).cloned()))
     }
 
     fn scan(
@@ -56,25 +78,15 @@ impl View for MemoryView {
         end: Option<&[u8]>,
         order: Order,
         limit: usize,
-    ) -> Result<Vec<Entry>, StoreError> {
-        if end.is_some_and(|end| end <= start) {
-            return Ok(Vec::new());
-        }
-
-        let end = end.map_or(Bound::Unbounded, Bound::Excluded);
-        let range = self.0.range::<[u8], _>((Bound::Included(start), end));
-        let owned = |(key, value): (&Vec<u8>, &Vec<u8>)| (key.clone(), value.clone());
-
-        Ok(match order {
-            Order::Ascending => range.take(limit).map(owned).collect(),
-            Order::Descending => range.rev().take(limit).map(owned).collect(),
-        })
+    ) -> impl Future<Output = Result<Vec<Entry>, StoreError>> {
+        ready(Ok(self.range(start, end, order, limit)))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::block_on;
 
     const NOTHING: [Vec<u8>; 0] = [];
 
@@ -89,23 +101,26 @@ mod tests {
         Write::Delete { key: key.to_vec() }
     }
 
+    fn apply(store: &mut MemoryStore, batch: Vec<Write>) {
+        block_on(store.apply(batch)).expect("memory doesn't fail");
+    }
+
+    fn get(view: &MemoryView, key: &[u8]) -> Option<Vec<u8>> {
+        block_on(view.get(key)).expect("memory doesn't fail")
+    }
+
     fn store(keys: &[&[u8]]) -> MemoryStore {
         let mut store = MemoryStore::new();
-        let batch = keys.iter().map(|key| put(key, key)).collect();
-        store.apply(batch).expect("memory doesn't fail");
+        apply(&mut store, keys.iter().map(|key| put(key, key)).collect());
 
         store
     }
 
     fn keys(store: &MemoryStore, start: &[u8], end: Option<&[u8]>, order: Order) -> Vec<Vec<u8>> {
-        let view = store.view().expect("memory doesn't fail");
-        let entries = view.scan(start, end, order, 2);
+        let entries = block_on(store.view().scan(start, end, order, 2));
+        let entries = entries.expect("memory doesn't fail");
 
-        entries
-            .expect("memory doesn't fail")
-            .into_iter()
-            .map(|(key, _)| key)
-            .collect()
+        entries.into_iter().map(|(key, _)| key).collect()
     }
 
     #[test]
@@ -118,26 +133,23 @@ mod tests {
             delete(b"b"),
         ];
 
-        store.apply(batch).expect("memory doesn't fail");
+        apply(&mut store, batch);
 
-        let view = store.view().expect("memory doesn't fail");
-        assert_eq!(view.get(b"a"), Ok(Some(b"2".to_vec())));
-        assert_eq!(view.get(b"b"), Ok(None));
+        let view = store.view();
+        assert_eq!(get(&view, b"a"), Some(b"2".to_vec()));
+        assert_eq!(get(&view, b"b"), None);
     }
 
     #[test]
     fn a_view_doesnt_see_what_came_after_it() {
         let mut store = store(&[b"a"]);
-        let before = store.view().expect("memory doesn't fail");
+        let before = store.view();
 
-        store
-            .apply(vec![delete(b"a"), put(b"b", b"b")])
-            .expect("memory doesn't fail");
+        apply(&mut store, vec![delete(b"a"), put(b"b", b"b")]);
 
-        assert_eq!(before.get(b"a"), Ok(Some(b"a".to_vec())));
-        assert_eq!(before.get(b"b"), Ok(None));
-        let after = store.view().expect("memory doesn't fail");
-        assert_eq!(after.get(b"a"), Ok(None));
+        assert_eq!(get(&before, b"a"), Some(b"a".to_vec()));
+        assert_eq!(get(&before, b"b"), None);
+        assert_eq!(get(&store.view(), b"a"), None);
     }
 
     #[test]
