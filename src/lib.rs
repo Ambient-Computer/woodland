@@ -163,6 +163,7 @@ mod agreement;
 )]
 mod chain;
 mod clock;
+mod db;
 mod encoding;
 mod group;
 mod io;
@@ -177,6 +178,7 @@ mod testing;
 
 pub use actor::Identity;
 pub use agreement::{AgreementId, Genesis};
+pub use db::{Database, Error, Outputs, Transaction};
 pub use io::{Action, Changed, NetworkAction};
 pub use model::{ColumnId, ModelId, Query, Row, Table, Value};
 pub use node::{Batch, Node, TransactionBuilder};

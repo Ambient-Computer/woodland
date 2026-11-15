@@ -1,0 +1,189 @@
+//! Devices doing things in an order nobody planned.
+
+use std::collections::BTreeMap;
+
+use proptest::prelude::*;
+
+use super::*;
+
+const DEVICES: usize = 4;
+const KEYS: [&str; 3] = ["a", "b", "c"];
+
+#[derive(Clone, Debug)]
+enum Action {
+    Set { device: usize, key: usize },
+    Claim { device: usize, key: usize },
+    Expect { device: usize, key: usize },
+    Tick { device: usize },
+    Deliver { messages: usize },
+    Connect { a: usize, b: usize },
+    Disconnect { a: usize, b: usize },
+    Restart { device: usize },
+    Reconfigure { device: usize, members: Vec<usize> },
+}
+
+fn action() -> impl Strategy<Value = Action> {
+    let device = || 0..DEVICES;
+    let key = || 0..KEYS.len();
+    let members = proptest::collection::vec(0..DEVICES, 1..=DEVICES);
+
+    prop_oneof![
+        6 => (device(), key()).prop_map(|(device, key)| Action::Set { device, key }),
+        6 => (device(), key()).prop_map(|(device, key)| Action::Claim { device, key }),
+        3 => (device(), key()).prop_map(|(device, key)| Action::Expect { device, key }),
+        6 => device().prop_map(|device| Action::Tick { device }),
+        12 => (1..12_usize).prop_map(|messages| Action::Deliver { messages }),
+        3 => (device(), device()).prop_map(|(a, b)| Action::Connect { a, b }),
+        3 => (device(), device()).prop_map(|(a, b)| Action::Disconnect { a, b }),
+        1 => device().prop_map(|device| Action::Restart { device }),
+        1 => (device(), members).prop_map(|(device, members)| Action::Reconfigure { device, members }),
+    ]
+}
+
+/// Who holds each claim for good, as far as any device has said.
+type Claims = BTreeMap<&'static str, String>;
+
+struct Run {
+    sim: Sim,
+    group: AgreementId,
+    written: u64,
+    claims: Claims,
+}
+
+impl Run {
+    fn attempt(&mut self, device: usize, transaction: Transaction) {
+        match block_on(self.sim.devices[device].write(self.group, transaction)) {
+            Ok(outputs) => self.sim.absorb(device, outputs),
+            Err(Error::NotAContributor) => {}
+            Err(error) => panic!("a write failed: {error}"),
+        }
+    }
+
+    fn act(&mut self, action: Action) {
+        let (group, sim) = (self.group, &mut self.sim);
+        self.written += 1;
+        let value = format!("{}", self.written);
+        match action {
+            Action::Set { device, key } => {
+                self.attempt(device, set(notes(group), KEYS[key], &value));
+            }
+
+            Action::Claim { device, key } => {
+                let wins = Transaction::new()
+                    .claim(names(group), KEYS[key], value.as_str())
+                    .set(notes(group), KEYS[key], value.as_str());
+                self.attempt(device, wins);
+            }
+
+            Action::Expect { device, key } => {
+                let seen = sim.shown(device, group, notes(group), KEYS[key]);
+                let transaction = match seen {
+                    Some(seen) => Transaction::new().expect(notes(group), KEYS[key], seen),
+                    None => Transaction::new().expect_absent(notes(group), KEYS[key]),
+                };
+                self.attempt(
+                    device,
+                    transaction.set(notes(group), KEYS[key], value.as_str()),
+                );
+            }
+
+            Action::Tick { device } => sim.tick(device),
+            Action::Deliver { messages } => {
+                for _ in 0..messages {
+                    sim.deliver();
+                }
+            }
+
+            Action::Connect { a, b } if a != b => sim.connect(a, b),
+            Action::Disconnect { a, b } if a != b => sim.disconnect(a, b),
+            Action::Connect { .. } | Action::Disconnect { .. } => {}
+            Action::Restart { device } => sim.restart(device),
+            Action::Reconfigure { device, members } => {
+                let weights: Vec<_> = members.iter().map(|&it| (sim.id(it), 1)).collect();
+                match block_on(sim.devices[device].reconfigure(group, weights)) {
+                    Ok(outputs) => sim.absorb(device, outputs),
+                    Err(Error::NotAContributor) => {}
+                    Err(error) => panic!("a request failed: {error}"),
+                }
+            }
+        }
+    }
+
+    /// A claim that any device has shown as committed is held by the
+    /// same value, on every device, from then on.
+    fn check_finality(&mut self) -> Result<(), TestCaseError> {
+        for device in 0..DEVICES {
+            for key in KEYS {
+                let held = self
+                    .sim
+                    .committed(device, self.group, names(self.group), key);
+                let Some(held) = held else {
+                    let known = self.claims.get(key);
+                    prop_assert!(
+                        known.is_none() || !self.caught_up(device),
+                        "device {device} lost the committed claim on {key}"
+                    );
+                    continue;
+                };
+
+                let first = self.claims.entry(key).or_insert_with(|| held.clone());
+                prop_assert_eq!(&*first, &held, "the committed claim on {} changed", key);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Whether `device` has committed as much as anyone.
+    fn caught_up(&self, device: usize) -> bool {
+        let folded = |device: usize| {
+            let groups = &self.sim.devices[device].groups;
+
+            groups
+                .get(&self.group)
+                .map(super::super::group::Group::folded)
+        };
+
+        (0..DEVICES).all(|other| folded(other) <= folded(device))
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(96))]
+
+    #[test]
+    fn devices_agree_on_what_is_committed_and_end_up_the_same(
+        actions in proptest::collection::vec(action(), 1..120),
+    ) {
+        let (sim, group) = Sim::group(DEVICES, 3);
+        let mut run = Run { sim, group, written: 0, claims: Claims::new() };
+        for action in actions {
+            run.act(action);
+            run.check_finality()?;
+        }
+
+        // The network heals, and stays healed for a while.
+        run.sim.connect_all();
+        for _ in 0..4 {
+            run.sim.settle();
+            run.check_finality()?;
+        }
+
+        let everything = |device: usize, committed: bool| {
+            let models = [notes(group), names(group)];
+            let read = |model: ModelId| {
+                let query = Query::prefix(group, model, b"");
+                let query = if committed { query.committed() } else { query };
+
+                run.sim.read(device, &query)
+            };
+
+            models.map(read)
+        };
+        for device in 1..DEVICES {
+            prop_assert_eq!(everything(device, false), everything(0, false), "device {} shows something else", device);
+            prop_assert_eq!(everything(device, true), everything(0, true), "device {} committed something else", device);
+        }
+        prop_assert_eq!(everything(0, false), everything(0, true), "something was never committed");
+    }
+}

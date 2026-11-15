@@ -46,6 +46,7 @@ use crate::model::ModelId;
 
 const GENESIS: u8 = 1;
 const AGREEMENT: u8 = 2;
+const IDENTITY: u8 = 3;
 
 const PROTOCOL: u8 = 1;
 const SETTLED: u8 = 2;
@@ -94,6 +95,12 @@ pub(crate) enum Record {
         agreement: AgreementId,
         model: ModelId,
     },
+}
+
+/// The device's secret key. It lives beside everything it signed, so a
+/// store that's lost takes the key with it.
+pub(crate) fn identity() -> Vec<u8> {
+    vec![IDENTITY]
 }
 
 /// Where every agreement's genesis lives. Scanning it lists the agreements.
