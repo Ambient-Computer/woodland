@@ -24,6 +24,7 @@ use crate::store::{StoreError, View};
 
 use super::super::entry::Outline;
 use super::super::step::Step;
+use super::root::Accumulator;
 
 /// A key in a model.
 type Place = (ModelId, Vec<u8>);
@@ -155,26 +156,40 @@ pub(super) fn hide<V: View>(id: GroupId, entry: &Outline, step: &mut Step<V>) {
 }
 
 /// Makes an entry's writes the committed values of their keys, and
-/// deletes every committed value of a model it drops.
+/// deletes every committed value of a model it drops. `state` is kept
+/// in step: it's the sum of everything committed.
 pub(super) async fn commit<V: View>(
     id: GroupId,
     operations: &[Operation],
+    state: &mut Accumulator,
     step: &mut Step<V>,
 ) -> Result<(), StoreError> {
     for operation in operations {
+        let model = operation.model;
         for write in operation.writes() {
-            let key = keys::committed_value(id, write.model, &write.key);
+            let key = keys::committed_value(id, model, &write.key);
+            if let Some(old) = step.get(&key).await? {
+                state.clear(model, &write.key, &old);
+            }
+
             match write.value {
-                Some(value) => step.put(key, value),
+                Some(value) => {
+                    state.hold(model, &write.key, &value);
+                    step.put(key, value);
+                }
+
                 None => step.delete(key),
             }
         }
 
         if operation.drops() {
-            let (start, end) = keys::range(keys::committed_value(id, operation.model, b""));
-            for (key, _) in step.scan(&start, &end).await? {
+            let prefix = keys::committed_value(id, model, b"");
+            let (start, end) = keys::range(prefix.clone());
+            for (key, value) in step.scan(&start, &end).await? {
+                state.clear(model, &key[prefix.len()..], &value);
                 step.delete(key);
             }
+            state.drop(model);
         }
     }
 

@@ -57,6 +57,15 @@ The spec states decisions without their history. This page keeps the history: wh
 - So a secret per checkpoint, delivered in the checkpoint, is sufficient; the elaborate constructions are not needed.
 - Forward secrecy is given up on purpose. A new member must be able to read existing data, and the two are incompatible.
 
+## Why the state root is a sum
+
+- A checkpoint commits to the state it produces, and every voter recomputes it. Whatever does that runs on every device at every checkpoint.
+- A tree over the state proves any part of it, and costs a walk through storage for every changed key. Keeping one balanced inside an ordered key-value store is a project of its own.
+- A sum of hashes costs one addition per changed key and nothing to store but itself. It answers the first open question below: a checkpoint's cost follows what changed.
+- A sum of short hashes is forgeable, since a set matching a chosen total is far easier to find than a collision. The construction used has rows long enough that it is not; it was read about, not analysed here.
+- The price is that a snapshot cannot be checked piece by piece, and a reader cannot be shown one row with a proof. Neither is needed yet.
+- If either becomes needed, the sum can be split into many sums by key, which proves a part at the cost of a larger commitment. That is a format change, and is cheaper to make before anything is deployed.
+
 ## Reading list
 
 - Reconfigurable Lattice Agreement: Kuznetsov, Rieutord, Tucci-Piergiovanni, 2019.
@@ -67,13 +76,14 @@ The spec states decisions without their history. This page keeps the history: wh
 - ERA, Epoch-Resolved Arbitration: Dougal, 2026. Epoch-first ordering against backdating.
 - Self-Healing Lattice Agreement: de Souza et al., 2021, and PeerReview: Haeberlen et al., 2007. Accountability in place of tolerance.
 - Bamboo: Meyer. Append-only logs verifiable in part.
+- Securing Update Propagation with Homomorphic Hashing: Lewi et al., 2019. The sum the state root is built on.
 - DBSP: Budiu et al., 2023. Incremental views by retraction.
 - Cambria: Litt et al., 2021. Schema change with old writers.
 - Keyhive: Ink & Switch. The concurrent-membership problem this design avoids.
 
 ## Open questions
 
-- Whether the checkpoint cost on a large state stays bounded per step, and what the state commitment must look like for that.
+- Whether proving part of a state will be needed, and what it costs to add once there is data.
 - How a contributor decides when to start a checkpoint attempt without wasting others' time.
 - What a merging model needs from the core beyond a pure function, and whether text fits.
 - How much of confidentiality survives contact with real readers at scale.

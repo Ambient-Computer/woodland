@@ -36,6 +36,16 @@ impl<V: View> Step<V> {
         }
     }
 
+    /// A copy to try things out on. What it writes goes nowhere.
+    pub(crate) fn fork(&self) -> Self {
+        Self {
+            view: self.view.clone(),
+            pending: self.pending.clone(),
+            sends: Vec::new(),
+            changed: BTreeSet::new(),
+        }
+    }
+
     pub(crate) fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
         self.pending.insert(key, Some(value));
     }

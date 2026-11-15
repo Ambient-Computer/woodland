@@ -17,7 +17,7 @@ use ed25519_dalek::VerifyingKey;
 
 use crate::db::{Changed, GroupId, keys};
 use crate::model::{ModelId, Query};
-use crate::store::{MemoryStore, Store};
+use crate::store::{MemoryStore, Store, Write};
 use crate::testing::block_on;
 
 use super::{Database, Error, Outputs, Transaction};

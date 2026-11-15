@@ -103,7 +103,7 @@ pub trait Store {
 }
 
 /// A store at one moment.
-pub trait View {
+pub trait View: Clone {
     /// What's under `key`, if anything.
     ///
     /// # Errors

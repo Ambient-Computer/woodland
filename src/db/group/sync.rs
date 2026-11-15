@@ -16,7 +16,7 @@ use super::super::entry::{Checked, Entry, Frontier, Link, reach};
 use super::super::message::{Message, Summary};
 use super::super::step::Step;
 use super::Group;
-use super::commit::frontier_of;
+use super::commit::covers_of;
 
 /// How many entries go in one message. A peer that's far behind gets
 /// the rest as it answers.
@@ -73,7 +73,9 @@ impl Group {
         self.said |= self.chain.receive(message.chain);
         let tip = self.chain.tip();
         let writers = tip.electorate.clone();
-        let decided = frontier_of(tip).unwrap_or_default();
+        let decided = covers_of(tip)
+            .map(|covers| covers.frontier)
+            .unwrap_or_default();
 
         // A peer that sent entries is waiting to hear how far they got.
         let owed = (!message.entries.is_empty()).then_some(from);

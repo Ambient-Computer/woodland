@@ -180,3 +180,26 @@ fn a_threshold_value_shows_once_its_committed() {
         );
     }
 }
+
+/// A vote says "I reached this state too". A contributor that didn't,
+/// for whatever reason, doesn't vote, and without it there's no quorum.
+#[test]
+fn a_contributor_that_reaches_another_state_doesnt_vote() {
+    let (mut sim, group) = Sim::group(2, 2);
+    let corrupt = Write::Put {
+        key: keys::state(group),
+        value: vec![7; 2048],
+    };
+    block_on(sim.devices[LAPTOP].store.apply(vec![corrupt])).expect("applied");
+
+    sim.write_to(PHONE, group, set(notes(group), "todo", "milk"));
+    sim.settle();
+
+    assert_eq!(
+        sim.shown(LAPTOP, group, notes(group), "todo").as_deref(),
+        Some("milk")
+    );
+    for device in [PHONE, LAPTOP] {
+        assert_eq!(sim.committed(device, group, notes(group), "todo"), None);
+    }
+}

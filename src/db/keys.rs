@@ -7,6 +7,7 @@
 //! [GROUP][group][PROTOCOL][CHAIN]               → the checkpoint chain
 //! [GROUP][group][PROTOCOL][META]                → what's held, what's committed
 //! [GROUP][group][PROTOCOL][LOG][author][seq]    → an entry
+//! [GROUP][group][PROTOCOL][STATE]               → the sum the state root is the hash of
 //! [GROUP][group][COMMITTED][model][key…]        → the key's committed value
 //! [GROUP][group][UNCOMMITTED][model][key…][stamp] → a version: a value, or none
 //! [GROUP][group][DROPPED][model][stamp]         → the model was dropped, uncommitted
@@ -53,6 +54,7 @@ const DROPPED: u8 = 4;
 const CHAIN: u8 = 1;
 const META: u8 = 2;
 const LOG: u8 = 3;
+const STATE: u8 = 4;
 
 /// A stored key of model data, parsed back into what it names.
 #[derive(Debug, PartialEq, Eq)]
@@ -107,6 +109,11 @@ pub(crate) fn chain(id: GroupId) -> Vec<u8> {
 
 pub(crate) fn meta(id: GroupId) -> Vec<u8> {
     [protocol(id), vec![META]].concat()
+}
+
+/// The running sum of everything committed.
+pub(crate) fn state(id: GroupId) -> Vec<u8> {
+    [protocol(id), vec![STATE]].concat()
 }
 
 /// Every entry held.

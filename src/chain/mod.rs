@@ -144,6 +144,13 @@ impl Chain {
         std::iter::once(&self.founding).chain(decided)
     }
 
+    /// Every checkpoint someone has proposed for the slot after the tip.
+    pub(crate) fn proposed(&self) -> impl Iterator<Item = &Checkpoint> {
+        let proposals = self.slot.proposals.values();
+
+        proposals.map(|proposal| &proposal.payload().checkpoint)
+    }
+
     /// The highest ballot anyone has mentioned for the slot after the
     /// tip, if an attempt is under way.
     pub(crate) fn attempt(&self) -> Option<u64> {

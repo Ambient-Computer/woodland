@@ -4,6 +4,7 @@
 mod commit;
 mod history;
 mod judge;
+mod root;
 mod sync;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -11,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::actor::{Identity, Peer};
-use crate::chain::{Chain, Checkpoint, Electorate, Saved};
+use crate::chain::{Chain, Checkpoint, Digest, Electorate, Saved};
 use crate::clock::Stamp;
 use crate::db::{GroupId, keys};
 use crate::encoding;
@@ -40,6 +41,9 @@ pub(crate) struct Group {
     remotes: BTreeMap<Peer, Remote>,
     /// The electorate this device has been asked to bring about.
     wanted: Option<Electorate>,
+    /// Proposed checkpoints this device has checked against its own
+    /// copy, and would vote for.
+    sound: BTreeSet<Digest>,
     /// How many ticks the current attempt at a checkpoint has gone on.
     stalled: u64,
     /// Whether the chain has anything peers haven't been told.
@@ -74,6 +78,7 @@ impl Group {
             live: BTreeSet::new(),
             remotes: BTreeMap::new(),
             wanted: None,
+            sound: BTreeSet::new(),
             stalled: 0,
             said: false,
             stale: false,
@@ -221,7 +226,7 @@ impl Group {
             self.stalled = 0;
         }
 
-        self.propose(identity);
+        self.propose(identity, step).await?;
         self.progress(identity, None, step).await
     }
 
@@ -242,6 +247,7 @@ impl Group {
         step: &mut Step<V>,
     ) -> Result<(), StoreError> {
         loop {
+            self.vet(step).await?;
             let moved = self.advance(identity);
             self.said |= moved;
             let folded = self.fold(step).await?;
