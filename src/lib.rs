@@ -154,6 +154,14 @@
 
 mod actor;
 mod agreement;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the checkpoint chain is not wired into `Node` yet"
+    )
+)]
+mod chain;
 mod clock;
 mod encoding;
 mod group;
