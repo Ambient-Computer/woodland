@@ -5,16 +5,14 @@
 //! peer is thought to hold only ever grows, so nothing is sent to it
 //! twice, and two peers with the same things have nothing to say.
 
-use std::collections::BTreeMap;
-
 use crate::actor::{Identity, Peer};
-use crate::chain::Gossip;
+use crate::chain::{Digest, Gossip};
 use crate::clock::Stamp;
 use crate::encoding;
 use crate::storage::keys;
 use crate::store::{StoreError, View};
 
-use super::super::entry::{Checked, Entry};
+use super::super::entry::{Checked, Entry, Frontier, Link, reach};
 use super::super::message::{Message, Summary};
 use super::super::step::Step;
 use super::Group;
@@ -29,13 +27,14 @@ const PAGE: usize = 64;
 #[derive(Debug, Default)]
 pub(super) struct Remote {
     height: u64,
-    heads: BTreeMap<Peer, u64>,
+    heads: Frontier,
 }
 
 impl Remote {
-    fn holds(&mut self, author: Peer, seq: u64) {
-        let held = self.heads.entry(author).or_default();
-        *held = seq.max(*held);
+    fn holds(&mut self, author: Peer, link: Link) {
+        if reach(&self.heads, author) <= link.seq {
+            self.heads.insert(author, link);
+        }
     }
 }
 
@@ -64,11 +63,11 @@ impl Group {
     ) -> Result<(), StoreError> {
         let remote = self.remotes.entry(from).or_default();
         remote.height = remote.height.max(message.summary.height);
-        for (&author, &seq) in &message.summary.heads {
-            remote.holds(author, seq);
+        for (&author, &link) in &message.summary.heads {
+            remote.holds(author, link);
         }
         for entry in &message.entries {
-            remote.holds(entry.header.author(), entry.header.payload().seq);
+            remote.holds(entry.header.author(), entry.link());
         }
 
         self.said |= self.chain.receive(message.chain);
@@ -78,16 +77,22 @@ impl Group {
 
         // A peer that sent entries is waiting to hear how far they got.
         let owed = (!message.entries.is_empty()).then_some(from);
-        let check = |entry: Entry| entry.check(self.id);
-        let mut waiting: Vec<Checked> = message.entries.into_iter().filter_map(check).collect();
+        let check = |entry: Entry| {
+            let entry = entry.check(self.id)?;
+            let standing = self.standing(entry.author(), entry.header().checkpoint);
+
+            Some((entry, standing))
+        };
+        let mut waiting: Vec<(Checked, bool)> =
+            message.entries.into_iter().filter_map(check).collect();
         loop {
             let before = waiting.len();
             let mut unfit = Vec::new();
-            for entry in waiting {
-                if self.history.accepts(&entry, &writers, &decided) {
+            for (entry, standing) in waiting {
+                if self.history.accepts(&entry, standing, &writers, &decided) {
                     self.integrate(&entry, step);
                 } else {
-                    unfit.push(entry);
+                    unfit.push((entry, standing));
                 }
             }
 
@@ -107,6 +112,17 @@ impl Group {
         }
 
         self.progress(identity, owed, step).await
+    }
+
+    /// Whether `author` has been a contributor in every checkpoint since
+    /// the one named `since`. If not, whatever it wrote under that
+    /// checkpoint was cut when it was removed, and coming back doesn't
+    /// bring it back.
+    fn standing(&self, author: Peer, since: Digest) -> bool {
+        let checkpoints = self.chain.checkpoints();
+        let mut later = checkpoints.skip_while(|it| it.digest() != since).peekable();
+
+        later.peek().is_some() && later.all(|it| it.electorate.includes(author))
     }
 
     /// Sends `peer` what it's thought to lack. With `always`, sends even
@@ -146,7 +162,7 @@ impl Group {
         if let Some(remote) = self.remotes.get_mut(&peer) {
             remote.height = remote.height.max(height);
             for entry in &message.entries {
-                remote.holds(entry.header.author(), entry.header.payload().seq);
+                remote.holds(entry.header.author(), entry.link());
             }
         }
 
@@ -154,11 +170,9 @@ impl Group {
     }
 
     fn summary(&self) -> Summary {
-        let heads = self.history.heads.iter();
-
         Summary {
             height: self.chain.tip().height,
-            heads: heads.map(|(&author, link)| (author, link.seq)).collect(),
+            heads: self.history.heads.clone(),
         }
     }
 
@@ -173,7 +187,7 @@ impl Group {
         let page = u64::try_from(PAGE).unwrap_or(u64::MAX);
         let mut missing: Vec<(Stamp, Entry)> = Vec::new();
         for (&author, head) in &self.history.heads {
-            let held = remote.heads.get(&author).copied().unwrap_or(0);
+            let held = self.history.shared(author, remote.heads.get(&author));
             if held >= head.seq {
                 continue;
             }

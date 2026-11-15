@@ -9,7 +9,7 @@ fn a_new_contributor_writes_once_a_checkpoint_admits_it() {
     assert!(matches!(early, Err(Error::NotAContributor)));
 
     sim.settle();
-    sim.write(LAPTOP, group, set(notes(group), "todo", "milk"));
+    sim.write_to(LAPTOP, group, set(notes(group), "todo", "milk"));
     sim.settle();
 
     assert_eq!(
@@ -26,7 +26,7 @@ fn a_request_to_reconfigure_survives_a_restart() {
     sim.connect_all();
     sim.settle();
 
-    sim.write(LAPTOP, group, set(notes(group), "todo", "milk"));
+    sim.write_to(LAPTOP, group, set(notes(group), "todo", "milk"));
     sim.run();
 
     assert_eq!(
@@ -38,10 +38,10 @@ fn a_request_to_reconfigure_survives_a_restart() {
 #[test]
 fn a_removed_contributor_loses_what_it_wrote_after_its_last_checkpoint() {
     let (mut sim, group) = Sim::group(3, 3);
-    sim.write(NAS, group, set(notes(group), "kept", "committed"));
+    sim.write_to(NAS, group, set(notes(group), "kept", "committed"));
     sim.settle();
     sim.isolate(NAS);
-    sim.write(NAS, group, set(notes(group), "lost", "never committed"));
+    sim.write_to(NAS, group, set(notes(group), "lost", "never committed"));
 
     sim.reconfigure(PHONE, group, [PHONE, LAPTOP]);
     sim.settle();
@@ -65,9 +65,9 @@ fn a_removed_contributor_loses_what_it_wrote_after_its_last_checkpoint() {
 fn work_written_on_top_of_a_removed_contributors_survives() {
     let (mut sim, group) = Sim::group(3, 3);
     sim.disconnect(NAS, PHONE);
-    sim.write(NAS, group, set(notes(group), "from nas", "uncommitted"));
+    sim.write_to(NAS, group, set(notes(group), "from nas", "uncommitted"));
     sim.run();
-    sim.write(
+    sim.write_to(
         LAPTOP,
         group,
         set(notes(group), "from laptop", "after the nas"),
@@ -94,7 +94,7 @@ fn a_removed_contributor_has_no_say() {
     sim.settle();
 
     sim.isolate(LAPTOP);
-    sim.write(PHONE, group, set(notes(group), "todo", "milk"));
+    sim.write_to(PHONE, group, set(notes(group), "todo", "milk"));
     sim.settle();
 
     assert_eq!(
@@ -111,7 +111,7 @@ fn a_group_can_shrink_to_one_and_carry_on() {
     sim.settle();
     sim.isolate(LAPTOP);
 
-    sim.write(LAPTOP, group, set(notes(group), "todo", "milk"));
+    sim.write_to(LAPTOP, group, set(notes(group), "todo", "milk"));
     sim.settle();
 
     assert_eq!(
@@ -119,4 +119,32 @@ fn a_group_can_shrink_to_one_and_carry_on() {
             .as_deref(),
         Some("milk")
     );
+}
+
+/// Found by the randomized simulation: a contributor removed and added
+/// back, with something written before either that nobody had heard.
+#[test]
+fn coming_back_doesnt_bring_back_what_removal_cut() {
+    let (mut sim, group) = Sim::group(3, 3);
+    sim.isolate(NAS);
+    sim.write_to(NAS, group, set(notes(group), "lost", "before removal"));
+
+    sim.reconfigure(PHONE, group, [PHONE, LAPTOP]);
+    sim.settle();
+    sim.reconfigure(PHONE, group, [PHONE, LAPTOP, NAS]);
+    sim.settle();
+    sim.connect_all();
+    sim.settle();
+
+    for device in [PHONE, LAPTOP, NAS] {
+        assert_eq!(sim.shown(device, group, notes(group), "lost"), None);
+    }
+
+    sim.write_to(NAS, group, set(notes(group), "kept", "after coming back"));
+    sim.settle();
+
+    for device in [PHONE, LAPTOP, NAS] {
+        let kept = sim.committed(device, group, notes(group), "kept");
+        assert_eq!(kept.as_deref(), Some("after coming back"));
+    }
 }

@@ -53,11 +53,14 @@ impl History {
 
     /// Whether `entry` is the next one of its author's chain, written on
     /// top of things this device holds, by someone allowed to write.
-    /// `decided` is what the latest checkpoint covers: an author that has
-    /// since been removed still wrote those.
+    /// `standing` is whether its author has been a contributor ever
+    /// since the checkpoint the entry was written under. `decided` is
+    /// what the latest checkpoint covers: an author that has since been
+    /// removed still wrote those.
     pub(super) fn accepts(
         &self,
         entry: &Checked,
+        standing: bool,
         writers: &Electorate,
         decided: &Frontier,
     ) -> bool {
@@ -66,7 +69,7 @@ impl History {
         let next = header.seq == reach(&self.heads, author) + 1
             && header.previous == last.map(|link| link.hash)
             && last.is_none_or(|link| link.lamport < header.lamport);
-        let allowed = writers.includes(author) || header.seq <= reach(decided, author);
+        let allowed = standing || header.seq <= reach(decided, author);
 
         // Whatever a removed author wrote past its last checkpoint is
         // void, so nothing waits for it.
@@ -179,6 +182,23 @@ impl History {
             .into_iter()
             .filter_map(|stamp| self.forget(stamp))
             .collect()
+    }
+
+    /// How much of `author`'s chain a peer shares with this device, if
+    /// `theirs` is the last entry of it the peer holds. A peer holding a
+    /// different entry at that place holds one that was cut, and shares
+    /// only what's committed.
+    pub(super) fn shared(&self, author: Peer, theirs: Option<&Link>) -> u64 {
+        let Some(theirs) = theirs else {
+            return 0;
+        };
+
+        let ours = self.link_at(author, theirs.seq);
+        if ours.is_some_and(|ours| ours.hash != theirs.hash) {
+            return reach(&self.committed, author).min(theirs.seq);
+        }
+
+        theirs.seq
     }
 
     pub(super) fn hash_of_head(&self, author: Peer) -> Option<Hash> {

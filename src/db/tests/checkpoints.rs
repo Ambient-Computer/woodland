@@ -4,7 +4,7 @@ use super::*;
 fn nothing_commits_without_a_quorum() {
     let (mut sim, group) = Sim::group(3, 3);
     sim.isolate(PHONE);
-    sim.write(PHONE, group, set(notes(group), "todo", "milk"));
+    sim.write_to(PHONE, group, set(notes(group), "todo", "milk"));
     sim.settle();
 
     assert_eq!(
@@ -33,7 +33,7 @@ fn nothing_commits_without_a_quorum() {
 fn a_quorum_commits_while_a_contributor_is_away() {
     let (mut sim, group) = Sim::group(3, 3);
     sim.isolate(NAS);
-    sim.write(PHONE, group, set(notes(group), "todo", "milk"));
+    sim.write_to(PHONE, group, set(notes(group), "todo", "milk"));
     sim.settle();
 
     assert_eq!(
@@ -57,11 +57,11 @@ fn committed_work_isnt_undone_by_work_that_arrives_late() {
     sim.isolate(NAS);
 
     // The NAS claims first, by any clock. Nobody hears.
-    sim.write(NAS, group, claim(names(group), "alice", "nas"));
+    sim.write_to(NAS, group, claim(names(group), "alice", "nas"));
     for round in 0..5 {
-        sim.write(PHONE, group, set(notes(group), "busy", &round.to_string()));
+        sim.write_to(PHONE, group, set(notes(group), "busy", &round.to_string()));
     }
-    sim.write(PHONE, group, claim(names(group), "alice", "phone"));
+    sim.write_to(PHONE, group, claim(names(group), "alice", "phone"));
     sim.settle();
 
     assert_eq!(
@@ -95,8 +95,8 @@ fn committed_work_isnt_undone_by_work_that_arrives_late() {
 fn late_work_that_conflicts_with_nothing_still_happens() {
     let (mut sim, group) = Sim::group(3, 3);
     sim.isolate(NAS);
-    sim.write(NAS, group, set(notes(group), "from nas", "hello"));
-    sim.write(PHONE, group, set(notes(group), "from phone", "hi"));
+    sim.write_to(NAS, group, set(notes(group), "from nas", "hello"));
+    sim.write_to(PHONE, group, set(notes(group), "from phone", "hi"));
     sim.settle();
 
     sim.connect(NAS, PHONE);
@@ -119,7 +119,7 @@ fn late_work_that_conflicts_with_nothing_still_happens() {
 #[test]
 fn a_device_restarted_in_the_middle_of_an_attempt_still_agrees() {
     let (mut sim, group) = Sim::group(3, 3);
-    sim.write(PHONE, group, set(notes(group), "todo", "milk"));
+    sim.write_to(PHONE, group, set(notes(group), "todo", "milk"));
     sim.run();
     sim.tick(PHONE);
     for _ in 0..3 {
@@ -144,8 +144,8 @@ fn a_device_restarted_in_the_middle_of_an_attempt_still_agrees() {
 fn rival_attempts_end_in_one_checkpoint() {
     let (mut sim, group) = Sim::group(3, 3);
     sim.disconnect(PHONE, LAPTOP);
-    sim.write(PHONE, group, claim(names(group), "alice", "phone"));
-    sim.write(LAPTOP, group, claim(names(group), "alice", "laptop"));
+    sim.write_to(PHONE, group, claim(names(group), "alice", "phone"));
+    sim.write_to(LAPTOP, group, claim(names(group), "alice", "laptop"));
     sim.tick(PHONE);
     sim.tick(LAPTOP);
     sim.connect(PHONE, LAPTOP);

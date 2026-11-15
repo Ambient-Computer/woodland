@@ -116,6 +116,17 @@ impl Entry {
 }
 
 impl Entry {
+    /// Where the entry says it sits. Nothing about it has been checked.
+    pub(crate) fn link(&self) -> Link {
+        let header = self.header.payload();
+
+        Link {
+            seq: header.seq,
+            lamport: header.lamport,
+            hash: Hash::of_header(self.header.author(), header),
+        }
+    }
+
     /// Reads back an entry that was checked before it was stored.
     pub(crate) fn trusted(self) -> Option<Checked> {
         let operations = encoding::decode(&self.payload)?;

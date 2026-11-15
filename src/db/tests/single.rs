@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn a_write_is_shown_at_once_and_committed_by_a_checkpoint() {
     let (mut sim, group) = Sim::group(1, 1);
-    sim.write(PHONE, group, set(notes(group), "todo", "milk"));
+    sim.write_to(PHONE, group, set(notes(group), "todo", "milk"));
 
     assert_eq!(
         sim.shown(PHONE, group, notes(group), "todo").as_deref(),
@@ -26,9 +26,9 @@ fn a_write_is_shown_at_once_and_committed_by_a_checkpoint() {
 #[test]
 fn a_later_write_replaces_an_earlier_one() {
     let (mut sim, group) = Sim::group(1, 1);
-    sim.write(PHONE, group, set(notes(group), "todo", "milk"));
+    sim.write_to(PHONE, group, set(notes(group), "todo", "milk"));
     sim.settle();
-    sim.write(PHONE, group, set(notes(group), "todo", "eggs"));
+    sim.write_to(PHONE, group, set(notes(group), "todo", "eggs"));
 
     assert_eq!(
         sim.shown(PHONE, group, notes(group), "todo").as_deref(),
@@ -39,7 +39,7 @@ fn a_later_write_replaces_an_earlier_one() {
         Some("milk")
     );
 
-    sim.write(
+    sim.write_to(
         PHONE,
         group,
         Transaction::new().remove(notes(group), "todo"),
@@ -53,9 +53,9 @@ fn a_later_write_replaces_an_earlier_one() {
 #[test]
 fn a_device_picks_up_where_it_stopped() {
     let (mut sim, group) = Sim::group(1, 1);
-    sim.write(PHONE, group, set(notes(group), "kept", "committed"));
+    sim.write_to(PHONE, group, set(notes(group), "kept", "committed"));
     sim.settle();
-    sim.write(PHONE, group, set(notes(group), "todo", "milk"));
+    sim.write_to(PHONE, group, set(notes(group), "todo", "milk"));
     let before = sim.id(PHONE);
 
     sim.restart(PHONE);
@@ -71,7 +71,7 @@ fn a_device_picks_up_where_it_stopped() {
     );
     assert_eq!(sim.committed(PHONE, group, notes(group), "todo"), None);
 
-    sim.write(PHONE, group, set(notes(group), "more", "after"));
+    sim.write_to(PHONE, group, set(notes(group), "more", "after"));
     sim.settle();
 
     assert_eq!(
@@ -87,18 +87,18 @@ fn a_device_picks_up_where_it_stopped() {
 #[test]
 fn a_transaction_whose_expectation_fails_does_nothing() {
     let (mut sim, group) = Sim::group(1, 1);
-    sim.write(PHONE, group, set(notes(group), "count", "1"));
+    sim.write_to(PHONE, group, set(notes(group), "count", "1"));
 
     let stale = Transaction::new()
         .expect(notes(group), "count", "0")
         .set(notes(group), "count", "2")
         .set(notes(group), "other", "written");
-    sim.write(PHONE, group, stale);
+    sim.write_to(PHONE, group, stale);
     let fresh =
         Transaction::new()
             .expect(notes(group), "count", "1")
             .set(notes(group), "count", "2");
-    sim.write(PHONE, group, fresh);
+    sim.write_to(PHONE, group, fresh);
 
     assert_eq!(
         sim.shown(PHONE, group, notes(group), "count").as_deref(),
@@ -119,9 +119,9 @@ fn a_transaction_whose_expectation_fails_does_nothing() {
 #[test]
 fn a_dropped_model_is_empty_for_good() {
     let (mut sim, group) = Sim::group(1, 1);
-    sim.write(PHONE, group, set(notes(group), "todo", "milk"));
+    sim.write_to(PHONE, group, set(notes(group), "todo", "milk"));
     sim.settle();
-    sim.write(PHONE, group, Transaction::new().drop_model(notes(group)));
+    sim.write_to(PHONE, group, Transaction::new().drop_model(notes(group)));
 
     assert_eq!(sim.shown(PHONE, group, notes(group), "todo"), None);
     assert_eq!(
@@ -130,7 +130,7 @@ fn a_dropped_model_is_empty_for_good() {
     );
 
     sim.settle();
-    sim.write(PHONE, group, set(notes(group), "todo", "eggs"));
+    sim.write_to(PHONE, group, set(notes(group), "todo", "eggs"));
     sim.settle();
 
     assert_eq!(sim.shown(PHONE, group, notes(group), "todo"), None);
@@ -141,7 +141,7 @@ fn a_dropped_model_is_empty_for_good() {
 fn readers_hear_what_changed() {
     let (mut sim, group) = Sim::group(1, 1);
     sim.changes[PHONE].clear();
-    sim.write(PHONE, group, set(notes(group), "todo", "milk"));
+    sim.write_to(PHONE, group, set(notes(group), "todo", "milk"));
 
     let optimistic = Query::key(group, notes(group), b"todo");
     let committed = optimistic.clone().committed();

@@ -4,10 +4,12 @@
 //! asks to send, in an order the test controls, and nothing else moves.
 
 mod checkpoints;
+mod guards;
 mod membership;
 mod random;
 mod single;
 mod sync;
+mod tables;
 
 use std::collections::{BTreeSet, VecDeque};
 
@@ -16,7 +18,8 @@ use ed25519_dalek::VerifyingKey;
 use crate::agreement::AgreementId;
 use crate::io::Changed;
 use crate::model::{ModelId, Query};
-use crate::store::MemoryStore;
+use crate::storage::keys;
+use crate::store::{MemoryStore, Store};
 use crate::testing::block_on;
 
 use super::{Database, Error, Outputs, Transaction};
@@ -24,6 +27,7 @@ use super::{Database, Error, Outputs, Transaction};
 const PHONE: usize = 0;
 const LAPTOP: usize = 1;
 const NAS: usize = 2;
+const FRIEND: usize = 3;
 
 struct Sim {
     devices: Vec<Database<MemoryStore>>,
@@ -31,6 +35,17 @@ struct Sim {
     queue: VecDeque<(usize, usize, Vec<u8>)>,
     links: BTreeSet<(usize, usize)>,
     changes: Vec<Vec<Changed>>,
+    /// The group most tests are about.
+    home: AgreementId,
+}
+
+/// One device's view of what's stored.
+struct Reader<'a>(&'a Sim, usize);
+
+impl Reader<'_> {
+    fn read(&self, query: &Query) -> Vec<(Vec<u8>, Vec<u8>)> {
+        self.0.read(self.1, query)
+    }
 }
 
 fn secret(device: usize) -> [u8; 32] {
@@ -47,6 +62,7 @@ impl Sim {
             queue: VecDeque::new(),
             links: BTreeSet::new(),
             changes: vec![Vec::new(); 8],
+            home: AgreementId::from_bytes([0; 32]),
         }
     }
 
@@ -65,6 +81,7 @@ impl Sim {
         sim.connect_all();
         sim.reconfigure(PHONE, group, 0..contributors);
         sim.settle();
+        sim.home = group;
 
         (sim, group)
     }
@@ -126,6 +143,12 @@ impl Sim {
             .retain(|&(from, to, _)| (from.min(to), from.max(to)) != (a.min(b), a.max(b)));
     }
 
+    fn disconnect_all(&mut self) {
+        for (a, b) in self.links.clone() {
+            self.disconnect(a, b);
+        }
+    }
+
     fn isolate(&mut self, device: usize) {
         for other in 0..self.devices.len() {
             self.disconnect(device, other);
@@ -171,9 +194,14 @@ impl Sim {
         }
     }
 
-    fn write(&mut self, device: usize, group: AgreementId, transaction: Transaction) {
+    fn write_to(&mut self, device: usize, group: AgreementId, transaction: Transaction) {
         let outputs = block_on(self.devices[device].write(group, transaction));
         self.absorb(device, outputs.expect("written"));
+    }
+
+    /// Writes to the group most tests are about.
+    fn write(&mut self, device: usize, transaction: Transaction) {
+        self.write_to(device, self.home, transaction);
     }
 
     fn reconfigure(
@@ -197,6 +225,10 @@ impl Sim {
         let store = self.devices[device].store.clone();
         let reopened = block_on(Database::open(store, [0xEE; 32]));
         self.devices[device] = reopened.expect("reopened");
+    }
+
+    fn reader(&self, device: usize) -> Reader<'_> {
+        Reader(self, device)
     }
 
     fn read(&self, device: usize, query: &Query) -> Vec<(Vec<u8>, Vec<u8>)> {
@@ -251,4 +283,70 @@ fn set(model: ModelId, key: &str, value: &str) -> Transaction {
 
 fn claim(model: ModelId, key: &str, value: &str) -> Transaction {
     Transaction::new().claim(model, key, value)
+}
+
+/// The phone, the laptop and the NAS contribute to one group. A friend
+/// holds it too, and can only read.
+fn household() -> Sim {
+    Sim::group(4, 3).0
+}
+
+/// Usernames: only one device can have each.
+fn usernames(cluster: &Sim) -> ModelId {
+    ModelId::claims(cluster.home, [3; 32])
+}
+
+fn household_notes(cluster: &Sim) -> ModelId {
+    ModelId::kv(cluster.home, [1; 32])
+}
+
+/// Claims a username, and writes a note saying whose it is, in one
+/// transaction.
+fn claim_name(cluster: &mut Sim, device: usize, name: &str, owner: &str) {
+    let (names, notes) = (usernames(cluster), household_notes(cluster));
+    let transaction =
+        Transaction::new()
+            .claim(names, name, owner)
+            .set(notes, format!("owner/{name}"), owner);
+    cluster.write(device, transaction);
+}
+
+/// Who holds a username, as far as the device knows.
+fn holder(cluster: &Sim, device: usize, name: &str) -> Option<String> {
+    let query = Query::key(cluster.home, usernames(cluster), name.as_bytes());
+
+    run_query(cluster, device, &query)
+}
+
+fn write(cluster: &mut Sim, device: usize, key: &str, value: &str) {
+    let model = household_notes(cluster);
+    cluster.write(device, set(model, key, value));
+}
+
+/// The most recent value the device knows of.
+fn read(cluster: &Sim, device: usize, key: &str) -> Option<String> {
+    let query = Query::key(cluster.home, household_notes(cluster), key.as_bytes());
+
+    run_query(cluster, device, &query)
+}
+
+/// Only what's committed on the device.
+fn read_committed(cluster: &Sim, device: usize, key: &str) -> Option<String> {
+    let query = Query::key(cluster.home, household_notes(cluster), key.as_bytes());
+
+    run_query(cluster, device, &query.committed())
+}
+
+fn run_query(cluster: &Sim, device: usize, query: &Query) -> Option<String> {
+    let (_, value) = cluster.read(device, query).pop()?;
+
+    Some(String::from_utf8_lossy(&value).into_owned())
+}
+
+/// Every version in a device's storage that isn't committed, as stored.
+fn stored_frontier(cluster: &Sim, device: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let (start, end) = keys::range(keys::frontier(cluster.home));
+    let view = cluster.devices[device].store.view();
+
+    block_on(super::step::scan(&view, &start, &end)).expect("scanned")
 }

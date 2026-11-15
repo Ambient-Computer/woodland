@@ -1,14 +1,11 @@
 //! What peers say to each other.
 
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize};
 
-use crate::actor::Peer;
 use crate::agreement::AgreementId;
 use crate::chain::Gossip;
 
-use super::entry::Entry;
+use super::entry::{Entry, Frontier};
 
 /// Everything one peer tells another about one group, at once. Every
 /// part is safe to hear twice, late, or from someone else.
@@ -25,6 +22,6 @@ pub(crate) struct Message {
 pub(crate) struct Summary {
     /// The height of its latest checkpoint.
     pub(crate) height: u64,
-    /// How far along each author's chain it holds.
-    pub(crate) heads: BTreeMap<Peer, u64>,
+    /// The last entry it holds of each author's chain.
+    pub(crate) heads: Frontier,
 }

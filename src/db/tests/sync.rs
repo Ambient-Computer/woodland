@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn a_reader_follows_along() {
     let (mut sim, group) = Sim::group(2, 1);
-    sim.write(PHONE, group, set(notes(group), "todo", "milk"));
+    sim.write_to(PHONE, group, set(notes(group), "todo", "milk"));
     sim.run();
 
     assert_eq!(
@@ -26,7 +26,7 @@ fn a_device_that_joins_late_catches_up() {
     let (mut sim, group) = Sim::group(2, 1);
     sim.isolate(LAPTOP);
     for round in 0..200 {
-        sim.write(
+        sim.write_to(
             PHONE,
             group,
             set(notes(group), &format!("note {round}"), "written"),
@@ -54,8 +54,8 @@ fn devices_that_never_meet_converge_through_one_that_cant_write() {
     let relay = NAS;
     sim.disconnect(PHONE, LAPTOP);
 
-    sim.write(PHONE, group, set(notes(group), "from phone", "hello"));
-    sim.write(LAPTOP, group, set(notes(group), "from laptop", "hi"));
+    sim.write_to(PHONE, group, set(notes(group), "from phone", "hello"));
+    sim.write_to(LAPTOP, group, set(notes(group), "from laptop", "hi"));
     sim.settle();
 
     for device in [PHONE, LAPTOP, relay] {
@@ -76,8 +76,8 @@ fn devices_that_never_meet_converge_through_one_that_cant_write() {
 fn concurrent_writes_to_one_key_end_up_the_same_everywhere() {
     let (mut sim, group) = Sim::group(2, 2);
     sim.disconnect(PHONE, LAPTOP);
-    sim.write(PHONE, group, set(notes(group), "todo", "milk"));
-    sim.write(LAPTOP, group, set(notes(group), "todo", "eggs"));
+    sim.write_to(PHONE, group, set(notes(group), "todo", "milk"));
+    sim.write_to(LAPTOP, group, set(notes(group), "todo", "eggs"));
 
     sim.connect(PHONE, LAPTOP);
     sim.run();
@@ -102,8 +102,8 @@ fn of_two_concurrent_claims_one_happens_everywhere() {
     let laptop = Transaction::new()
         .claim(names(group), "alice", "laptop")
         .set(notes(group), "winner", "laptop");
-    sim.write(PHONE, group, phone);
-    sim.write(LAPTOP, group, laptop);
+    sim.write_to(PHONE, group, phone);
+    sim.write_to(LAPTOP, group, laptop);
 
     assert_eq!(
         sim.shown(PHONE, group, names(group), "alice").as_deref(),

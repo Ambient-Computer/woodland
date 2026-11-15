@@ -32,6 +32,8 @@ A configuration says which [peers](peers.md) hold a role in a [group](groups.md)
 - Removing a contributor needs a quorum that does not include it. Its consent and its presence are not required.
 - The checkpoint that removes a contributor is the cut. What it covers of the contributor's chains counts; nothing else of them ever will.
 - A removed contributor cannot place work before the cut, whatever time or position it claims.
+- An entry names the latest [checkpoint](checkpoints.md) its author held. If any checkpoint from that one on leaves the author out, the entry is void, wherever and whenever it is received.
+- A contributor that is added back continues its chains from the cut. Positions past the cut are reused, and a void entry at one is not a [fork](log.md).
 - A lost or stolen device is removed the same way as a retired one.
 - Removal is how a group stops waiting on a contributor that will not return.
 - A contributor proven to have [forked](log.md) or to have broken a [promise](checkpoints.md) is removed by the next checkpoint any honest contributor proposes.
