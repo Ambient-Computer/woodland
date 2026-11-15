@@ -9,17 +9,43 @@ A checkpoint is a quorum's signed statement that a stretch of history is final. 
 - It carries a frontier: for each [clock](groups.md), how far along each contributor's [chain](log.md) it covers.
 - A frontier is causally closed, and never behind the previous checkpoint's.
 - For each clock it commits to the history root of each chain at the frontier, and to a root of the clock's state after everything covered.
-- It is valid when signed by a quorum of the configuration it extends.
+- It is valid when signed by a quorum of the configuration its predecessor carries.
 
 ## Agreement
 
 - No two valid checkpoints ever name the same predecessor. Agreeing on the next checkpoint is consensus, and is treated as such.
-- Safety holds whoever is offline, and however messages are delayed, dropped, reordered, or relayed.
-- Progress needs a quorum connected, directly or through relays, long enough to exchange a few messages.
-- Everything said during agreement is signed and relayable, so the signers need not meet.
-- A signer persists what it promises before saying it. A signer that forgets a promise can break agreement.
-- A [contributor](peers.md) signs only after checking the frontier and recomputing the roots for the clocks it holds. A witness checks only that the chain is extended.
-- TODO: the agreement protocol is not chosen. It must be leaderless in the sense that any quorum can finish what any member started.
+- Each position in the chain is decided once, on its own, by the configuration its predecessor carries.
+- An attempt to fill a position has a rank no other attempt shares. Anyone in the configuration may start one, at any time, outranking those it has seen.
+- A signer that sees an attempt promises it: it will not vote in any lower-ranked attempt, and it reports the last checkpoint it voted for.
+- An attempt with promises from a quorum names a checkpoint. If any promise reported a vote, it names the checkpoint of the highest-ranked vote reported, and not its own.
+- A signer votes for the checkpoint named by the highest-ranked attempt it has not promised against.
+- Votes from a quorum, for one checkpoint in one attempt, are the checkpoint's signatures.
+- A checkpoint that could have gathered a quorum's votes is therefore the only one any later attempt can carry. That is the whole of the safety argument.
+
+## Statements
+
+- Everything said during agreement is a signed statement bound to one position in one chain. It means the same whoever relays it and however late.
+- There are no requests and no replies. A peer keeps the latest statement of each kind from each signer, passes them on, and acts on what it holds.
+- Signers therefore need not meet. A quorum connected through relays, at different times, decides.
+- Any signer can finish an attempt another started, by outranking it and inheriting what it gathered.
+- A signer persists a promise or a vote before anyone can hear it. A signer that forgets one can break agreement; see [storage](storage.md).
+- Two statements from one signer that a correct signer could not both make are proof against it, like a [fork](log.md).
+
+## Validation
+
+- Promising requires nothing but the chain. Voting requires checking what is voted for.
+- A [contributor](peers.md) votes only once it holds everything inside the frontier, has checked the frontier is closed, and has recomputed the roots for itself.
+- A contributor that cannot yet check a checkpoint syncs until it can. Its vote waits; its promise does not.
+- A witness votes on the chain's shape alone: the predecessor, the configuration, and that the frontier does not go back.
+- An attempt may have to name a checkpoint its own author has not checked, because a promise reported it. Naming is not vouching; the author still votes only after checking.
+- A checkpoint that fails a contributor's check is never voted for by it. Contributors holding enough weight to block a quorum can therefore stop a bad checkpoint, and a quorum of careless ones cannot be stopped.
+
+## Progress
+
+- Safety holds whoever is offline, and however statements are delayed, dropped, repeated, reordered, or relayed.
+- Progress needs a quorum connected, directly or through relays, long enough for a few statements to cross.
+- Rival attempts that keep outranking each other decide nothing. A contributor whose attempt is outranked waits before trying again, and longer each time.
+- A contributor does not start an attempt while one it has promised is still making progress.
 
 ## Ordering
 

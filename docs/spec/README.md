@@ -9,7 +9,7 @@ Woodland is a replicated relational database for small groups of devices that ar
 - An application chooses, per read, between the latest state and state that can never change.
 - Data is expressed in a small, stable set of relational operations; an application feature never needs a new one.
 - Nothing grows without bound: any device can shed history safely, and get it back with proof.
-- Everything that travels is verifiable by whoever receives it, so any device can relay for any other.
+- Everything that travels is verifiable by whoever receives it, so any device can relay for any other, [readable to it or not](confidentiality.md).
 - Other kinds of data live beside tables, in the same history and the same transactions.
 - An application is a composition of many independent [groups](groups.md).
 
@@ -19,11 +19,12 @@ Woodland is a replicated relational database for small groups of devices that ar
 - Devices connect in any shape; two contributors may never meet directly.
 - Nothing assumes an application stays open long enough to finish an exchange.
 - The library runs on client devices, native and WebAssembly, and behaves identically on both.
-- The library performs no I/O; storage and transport belong to the application.
+- The library is a [deterministic core](library.md). The network, the clock, and the [store](storage.md) belong to the application.
 
 ## Non-goals
 
 - Open participation. Writers are few and named; see [membership](membership.md).
+- Outvoting a dishonest majority. Quorums are sized for devices that fail, not devices that lie.
 - Preventing a contributor from misbehaving. Misbehaviour is proven and the contributor removed; see [log](log.md).
 - Serializable isolation for optimistic work. See [transactions](transactions.md).
 - Running application code during replay. A transaction records effects, not statements.
@@ -45,3 +46,6 @@ Woodland is a replicated relational database for small groups of devices that ar
 - [models](models.md): kinds of data other than tables.
 - [compaction](compaction.md): shedding history, snapshots, and provable restore.
 - [sync](sync.md): what two peers exchange, and what is checked on arrival.
+- [confidentiality](confidentiality.md): sealed groups, secrets, and what removal guarantees.
+- [library](library.md): the deterministic core, steps, and what the application owns.
+- [storage](storage.md): the contract a store meets, and what losing one means.

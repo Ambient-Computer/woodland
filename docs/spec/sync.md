@@ -26,7 +26,7 @@ Sync is what two connected [peers](peers.md) exchange so each ends up with every
 
 ## Validation
 
-- Everything received is verified before it is stored: signatures, links, membership, and roots.
+- Everything received is verified before it is stored: signatures, links, membership, and whatever roots the receiver is able to check.
 - Nothing is trusted because of who delivered it.
 - Invalid data is dropped and the rest of the exchange continues. A peer that keeps sending it may be disconnected; that is the application's policy.
 
@@ -34,7 +34,7 @@ Sync is what two connected [peers](peers.md) exchange so each ends up with every
 
 - Whatever a peer holds, it can serve. Data crosses any number of hops unchanged and equally verifiable.
 - Two contributors that never connect directly converge if a path of connections links them over time.
-- A relay need not understand a clock's [models](models.md) to carry it.
+- A relay need not understand a clock's [models](models.md) to carry it, nor be able to [read](confidentiality.md) it.
 - A group's liveness depends on connectivity over time, never on a particular topology.
 
 ## Transport

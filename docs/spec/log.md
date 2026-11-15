@@ -36,6 +36,6 @@ The log is every [transaction](transactions.md) a peer holds, as signed chains. 
 
 ## Validation
 
-- An entry is accepted only if its signature, its links, and its author's standing in the checkpoint it names all hold.
+- An entry is accepted only if its signature and links hold, and the checkpoint it names lets its author [write that clock](peers.md).
 - An entry that fails is dropped, whoever sent it; a relay is never blamed for its author.
 - Validation never depends on which peer delivered an entry, or in what order.

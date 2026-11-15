@@ -17,7 +17,7 @@ A group is a set of [contributors](peers.md) and everything they agree on: who t
 - Clocks in a group are causally independent. Nothing in one waits on, or is ordered against, anything in another until a checkpoint covers both.
 - A peer that subscribes to a clock holds all of it; a peer that does not holds none of it.
 - Data that different devices need in different amounts belongs in different clocks.
-- Creating a clock is writing to it; it needs no agreement.
+- Creating a clock is writing to it; it needs no agreement. Which contributors may write to it is a matter of [role](peers.md).
 
 ## Composition
 
@@ -25,3 +25,5 @@ A group is a set of [contributors](peers.md) and everything they agree on: who t
 - Groups do not transact with each other. A peer that contributes to one and observes another reads the second and writes what it concludes to the first.
 - Account-like data is a small group other groups' members observe.
 - An aggregate view over many writers is a peer that observes their groups and contributes to its own.
+- A large audience is served the same way: a peer reads a [sealed](confidentiality.md) group and republishes what the audience may see.
+- A peer's roles in different groups are unrelated. Trust never crosses a group boundary.

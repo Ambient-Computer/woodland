@@ -9,6 +9,7 @@ Compaction is how a peer sheds history it no longer needs. It is safe at any tim
 - Committed state as of that checkpoint: one value per key.
 - Every [transaction](transactions.md) the checkpoint does not cover.
 - Fork proofs against anyone still a member.
+- In a [sealed](confidentiality.md) group, the chain of secrets back to the oldest history kept.
 
 ## What is shed
 
@@ -27,7 +28,7 @@ Compaction is how a peer sheds history it no longer needs. It is safe at any tim
 ## Snapshots
 
 - A snapshot is committed state for one [clock](groups.md), offered to a peer that is behind the sender's checkpoint.
-- It is verified against the state root in a checkpoint the receiver has verified. A snapshot is never taken on its sender's word.
+- It is verified against the state root in a checkpoint the receiver has verified. A snapshot is never taken on its sender's word by a peer that will read it.
 - State is committed to in a form that proves a part without the whole, so a snapshot can arrive and be checked in pieces.
 - A peer may take a snapshot instead of history even when history is available. The result is the same.
 

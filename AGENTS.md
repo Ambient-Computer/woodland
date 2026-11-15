@@ -17,3 +17,9 @@
 
 - No FS stutter. If `<name>/` exists, use `<name>/mod.rs` as entrypoint.
 - Prefer structure over flat directories.
+
+# Docs
+
+- `docs/spec` is the design. It leads the code; where they differ, the code is behind.
+- `docs/context` is why: who it's for, where it runs, what was rejected.
+- Read both before designing. Change the spec before changing the architecture.

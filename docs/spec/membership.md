@@ -4,18 +4,20 @@ A configuration says which [peers](peers.md) hold a role in a [group](groups.md)
 
 ## Configuration
 
-- A configuration lists the group's contributors and witnesses, and a weight for each.
+- A configuration lists the group's contributors, witnesses, and readers, with a weight for each contributor and witness.
 - A quorum is any set of them holding more than half the total weight.
 - Any two quorums of one configuration share a member. Every safety property of finality rests on that overlap.
-- Weights are the application's choice. One always-on device may outweigh the rest, so that it and any one other form a quorum.
+- Weights are the application's choice. A device that is reliably reachable and reliably durable deserves more than one that is neither.
 - A configuration where one peer holds more than half the weight makes that peer an arbiter. One where every peer is needed makes finality unanimous. Neither is a special case.
 - A founder alone is a valid configuration, and commits by itself.
+- A configuration with no weight is never valid: nothing could follow it.
 
 ## Changing it
 
 - A change is proposed by a contributor and takes effect when a checkpoint carries it.
 - The checkpoint that carries a change is signed by a quorum of the configuration it replaces.
 - Checkpoints after it are signed by a quorum of the new configuration.
+- Two configurations are never in force at once. Each decides exactly one checkpoint: the next.
 - The chain of configuration changes, from the founding, is the proof of who the members are. A peer that trusts the founding can verify any later configuration.
 
 ## Joining
@@ -32,9 +34,21 @@ A configuration says which [peers](peers.md) hold a role in a [group](groups.md)
 - A removed contributor cannot place work before the cut, whatever time or position it claims.
 - A lost or stolen device is removed the same way as a retired one.
 - Removal is how a group stops waiting on a contributor that will not return.
+- A contributor proven to have [forked](log.md) or to have broken a [promise](checkpoints.md) is removed by the next checkpoint any honest contributor proposes.
 
 ## Liveness
 
 - Writing never needs a quorum. Changing membership and committing do.
 - A group below quorum keeps working optimistically and commits nothing until a quorum reconnects.
-- TODO: a group that permanently loses more than half its weight can never commit or reconfigure again. Recovery needs a decided escape, and weights should be chosen with that in mind until there is one.
+- A group survives losing a member only if the rest still hold more than half the weight. Weights are chosen so that losing any one device leaves a quorum.
+- One peer holding half the weight or more is a single point of failure for finality, however convenient it makes commits.
+
+## Succession
+
+- A group that has permanently lost its quorum can never commit or reconfigure again. No rule inside the group can change that without breaking the overlap safety rests on.
+- Its survivors found a successor: a new group whose founding names a checkpoint of the old one and starts from that checkpoint's committed state.
+- Succession is a decision by people, not a protocol step. Nothing can prove a quorum is gone for good rather than away.
+- A peer follows a successor the way it joins any group: by being told, by someone it trusts.
+- Two sets of survivors may each found a successor. They are different groups from then on, and nothing reconciles them.
+- Uncommitted work in the old group is not carried over. Its authors write it again in the successor.
+- The old group is not ended by succession. A quorum that returns finds its chain intact and its peers elsewhere.

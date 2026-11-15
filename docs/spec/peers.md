@@ -8,24 +8,35 @@ A peer is a device, identified by a signing key. What a peer may do is decided p
 - A key belongs to one device and is never shared or moved.
 - A person with several devices is several peers; grouping them is what a group is for.
 - A removed key is never readmitted. A device that returns does so under a new key.
+- A key and the state it has signed for live and die together; see [storage](storage.md).
 
 ## Roles
 
 - A contributor may write to the group and counts toward its [quorum](membership.md).
 - A witness counts toward the quorum and never writes. It vouches for the order of [checkpoints](checkpoints.md), not for their contents.
-- An observer holds no role in the configuration. It reads, verifies, and relays.
+- A reader is named by a [sealed](confidentiality.md) group so that it can read. It never writes and carries no weight.
+- An observer holds no role in the configuration. It verifies and relays, and reads whatever it is able to.
 - A peer's role is whatever the latest checkpoint it holds says; nothing else grants one.
+
+## Write access
+
+- A contributor writes to every [clock](groups.md) in the group, or only to the clocks its role lists.
+- An entry in a clock its author may not write is invalid, like an entry from a stranger.
+- Narrowing a contributor's clocks is a removal from those clocks, with the same [cut](membership.md).
+- A writer that should not be able to touch other data is given its own clock. This is how an automated writer is confined.
+- Nothing is narrower than a clock. Within one, every contributor that may write it may write anything.
+- Read access is not divided within a group. Data with different audiences belongs in different groups.
 
 ## Observers
 
 - Any number of peers may observe a group; the group does not know or track them.
-- An observer verifies everything a contributor would, so data relayed by an observer is as good as data from its author.
+- An observer verifies everything it is able to read, so data relayed by an observer is as good as data from its author.
 - An observer chooses how much history to keep. One that keeps all of it is an archive; see [compaction](compaction.md).
-- TODO: nothing limits who may observe. Confidentiality needs encryption that survives relaying and removal, and is not designed.
+- An observer of an open group reads everything. An observer of a sealed group is a relay: it carries what it cannot read.
 
 ## Trust
 
-- An observer or relay is trusted with nothing: it cannot forge, reorder, or withhold undetectably what it does not hold a key for.
+- An observer is trusted with nothing: it cannot forge or reorder, and what it withholds another path can supply.
+- A reader is trusted with what it reads, and nothing else.
 - A contributor is trusted not to equivocate and not to sign a checkpoint it has not checked. Breaking either leaves proof; see [log](log.md).
-- Every contributor may write anything in the group. There is no authority narrower than the group.
-- TODO: permissions narrower than a group are expressed today only by splitting data across groups.
+- A witness is trusted not to equivocate. It cannot vouch for contents, so a group whose quorum can be met by witnesses alone has no check on contents at all.
