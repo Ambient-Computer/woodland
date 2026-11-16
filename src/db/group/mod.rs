@@ -9,6 +9,7 @@ mod forks;
 mod history;
 mod interest;
 mod judge;
+mod restore;
 mod root;
 mod rules;
 mod sync;

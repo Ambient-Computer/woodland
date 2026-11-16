@@ -21,6 +21,9 @@ pub(crate) struct Message {
     pub(crate) summary: Summary,
     pub(crate) chain: Gossip,
     pub(crate) entries: Vec<Entry>,
+    /// History the receiver shed and asked to have back: entries a
+    /// checkpoint covers, latest first in each chain.
+    pub(crate) restored: Vec<Entry>,
     /// Fork proofs the other side hasn't said it holds.
     pub(crate) proofs: Vec<Proof>,
     pub(crate) snapshot: Option<Piece>,
@@ -46,6 +49,8 @@ pub(crate) struct Summary {
     pub(crate) proven: BTreeSet<Peer>,
     /// The clocks it wants anything of. `None` if all.
     pub(crate) interest: Option<BTreeSet<ClockId>>,
+    /// The entry of each chain it shed and wants back next.
+    pub(crate) restoring: BTreeMap<ClockId, Frontier>,
 }
 
 /// Part of a snapshot: committed values, in key order.

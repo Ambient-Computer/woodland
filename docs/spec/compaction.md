@@ -39,6 +39,8 @@ Compaction is how a peer sheds history it no longer needs. It is safe at any tim
 - An archive is any peer that kept covered history. Archiving is a local choice and needs no role.
 - A peer restores history by asking an archive and checking each entry's inclusion in a history root it retained.
 - Restored history is as trustworthy as history never shed. The archive is trusted with nothing.
+- A peer restores one clock at a time, by asking. History is never sent to a peer that did not ask for it.
+- History comes back latest first, so each entry is checked on arrival and a restore that stops partway keeps what it has.
 - History nobody kept is gone. A group that wants its past keeps at least one archive.
 
 ## Scope

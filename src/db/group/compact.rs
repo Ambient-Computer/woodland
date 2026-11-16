@@ -63,6 +63,7 @@ impl Group {
             let committed = clock.history.committed.clone();
             clock.shed_through(&committed, step).await?;
             clock.base = folded;
+            clock.restoring = false;
         }
         if only.is_none() {
             self.base = folded;

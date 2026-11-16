@@ -27,11 +27,13 @@ use super::rules;
 
 #[derive(Debug)]
 pub(super) struct Clock {
-    group: GroupId,
+    pub(super) group: GroupId,
     pub(super) id: ClockId,
     pub(super) history: History,
     /// The last entry of each author's chain that's been shed.
-    shed: Frontier,
+    pub(super) shed: Frontier,
+    /// Whether this device is getting back what it shed.
+    pub(super) restoring: bool,
     /// The height of the checkpoint whose entries were last shed. A
     /// peer that hasn't committed that far can't be sent what it lacks.
     pub(super) base: u64,
@@ -49,6 +51,7 @@ pub(super) struct Kept {
     heads: Frontier,
     committed: Frontier,
     shed: Frontier,
+    restoring: bool,
     base: u64,
     dropped: BTreeSet<ModelId>,
 }
@@ -71,6 +74,7 @@ impl Clock {
             id,
             history: History::default(),
             shed: Frontier::new(),
+            restoring: false,
             base: 0,
             dropped: BTreeSet::new(),
             live: BTreeSet::new(),
@@ -88,6 +92,7 @@ impl Clock {
         let mut clock = Self::new(group, id);
         clock.shed = kept.shed;
         clock.base = kept.base;
+        clock.restoring = kept.restoring;
         clock.dropped = kept.dropped;
         clock.history = History::resume(kept.heads, kept.committed);
         for (author, head) in clock.history.heads.clone() {
@@ -116,6 +121,7 @@ impl Clock {
             committed: self.history.committed.clone(),
             shed: self.shed.clone(),
             base: self.base,
+            restoring: self.restoring,
             dropped: self.dropped.clone(),
         }
     }

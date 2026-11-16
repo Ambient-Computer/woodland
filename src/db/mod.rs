@@ -329,6 +329,36 @@ impl<S: Store> Database<S> {
         self.finish(step).await
     }
 
+    /// Starts getting back the history of `clock` that this device
+    /// shed, from any peer that kept it: an archive. Each entry is
+    /// checked against what this device kept, so it's as good as
+    /// history that never left. It arrives over time; [`is_archive`]
+    /// says when it's all here. Compacting again stops it.
+    ///
+    /// Reads don't change. What changes is that this device can hand
+    /// the history on.
+    ///
+    /// [`is_archive`]: Self::is_archive
+    ///
+    /// # Errors
+    ///
+    /// If this device doesn't hold `group`, or the store fails.
+    pub async fn restore(&mut self, group: GroupId, clock: ClockId) -> Result<Outputs, Error> {
+        let mut step = self.begin()?;
+        let held = self.groups.get_mut(&group).ok_or(Error::UnknownGroup)?;
+        let restoring = held.restore(&self.identity, clock, &mut step).await;
+        self.guard(restoring)?;
+
+        self.finish(step).await
+    }
+
+    /// Whether this device holds every entry of `clock` that was ever
+    /// committed: it shed none, or has them all back.
+    #[must_use]
+    pub fn is_archive(&self, group: GroupId, clock: ClockId) -> bool {
+        self.groups.get(&group).is_some_and(|it| it.is_whole(clock))
+    }
+
     /// Holds only these clocks of `group`, or with `None`, all of
     /// them, which is how a group starts out. Nothing of the other
     /// clocks is kept, asked for, or sent here, and reads of them come

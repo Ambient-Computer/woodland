@@ -1,6 +1,7 @@
 use super::*;
 
 mod clocks;
+mod restore;
 
 /// Fills a group's notes, so its state takes several pieces to send.
 fn fill(sim: &mut Sim, group: GroupId, notes_written: usize) {
