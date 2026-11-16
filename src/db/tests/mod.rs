@@ -202,6 +202,27 @@ impl Sim {
         true
     }
 
+    /// Puts a second copy of a waiting message at the back of the
+    /// queue. `message` picks one, whatever it is.
+    fn repeat(&mut self, message: usize) {
+        if let Some(waiting) = self.queue.get(message % self.queue.len().max(1)) {
+            self.queue.push_back(waiting.clone());
+        }
+    }
+
+    /// Moves a waiting message somewhere else in the queue.
+    fn reorder(&mut self, message: usize, to: usize) {
+        let waiting = self.queue.len().max(1);
+        if let Some(moved) = self.queue.remove(message % waiting) {
+            self.queue.insert(to % waiting, moved);
+        }
+    }
+
+    /// Loses a waiting message.
+    fn lose(&mut self, message: usize) {
+        self.queue.remove(message % self.queue.len().max(1));
+    }
+
     /// Delivers everything, and everything that follows from it.
     fn run(&mut self) {
         let mut delivered = 0;

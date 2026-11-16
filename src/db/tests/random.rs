@@ -45,6 +45,19 @@ enum Action {
     Deliver {
         messages: usize,
     },
+    /// The network delivers a message twice.
+    Repeat {
+        message: usize,
+    },
+    /// The network delivers a message out of turn.
+    Reorder {
+        message: usize,
+        to: usize,
+    },
+    /// The network loses a message.
+    Lose {
+        message: usize,
+    },
     Connect {
         a: usize,
         b: usize,
@@ -84,6 +97,10 @@ fn action() -> impl Strategy<Value = Action> {
         2 => device().prop_map(|device| Action::Accept { device }),
         6 => device().prop_map(|device| Action::Tick { device }),
         12 => (1..12_usize).prop_map(|messages| Action::Deliver { messages }),
+        2 => any::<usize>().prop_map(|message| Action::Repeat { message }),
+        3 => (any::<usize>(), any::<usize>())
+            .prop_map(|(message, to)| Action::Reorder { message, to }),
+        2 => any::<usize>().prop_map(|message| Action::Lose { message }),
         3 => (device(), device()).prop_map(|(a, b)| Action::Connect { a, b }),
         3 => (device(), device()).prop_map(|(a, b)| Action::Disconnect { a, b }),
         1 => device().prop_map(|device| Action::Restart { device }),
@@ -229,6 +246,9 @@ impl Run {
                 }
             }
 
+            Action::Repeat { message } => sim.repeat(message),
+            Action::Reorder { message, to } => sim.reorder(message, to),
+            Action::Lose { message } => sim.lose(message),
             Action::Connect { a, b } if a != b => sim.connect(a, b),
             Action::Disconnect { a, b } if a != b => sim.disconnect(a, b),
             Action::Restart { device } => sim.restart(device),
