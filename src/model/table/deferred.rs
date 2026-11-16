@@ -22,7 +22,7 @@ use super::rows::{self, Rekey, Target};
 use super::value::Type;
 use super::{ColumnId, Filter, Table, Value};
 use crate::encoding;
-use crate::model::{Reads, Resolved};
+use crate::model::{Kind, ModelId, Reads, Resolved};
 use crate::store::StoreError;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +40,19 @@ pub(crate) enum Deferred {
     /// Does the same thing to every row a filter picks, of the rows
     /// there are once this is committed.
     Each { filter: Filter, change: Each },
+    /// Deletes a row that may have been referred to, once every
+    /// reference there will ever be can be found.
+    Remove {
+        row: Vec<u8>,
+        incarnation: Incarnation,
+        /// Where what refers to the row is: each of these columns, in
+        /// a table of the same clock, holds the key of the row its own
+        /// row refers to.
+        referrers: Vec<(ModelId, ColumnId)>,
+        /// Whether rows that refer to it go with it. If not, there
+        /// have to be none.
+        cascade: bool,
+    },
 }
 
 /// What's done to each row.
@@ -63,6 +76,12 @@ impl Deferred {
 
                 filter.typed() && typed
             }
+
+            Self::Remove { referrers, .. } => referrers.iter().all(|(table, column)| {
+                let names = matches!(column.kind(), Some(Type::Text | Type::Bytes));
+
+                names && table.kind() == Some(Kind::Table)
+            }),
         }
     }
 
@@ -85,8 +104,88 @@ impl Deferred {
             }
 
             Self::Each { filter, change } => each(filter, change, state).await,
+            Self::Remove {
+                row,
+                incarnation,
+                referrers,
+                cascade,
+            } => remove(row, *incarnation, referrers, *cascade, state).await,
         }
     }
+}
+
+/// Whether a cell names the row under `key`.
+fn names(value: &Value, key: &[u8]) -> bool {
+    match value {
+        Value::Text(text) => text.as_bytes() == key,
+        Value::Bytes(bytes) => bytes == key,
+        _ => false,
+    }
+}
+
+/// Finds every row that names this one in a column it was told to
+/// look in, and deletes them and then the row, or gives up if there
+/// are any.
+///
+/// Nothing can be placed before this any more, so the rows found are
+/// all there will ever be. A reference placed after it is pruned,
+/// because the row is gone. That's what the mark on a referred row and
+/// retiring it were standing in for, and here neither is asked about.
+///
+/// A row that goes with it is deleted the ordinary way: if something
+/// has referred to that row in turn, none of this happens.
+async fn remove(
+    key: &[u8],
+    incarnation: Incarnation,
+    referrers: &[(ModelId, ColumnId)],
+    cascade: bool,
+    state: &impl Reads,
+) -> Result<Option<Vec<Resolved>>, StoreError> {
+    let (start, end) = place::whole();
+    let own = Table::read(&state.scan(&start, &end).await?);
+    let found = own.as_ref().and_then(|table| table.row(key));
+    let Some(row) = found.filter(|row| row.incarnation() == incarnation) else {
+        return Ok(None);
+    };
+
+    let mut steps = Vec::new();
+    let mut going = std::collections::BTreeSet::new();
+    for &(model, column) in referrers {
+        let Some(other) = state.of(model) else {
+            return Ok(None);
+        };
+        let Some(table) = Table::read(&other.scan(&start, &end).await?) else {
+            continue;
+        };
+
+        for referrer in table.rows() {
+            let itself = model == state.model() && referrer.key() == key;
+            if itself || !names(referrer.get(column), key) {
+                continue;
+            }
+            if !cascade {
+                return Ok(None);
+            }
+            if going.insert((model, referrer.key().to_vec())) {
+                let operation = referrer.delete();
+                steps.push(Resolved {
+                    model,
+                    requires: operation.requires(),
+                    writes: operation.writes(),
+                });
+            }
+        }
+    }
+
+    let (target, keys) = (row.target(), row.keys());
+    let cells: Vec<_> = row.stored().collect();
+    steps.push(Resolved {
+        model: state.model(),
+        requires: vec![rows::target(&target), rows::unchanged(key, keys)],
+        writes: rows::delete_writes(&target, &cells, keys, true),
+    });
+
+    Ok(Some(steps))
 }
 
 /// Reads the whole table, and changes each row the filter picks the
@@ -112,6 +211,7 @@ async fn each(
         };
 
         Resolved {
+            model: state.model(),
             requires: operation.requires(),
             writes: operation.writes(),
         }
@@ -178,6 +278,7 @@ async fn number(
     writes.push((sequence, Some(next.to_be_bytes().to_vec())));
 
     Ok(Some(Resolved {
+        model: state.model(),
         requires: rows::set_requires(&target, &cells, rekey.as_ref()),
         writes,
     }))

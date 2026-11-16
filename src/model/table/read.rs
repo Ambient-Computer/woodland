@@ -240,7 +240,36 @@ impl Row {
         }
     }
 
-    fn target(&self) -> Target {
+    /// The change that deletes the row once it's committed, whatever
+    /// has referred to it.
+    pub(crate) fn remove(
+        &self,
+        referrers: impl IntoIterator<Item = (crate::model::ModelId, ColumnId)>,
+        cascade: bool,
+    ) -> super::Deferred {
+        super::Deferred::Remove {
+            row: self.key.clone(),
+            incarnation: self.incarnation,
+            referrers: referrers.into_iter().collect(),
+            cascade,
+        }
+    }
+
+    pub(crate) fn incarnation(&self) -> Incarnation {
+        self.incarnation
+    }
+
+    /// What the row holds in unique and indexed columns.
+    pub(crate) fn keys(&self) -> &[(ColumnId, Value)] {
+        &self.keys
+    }
+
+    /// The plain columns the row holds something in.
+    pub(crate) fn stored(&self) -> impl Iterator<Item = ColumnId> + '_ {
+        self.stored.keys().copied()
+    }
+
+    pub(crate) fn target(&self) -> Target {
         Target {
             key: self.key.clone(),
             incarnation: self.incarnation,

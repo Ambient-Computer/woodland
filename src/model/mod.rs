@@ -151,7 +151,15 @@ impl Fingerprint {
 
 /// What a model reads of its own committed state, to work out a
 /// change that waited for it.
-pub(crate) trait Reads {
+pub(crate) trait Reads: Sized {
+    /// The model whose state this is.
+    fn model(&self) -> ModelId;
+
+    /// The committed state of another model at the same place in the
+    /// timeline, which has to be in the same clock. A model that was
+    /// dropped reads as empty.
+    fn of(&self, model: ModelId) -> Option<Self>;
+
     fn get(&self, key: &[u8]) -> impl Future<Output = Result<Option<Vec<u8>>, StoreError>>;
 
     /// Everything under the keys in `start..end`, in key order.
@@ -166,6 +174,9 @@ pub(crate) trait Reads {
 /// and writes like any other operation's, in the order they apply.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Resolved {
+    /// The model it's done to: the operation's own, or another in its
+    /// clock.
+    pub(crate) model: ModelId,
     pub(crate) requires: Vec<(Vec<u8>, Requirement)>,
     pub(crate) writes: Vec<(Vec<u8>, Option<Vec<u8>>)>,
 }

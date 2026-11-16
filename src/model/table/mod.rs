@@ -139,6 +139,10 @@
 //! isn't decided until it's committed: see [`Deferred`]. Whatever can
 //! name its rows should, by reading them first, through an index or
 //! by key, and not wait.
+//!
+//! Deleting a row that's been referred to can wait instead of going
+//! through retirement: committed, it can read every row that refers
+//! to the one it deletes, and take them with it or stop.
 
 mod deferred;
 mod filter;

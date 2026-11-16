@@ -229,6 +229,55 @@ impl Transaction {
         self
     }
 
+    /// Removes `row` of `table` along with every row that refers to
+    /// it, once the transaction is committed. Nothing changes until
+    /// then, which can take as long as the group's next checkpoint.
+    ///
+    /// `referrers` says where to look: each is a table in the same
+    /// clock and a column of it, holding the key of the row its own
+    /// row [refers] to, as text or bytes. Every row that names `row`
+    /// in one of them is deleted with it. The row doesn't have to be
+    /// [retired] first: once this is committed, no reference can land
+    /// before it, and any placed after it doesn't happen.
+    ///
+    /// The whole transaction is dropped, for good, if by then the row
+    /// is gone, or something has referred in turn to a row that would
+    /// go with it.
+    ///
+    /// [refers]: Self::refer
+    /// [retired]: Self::retire
+    pub fn delete_with(
+        mut self,
+        table: ModelId,
+        row: &Row,
+        referrers: impl IntoIterator<Item = (ModelId, ColumnId)>,
+    ) -> Self {
+        let remove = row.remove(referrers, true);
+        self.operations.push(Operation::deferred(table, remove));
+        self
+    }
+
+    /// Removes `row` of `table` once the transaction is committed, if
+    /// by then no row names it in any of `referrers`: see
+    /// [`delete_with`]. If one does, the whole transaction is dropped,
+    /// for good.
+    ///
+    /// Unlike [`delete_row`], it doesn't mind that the row was
+    /// referred to once, by rows that are gone.
+    ///
+    /// [`delete_with`]: Self::delete_with
+    /// [`delete_row`]: Self::delete_row
+    pub fn delete_unreferred(
+        mut self,
+        table: ModelId,
+        row: &Row,
+        referrers: impl IntoIterator<Item = (ModelId, ColumnId)>,
+    ) -> Self {
+        let remove = row.remove(referrers, false);
+        self.operations.push(Operation::deferred(table, remove));
+        self
+    }
+
     /// Changes `row` of `table`: each of these columns gets its new
     /// value, and the rest are left alone. Another device that changes
     /// other columns of the row at the same time changes those, and

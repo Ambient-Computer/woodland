@@ -30,6 +30,10 @@ A table is a [model](models.md) of rows with typed cells, under a schema that is
 - A referenced row cannot be deleted unconditionally: a delete and a reference written apart cannot both happen.
 - Deleting a referenced row, with or without what refers to it, is a [commit operation](commit-operations.md).
 - No peer can check alone that nothing anywhere refers to a row. That is why the delete waits for finality.
+- Such a delete names the columns that hold references to the row. The rows found there at its place in the timeline are what refers to it.
+- A reference placed after the delete is pruned with its transaction, since the row is gone.
+- A row that would go with it, and is itself referenced, stops the delete.
+- References are followed only within one [clock](groups.md).
 
 ## Indexes
 

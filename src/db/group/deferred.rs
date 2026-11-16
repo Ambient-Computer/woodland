@@ -21,17 +21,47 @@ use super::root::Accumulator;
 struct Committed<'a, V> {
     group: GroupId,
     model: ModelId,
+    dropped: &'a BTreeSet<ModelId>,
     step: &'a Step<V>,
 }
 
 impl<V: View> Reads for Committed<'_, V> {
+    fn model(&self) -> ModelId {
+        self.model
+    }
+
+    fn of(&self, model: ModelId) -> Option<Self> {
+        let Self {
+            group,
+            dropped,
+            step,
+            ..
+        } = *self;
+        let near = model.clock() == self.model.clock();
+
+        near.then_some(Self {
+            group,
+            model,
+            dropped,
+            step,
+        })
+    }
+
     async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        if self.dropped.contains(&self.model) {
+            return Ok(None);
+        }
+
         let key = keys::committed_value(self.group, self.model, key);
 
         self.step.get(&key).await
     }
 
     async fn scan(&self, start: &[u8], end: &[u8]) -> Result<Vec<Entry>, StoreError> {
+        if self.dropped.contains(&self.model) {
+            return Ok(Vec::new());
+        }
+
         let prefix = keys::committed_value(self.group, self.model, b"");
         let within = |key: &[u8]| [&prefix[..], key].concat();
         let found = self.step.scan(&within(start), &within(end)).await?;
@@ -66,17 +96,26 @@ pub(super) async fn carry_out<V: View>(
         let committed = Committed {
             group,
             model,
+            dropped,
             step: &*step,
         };
         let Some(steps) = deferred.resolve(&committed).await? else {
             return Ok(None);
         };
         for resolved in steps {
-            let committed = Committed {
+            // A change reaches other models only through `Reads::of`,
+            // so a step for one that isn't near was never read.
+            let own = Committed {
                 group,
                 model,
+                dropped,
                 step: &*step,
             };
+            let model = resolved.model;
+            let Some(committed) = own.of(model).filter(|_| !dropped.contains(&model)) else {
+                return Ok(None);
+            };
+
             for (key, requirement) in &resolved.requires {
                 let held = committed.get(key).await?;
                 let held = held.as_deref().map(Fingerprint::of);

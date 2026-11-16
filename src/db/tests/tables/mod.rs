@@ -4,6 +4,7 @@
 mod indexes;
 mod numbers;
 pub(super) mod references;
+mod removals;
 mod schema;
 mod sweeps;
 pub(super) mod unique;

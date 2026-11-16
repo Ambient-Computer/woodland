@@ -14,7 +14,7 @@ pub(in crate::db::tests) fn buyer(table: ModelId) -> ColumnId {
 }
 
 /// Accounts and orders, and Ada's account, known to everyone.
-fn shop() -> (Sim, GroupId) {
+pub(super) fn shop() -> (Sim, GroupId) {
     let mut cluster = household();
     let group = cluster.home;
     create_accounts(&mut cluster, PHONE);
