@@ -9,6 +9,7 @@
 //! as one batch, and what it wants said is handed back only after that
 //! batch is durable, so a device never says something it could forget.
 
+mod answer;
 mod changed;
 mod entry;
 mod group;
@@ -37,6 +38,7 @@ use crate::model::{ColumnId, ModelId, Query};
 use crate::seal::Secret;
 use crate::store::{Store, StoreError};
 
+pub use answer::{Answer, Found};
 pub use changed::Changed;
 use group::{Group, Invitation, Wrote};
 pub use id::{ClockId, GroupId};
@@ -691,18 +693,27 @@ impl<S: Store> Database<S> {
     }
 
     /// Answers `query` from whole steps: all of a step's writes, or none.
+    /// The answer says which it is: everything known, or only what's
+    /// committed. A query of a model that shows only what's committed
+    /// gets the second without asking.
     ///
     /// # Errors
     ///
     /// If the store fails.
-    pub async fn read(&self, query: &Query) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Error> {
+    pub async fn read(&self, query: &Query) -> Result<Answer, Error> {
         let view = self.store.view();
         let mut scanned = Vec::new();
         for (start, end) in query.storage_ranges() {
             scanned.extend(step::scan(&view, &start, &end).await?);
         }
 
-        Ok(query.results(&scanned))
+        let found = query.results(&scanned);
+
+        Ok(if query.is_committed() {
+            Answer::Committed(found)
+        } else {
+            Answer::Optimistic(found)
+        })
     }
 
     /// The changes in `group` that are waiting to be committed before

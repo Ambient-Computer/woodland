@@ -37,7 +37,7 @@ fn a_device_with_no_role_can_forget_a_group() {
     assert_eq!(sim.devices[FRIEND].groups().count(), 0);
     assert_eq!(kept(&sim, FRIEND), 0, "nothing is left behind");
     let read = block_on(sim.devices[FRIEND].read(&Query::key(group, notes(group), b"kept")));
-    assert!(matches!(read, Err(Error::UnknownGroup)) || read.is_ok_and(|it| it.is_empty()));
+    assert!(matches!(read, Err(Error::UnknownGroup)) || read.is_ok_and(|it| it.found().is_empty()));
 
     // The rest carry on, and what they send it falls on deaf ears.
     sim.write_to(LAPTOP, group, set(notes(group), "later", "yes"));

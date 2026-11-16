@@ -449,3 +449,27 @@ fn a_decided_checkpoint_is_stored_by_itself() {
     let round = sim.committed(PHONE, group, notes(group), "round");
     assert_eq!(round.as_deref(), Some("13"));
 }
+
+/// An answer says how sure it is, so that what's committed is never
+/// taken for what might not be, or the other way about.
+#[test]
+fn a_read_says_which_level_it_answers_at() {
+    let (mut sim, group) = Sim::group(2, 2);
+    sim.write(PHONE, set(notes(group), "todo", "milk"));
+    sim.settle();
+    sim.disconnect_all();
+    sim.write(PHONE, set(notes(group), "todo", "eggs"));
+    let read = |query: &Query| block_on(sim.devices[PHONE].read(query)).expect("read");
+    let found = |value: &str| vec![(b"todo".to_vec(), value.as_bytes().to_vec())];
+
+    let query = Query::key(group, notes(group), b"todo");
+    assert_eq!(read(&query), Answer::Optimistic(found("eggs")));
+    assert_eq!(read(&query).committed(), None);
+    assert_eq!(read(&query.committed()), Answer::Committed(found("milk")));
+
+    // A model that shows only what's committed answers that way
+    // without being asked.
+    let held = notes(group).committed_only();
+    let query = Query::key(group, held, b"todo");
+    assert!(read(&query).is_committed());
+}

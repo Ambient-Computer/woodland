@@ -147,7 +147,8 @@ async fn a_database_comes_back_from_the_browser() {
     let read = database.read(&Query::key(group, notes, b"todo")).await;
 
     assert_eq!(database.id(), id, "the key is kept with the data");
-    assert_eq!(read.expect("read"), [(b"todo".to_vec(), b"milk".to_vec())]);
+    let read = read.expect("read");
+    assert_eq!(read.found(), [(b"todo".to_vec(), b"milk".to_vec())]);
 }
 
 /// What's been put ahead of a page since doesn't use up the page.

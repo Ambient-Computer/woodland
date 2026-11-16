@@ -35,7 +35,7 @@ use crate::model::{ModelId, Query};
 use crate::store::{MemoryStore, Store, Write};
 use crate::testing::block_on;
 
-use super::{Database, Error, Outcome, Outputs, Transaction, TransactionId};
+use super::{Answer, Database, Error, Outcome, Outputs, Transaction, TransactionId};
 use crate::chain::Role;
 use crate::seal::SealingKey;
 
@@ -419,7 +419,10 @@ impl Sim {
     fn read(&self, device: usize, query: &Query) -> Vec<(Vec<u8>, Vec<u8>)> {
         self.wake(device);
 
-        block_on(self.devices[device].read(query)).expect("read")
+        let answer = block_on(self.devices[device].read(query)).expect("read");
+        assert_eq!(answer.is_committed(), query.is_committed());
+
+        answer.into_found()
     }
 
     /// What `key` holds, as the device would show it right now.

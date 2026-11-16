@@ -152,6 +152,15 @@ impl Query {
         self
     }
 
+    /// Whether this reads only what's committed: it was [asked] to, or
+    /// the model shows nothing else.
+    ///
+    /// [asked]: Self::committed
+    #[must_use]
+    pub fn is_committed(&self) -> bool {
+        !self.optimistic
+    }
+
     /// The ranges of storage keys to scan, each from its first key up
     /// to its second. A committed read scans one for each part of the
     /// model it wants. An optimistic one scans two, and one more.

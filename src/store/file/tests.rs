@@ -90,7 +90,7 @@ fn a_database_comes_back_from_its_file() {
     let read = block_on(database.read(&Query::key(group, notes, b"a"))).expect("read");
 
     assert_eq!(database.id(), id, "the key is in the file");
-    assert_eq!(read, [(b"a".to_vec(), b"b".to_vec())]);
+    assert_eq!(read.found(), [(b"a".to_vec(), b"b".to_vec())]);
 }
 
 /// How many keys each batch of the kill test writes.
