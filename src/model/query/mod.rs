@@ -62,9 +62,9 @@ pub struct Query {
     optimistic: bool,
     /// A single-key query also scans keys that extend it, and drops them.
     exact: Option<Vec<u8>>,
-    /// The column whose index is read, if it's one the device keeps
+    /// The columns whose index is read, if it's one the device keeps
     /// beside the table and not part of it.
-    derived: Option<ColumnId>,
+    derived: Option<Vec<ColumnId>>,
 }
 
 /// Some of a model's keys: from the first, up to the second. `None` is
@@ -144,9 +144,38 @@ impl Query {
         column: ColumnId,
         values: impl RangeBounds<Value>,
     ) -> Self {
-        let range = table::values(column, values.start_bound(), values.end_bound());
+        Self::index_within(group, table, column, [], values)
+    }
+
+    /// Which rows of a [table] hold `held` in the first columns of an
+    /// [index] of several, one value in each, and a value in a range
+    /// in the next. With team and age indexed in that order, everyone
+    /// on one team between two ages, youngest first.
+    ///
+    /// `columns` are the index's, all of them, in its order. Fewer
+    /// values than would reach the last column leave the rest free,
+    /// and the rows come in the order of what they hold there. A row
+    /// is in an index only if it holds a value in every column of it.
+    ///
+    /// Decode the results with [`Table::row_keys`].
+    ///
+    /// [table]: ModelId::table
+    /// [index]: crate::Database::add_index
+    /// [`Table::row_keys`]: crate::Table::row_keys
+    #[must_use]
+    pub fn index_within(
+        group: GroupId,
+        table: ModelId,
+        columns: impl AsRef<[ColumnId]>,
+        held: impl AsRef<[Value]>,
+        values: impl RangeBounds<Value>,
+    ) -> Self {
+        let columns = columns.as_ref();
+        let (start, end) = (values.start_bound(), values.end_bound());
+        let range = table::values(columns, held.as_ref(), start, end);
+        let unique = matches!(columns, [column] if column.is_unique());
         let mut query = Self::ranges(group, table, range.into_iter().collect());
-        query.derived = (!column.is_unique()).then_some(column);
+        query.derived = (!unique).then(|| columns.to_vec());
         query
     }
 
@@ -231,8 +260,12 @@ impl Query {
             Changed::Indexed {
                 group,
                 model,
-                column,
-            } => *group == self.group && *model == self.model && self.derived == Some(*column),
+                columns,
+            } => {
+                let ours = *group == self.group && *model == self.model;
+
+                ours && self.derived.as_ref() == Some(columns)
+            }
             Changed::Key {
                 group,
                 model,

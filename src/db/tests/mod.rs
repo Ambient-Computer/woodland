@@ -322,10 +322,16 @@ impl Sim {
         self.absorb(device, outputs.expect("asked"));
     }
 
-    /// Has `device` keep an index of a column, and fills it.
-    fn keep_index(&mut self, device: usize, table: ModelId, column: crate::ColumnId) {
+    /// Has `device` keep an index of a column, or of several, and
+    /// fills it.
+    fn keep_index(
+        &mut self,
+        device: usize,
+        table: ModelId,
+        columns: impl AsRef<[crate::ColumnId]>,
+    ) {
         self.wake(device);
-        let outputs = block_on(self.devices[device].add_index(self.home, table, column));
+        let outputs = block_on(self.devices[device].add_index(self.home, table, columns));
         self.absorb(device, outputs.expect("indexed"));
         self.run();
     }

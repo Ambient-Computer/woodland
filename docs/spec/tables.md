@@ -51,6 +51,7 @@ A table is a [model](models.md) of rows with typed cells, under a schema that is
 - Adding or dropping an index needs no agreement and no history.
 - Rows and index entries are ordered, and a range of either is read directly.
 - An index may cover several columns in a stated order, and is then read by a range over them in that order.
+- A row is in an index only while it holds a value in every column the index covers.
 
 ## Numbers
 

@@ -114,12 +114,15 @@ impl From<Vec<u8>> for Value {
     }
 }
 
-impl ColumnId {
-    /// Sorts before every other.
-    pub(crate) const FIRST: Self = Self([0; 8]);
-    /// Sorts after every other.
-    pub(crate) const LAST: Self = Self([0xFF; 8]);
+/// One column is a list of one, wherever a list of columns is asked
+/// for.
+impl AsRef<[Self]> for ColumnId {
+    fn as_ref(&self) -> &[Self] {
+        std::slice::from_ref(self)
+    }
+}
 
+impl ColumnId {
     /// A column of whole numbers. The application supplies the nonce, as
     /// with a [`ModelId`].
     #[must_use]

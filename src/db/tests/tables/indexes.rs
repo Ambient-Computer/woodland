@@ -26,7 +26,7 @@ fn keys_read(cluster: &Sim, device: usize, query: &Query) -> Vec<String> {
 }
 
 /// The keys of the rows an index query finds.
-fn found(cluster: &Sim, device: usize, query: &Query) -> Vec<String> {
+pub(super) fn found(cluster: &Sim, device: usize, query: &Query) -> Vec<String> {
     let keys = Table::row_keys(&cluster.read(device, query));
 
     keys.iter()
@@ -217,7 +217,7 @@ fn on_plan(cluster: &Sim, device: usize, name: &str, committed: bool) -> Vec<Str
     found(cluster, device, &query)
 }
 
-fn set_plan(cluster: &mut Sim, device: usize, key: &str, name: &str) {
+pub(super) fn set_plan(cluster: &mut Sim, device: usize, key: &str, name: &str) {
     let table = accounts(cluster);
     let row = account(cluster, device, key).expect("signed up");
     update(cluster, device, &row, plan(table), name);

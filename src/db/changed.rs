@@ -34,7 +34,7 @@ pub enum Changed {
     ///
     /// [pending]: crate::Database::pending
     Pending { group: GroupId, model: ModelId },
-    /// An [index] of a column has every row: it was just added, or
+    /// An [index] of some columns has every row: it was just added, or
     /// has caught up after everything in the group changed. Reads
     /// through it may have missed rows until now.
     ///
@@ -42,7 +42,7 @@ pub enum Changed {
     Indexed {
         group: GroupId,
         model: ModelId,
-        column: ColumnId,
+        columns: Vec<ColumnId>,
     },
     /// Committed reads in the group are now of the checkpoint at this
     /// height, exactly: every key it changed has been reported, in this

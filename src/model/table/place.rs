@@ -39,11 +39,12 @@ pub(crate) enum Place {
     /// What follows the column is the value, in a form that sorts the
     /// way values do (see [`order`]).
     Unique(ColumnId, Vec<u8>),
-    /// A row's place in an index of a column: the column, the value the
-    /// row holds in it as in [`Place::Unique`], and the row's key. No
-    /// table has a key like it. It's what a device that keeps an index
-    /// files a row under, beside the table.
-    Index(ColumnId, Vec<u8>, Vec<u8>),
+    /// A row's place in an index of some columns: the columns, the
+    /// values the row holds in them, each as in [`Place::Unique`] and
+    /// one after another, and the row's key. No table has a key like
+    /// it. It's what a device that keeps an index files a row under,
+    /// beside the table.
+    Index(Vec<ColumnId>, Vec<u8>, Vec<u8>),
     /// Holds the last number given out in a column that numbers its
     /// rows.
     Sequence(ColumnId),
@@ -86,8 +87,8 @@ impl Place {
                 [&[ROW][..], &row, &[CELL], incarnation, column.as_bytes()].concat()
             }
             Self::Unique(column, value) => [&[UNIQUE][..], column.as_bytes(), value].concat(),
-            Self::Index(column, value, row) => {
-                [&[INDEX][..], column.as_bytes(), value, row].concat()
+            Self::Index(columns, values, row) => {
+                [&Self::index_of(columns)[..], values, row].concat()
             }
             Self::Sequence(column) => [&[SEQUENCE][..], column.as_bytes()].concat(),
             Self::Rule(rule) => [&[RULE][..], rule].concat(),
@@ -99,9 +100,12 @@ impl Place {
         Self::Unique(column, order::ordered(value)).key()
     }
 
-    /// The key that says the row under `row` has `value` in `column`.
-    pub(crate) fn index(column: ColumnId, value: &Value, row: &[u8]) -> Vec<u8> {
-        Self::Index(column, order::ordered(value), row.to_vec()).key()
+    /// The key that says the row under `row` has `values` in
+    /// `columns`, one in each.
+    pub(crate) fn index(columns: &[ColumnId], values: &[Value], row: &[u8]) -> Vec<u8> {
+        let values = values.iter().flat_map(order::ordered).collect();
+
+        Self::Index(columns.to_vec(), values, row.to_vec()).key()
     }
 
     /// Where the values of a column are looked up: every key that
@@ -113,10 +117,22 @@ impl Place {
         column.is_unique().then_some(unique)
     }
 
-    /// Where an index of a column that isn't unique is: every key
-    /// that starts with this is a row's place in it.
-    pub(crate) fn index_of(column: ColumnId) -> Vec<u8> {
-        [&[INDEX][..], column.as_bytes()].concat()
+    /// Where an index of some columns is: every key that starts with
+    /// this is a row's place in it.
+    pub(crate) fn index_of(columns: &[ColumnId]) -> Vec<u8> {
+        [&[INDEX][..], &Self::indexed(columns)].concat()
+    }
+
+    /// Which columns an index is of, as bytes that nothing else starts
+    /// with: how many, and then each. More than can be counted in a
+    /// byte is no index at all.
+    pub(crate) fn indexed(columns: &[ColumnId]) -> Vec<u8> {
+        let count = u8::try_from(columns.len()).unwrap_or_default();
+        let columns = columns.iter().take(usize::from(count));
+
+        std::iter::once(count)
+            .chain(columns.flat_map(|column| *column.as_bytes()))
+            .collect()
     }
 
     /// Where the rows are, and where they end.
@@ -166,12 +182,22 @@ impl Place {
                 Some(Self::Unique(ColumnId::from_bytes(*column), value.to_vec()))
             }
             INDEX => {
-                let (column, entry) = rest.split_first_chunk()?;
-                let column = ColumnId::from_bytes(*column);
-                let row = order::after(column, entry)?;
-                let value = &entry[..entry.len() - row.len()];
+                let (&count, mut entry) = rest.split_first()?;
+                let mut columns = Vec::new();
+                for _ in 0..count {
+                    let (column, after) = entry.split_first_chunk()?;
+                    columns.push(ColumnId::from_bytes(*column));
+                    entry = after;
+                }
 
-                Some(Self::Index(column, value.to_vec(), row.to_vec()))
+                let mut row = entry;
+                for &column in &columns {
+                    row = order::after(column, row)?;
+                }
+
+                let values = &entry[..entry.len() - row.len()];
+
+                Some(Self::Index(columns, values.to_vec(), row.to_vec()))
             }
             _ => None,
         }
@@ -211,11 +237,23 @@ pub(crate) fn rows(start: Bound<Vec<u8>>, end: Bound<Vec<u8>>) -> Range {
     (start, Some(end))
 }
 
-/// Where it says which rows hold a value between two bounds in a
-/// column: among the table's own keys if the column is unique, and in
-/// an index kept beside them if not.
-pub(crate) fn values(column: ColumnId, start: Bound<&Value>, end: Bound<&Value>) -> Option<Range> {
-    let first = Place::lookup(column).unwrap_or_else(|| Place::index_of(column));
+/// Where it says which rows hold `held` in the first of some columns
+/// and a value between two bounds in the next: among the table's own
+/// keys if it's one column and unique, and in an index kept beside
+/// them if not.
+pub(crate) fn values(
+    columns: &[ColumnId],
+    held: &[Value],
+    start: Bound<&Value>,
+    end: Bound<&Value>,
+) -> Option<Range> {
+    let unique = match columns {
+        [column] => Place::lookup(*column),
+        _ => None,
+    };
+    let first = unique.unwrap_or_else(|| Place::index_of(columns));
+    let held = held.iter().flat_map(order::ordered);
+    let first: Vec<u8> = first.into_iter().chain(held).collect();
     let last = order::successor(&first)?;
     let at = |value: &Value| [&first[..], &order::ordered(value)].concat();
     let past = |value: &Value| order::successor(&at(value)).unwrap_or(last.clone());
@@ -262,6 +300,7 @@ mod tests {
     fn every_place_parses() {
         let column = ColumnId::from_bytes([3; 8]);
         let indexed = ColumnId::text(crate::model::ModelId::from_bytes([0; 64]), [1; 32]);
+        let number = ColumnId::integer(crate::model::ModelId::from_bytes([0; 64]), [2; 32]);
         let places = [
             Place::Table,
             Place::Column(column),
@@ -274,7 +313,21 @@ mod tests {
             Place::Unique(column, b"value".to_vec()),
             Place::Sequence(column),
             Place::Rule([4; 32]),
-            Place::Index(indexed, order::ordered(&"a\0b".into()), b"row".to_vec()),
+            Place::Index(
+                vec![indexed],
+                order::ordered(&"a\0b".into()),
+                b"row".to_vec(),
+            ),
+            Place::Index(
+                vec![indexed, number, indexed],
+                [
+                    order::ordered(&"a\0b".into()),
+                    order::ordered(&(-7).into()),
+                    order::ordered(&"".into()),
+                ]
+                .concat(),
+                b"row".to_vec(),
+            ),
         ];
 
         for place in places {

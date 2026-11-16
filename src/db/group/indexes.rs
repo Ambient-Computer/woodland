@@ -40,7 +40,9 @@ pub(super) enum Build {
     Dropping,
 }
 
-pub(super) type Indexes = BTreeMap<(ModelId, ColumnId), Build>;
+/// The indexes a device keeps: of which columns of which table, in
+/// which order.
+pub(super) type Indexes = BTreeMap<(ModelId, Vec<ColumnId>), Build>;
 
 impl Group {
     pub(super) async fn recall_indexes<V: View>(
@@ -58,31 +60,42 @@ impl Group {
         step.save(keys::indexes(self.id), &held);
     }
 
-    /// Starts keeping an index of `column`, if there isn't one.
-    pub(crate) fn index<V: View>(&mut self, table: ModelId, column: ColumnId, step: &mut Step<V>) {
-        let held = self.indexes.get(&(table, column));
+    /// Starts keeping an index of `columns`, if there isn't one. No
+    /// columns, or more than can be counted in a byte, is no index.
+    pub(crate) fn index<V: View>(
+        &mut self,
+        table: ModelId,
+        columns: &[ColumnId],
+        step: &mut Step<V>,
+    ) {
+        if columns.is_empty() || u8::try_from(columns.len()).is_err() {
+            return;
+        }
+
+        let held = self.indexes.get(&(table, columns.to_vec()));
         if held.is_none_or(|build| *build == Build::Dropping) {
-            self.indexes.insert((table, column), Build::Clearing);
+            self.indexes
+                .insert((table, columns.to_vec()), Build::Clearing);
             self.keep_indexes(step);
         }
     }
 
-    /// Stops keeping an index of `column`.
+    /// Stops keeping an index of `columns`.
     pub(crate) fn unindex<V: View>(
         &mut self,
         table: ModelId,
-        column: ColumnId,
+        columns: &[ColumnId],
         step: &mut Step<V>,
     ) {
-        if let Some(build) = self.indexes.get_mut(&(table, column)) {
+        if let Some(build) = self.indexes.get_mut(&(table, columns.to_vec())) {
             *build = Build::Dropping;
             self.keep_indexes(step);
         }
     }
 
-    /// Whether there's an index of `column` that has every row.
-    pub(crate) fn has_index(&self, table: ModelId, column: ColumnId) -> bool {
-        self.indexes.get(&(table, column)) == Some(&Build::Ready)
+    /// Whether there's an index of `columns` that has every row.
+    pub(crate) fn has_index(&self, table: ModelId, columns: &[ColumnId]) -> bool {
+        self.indexes.get(&(table, columns.to_vec())) == Some(&Build::Ready)
     }
 
     /// Whether an index is still being filled or thrown away.
@@ -130,7 +143,8 @@ impl Group {
             .indexes
             .iter()
             .filter(|(_, build)| **build == Build::Ready);
-        for (&(table, column), _) in ready {
+        for ((table, columns), _) in ready {
+            let table = *table;
             for committed in [false, true] {
                 let query = Query::table(self.id, table);
                 let query = if committed { query.committed() } else { query };
@@ -139,16 +153,24 @@ impl Group {
                     scanned.extend(step.scan(&start, &end).await?);
                 }
                 let read = crate::Table::read(&query.results(&scanned));
-                let named = read.iter().flat_map(crate::Table::columns);
-                let named = named.into_iter().any(|(id, _)| id == column);
+                let named: Vec<_> = read.iter().flat_map(crate::Table::columns).collect();
+                let named = columns
+                    .iter()
+                    .all(|column| named.iter().any(|(id, _)| id == column));
                 let rows = read.iter().flat_map(crate::Table::rows);
-                let holding = rows.filter(|row| named && *row.get(column) != Value::Null);
-                let mut expected: Vec<_> = holding
-                    .map(|row| Place::index(column, row.get(column), row.key()))
+                let held = |row: &crate::Row| -> Vec<Value> {
+                    let values = columns.iter().map(|&column| row.get(column).clone());
+
+                    values.filter(|value| *value != Value::Null).collect()
+                };
+                let mut expected: Vec<_> = rows
+                    .map(|row| (row, held(row)))
+                    .filter(|(_, held)| named && held.len() == columns.len())
+                    .map(|(row, held)| Place::index(columns, &held, row.key()))
                     .collect();
                 expected.sort();
 
-                let prefix = keys::index(self.id, committed, table, &Place::index_of(column));
+                let prefix = keys::index(self.id, committed, table, &Place::index_of(columns));
                 let (start, end) = keys::range(prefix);
                 let found = step.scan(&start, &end).await?;
                 let placed = |(key, _): (Vec<u8>, Vec<u8>)| match keys::parse(&key) {
@@ -188,11 +210,19 @@ impl Group {
         let (row, only) = match Place::parse(key) {
             Some(Place::Row(row)) => (row, None),
             Some(Place::Cell(row, _, column)) => (row, Some(column)),
-            // Every row is in or out of the index with its column.
+            // Every row is in or out of an index with each of its
+            // columns.
             Some(Place::Column(column)) => {
-                let held = self.indexes.get_mut(&(*model, column));
-                if let Some(build) = held.filter(|build| **build != Build::Dropping) {
+                let of = |((table, columns), build): &(&(ModelId, Vec<ColumnId>), &mut Build)| {
+                    table == model && columns.contains(&column) && **build != Build::Dropping
+                };
+                let mut cleared = false;
+                for (_, build) in self.indexes.iter_mut().filter(of) {
                     *build = Build::Clearing;
+                    cleared = true;
+                }
+
+                if cleared {
                     self.keep_indexes(step);
                 }
 
@@ -202,17 +232,15 @@ impl Group {
         };
 
         let filling = |build: &Build| !matches!(build, Build::Clearing | Build::Dropping);
-        let table = (*model, ColumnId::FIRST)..=(*model, ColumnId::LAST);
-        let indexed = self
-            .indexes
-            .range(table)
-            .filter(|(_, build)| filling(build));
-        let columns = indexed.map(|((_, column), _)| *column);
-        for column in columns.filter(|column| only.is_none_or(|only| only == *column)) {
+        let indexed = self.indexes.iter();
+        let indexed = indexed.filter(|((table, _), build)| table == model && filling(build));
+        let indexed = indexed.map(|((_, columns), _)| columns);
+        let touched = indexed.filter(|columns| only.is_none_or(|only| columns.contains(&only)));
+        for columns in touched.cloned().collect::<Vec<_>>() {
             // What's committed shows through to an optimistic read.
-            self.file(*model, column, &row, false, step).await?;
+            self.file(*model, &columns, &row, false, step).await?;
             if *committed {
-                self.file(*model, column, &row, true, step).await?;
+                self.file(*model, &columns, &row, true, step).await?;
             }
         }
 
@@ -241,36 +269,57 @@ impl Group {
             .map(|(_, value)| value))
     }
 
+    /// What a row holds in each of some columns, at one level of
+    /// read. `None` unless the row is there and holds a value in
+    /// every one of them.
+    async fn values<V: View>(
+        &self,
+        table: ModelId,
+        columns: &[ColumnId],
+        row: &[u8],
+        committed: bool,
+        step: &Step<V>,
+    ) -> Result<Option<Vec<Value>>, StoreError> {
+        let exists = Place::Row(row.to_vec()).key();
+        let incarnation = self.held(table, &exists, committed, step).await?;
+        let Some(incarnation) = incarnation.and_then(|held| held.try_into().ok()) else {
+            return Ok(None);
+        };
+
+        let mut values = Vec::new();
+        for &column in columns {
+            let named = Place::Column(column).key();
+            if self.held(table, &named, committed, step).await?.is_none() {
+                return Ok(None);
+            }
+
+            let cell = Place::Cell(row.to_vec(), incarnation, column).key();
+            let held = self.held(table, &cell, committed, step).await?;
+            let value = held.and_then(|held| encoding::decode::<Value>(&held));
+            match value.filter(|value| *value != Value::Null) {
+                Some(value) => values.push(value),
+                None => return Ok(None),
+            }
+        }
+
+        Ok(Some(values))
+    }
+
     /// Puts a row where it belongs in an index, at one level of read:
-    /// under the value it holds, if it's there and holds one.
+    /// under the values it holds, if it's there and holds them all.
     async fn file<V: View>(
         &self,
         table: ModelId,
-        column: ColumnId,
+        columns: &[ColumnId],
         row: &[u8],
         committed: bool,
         step: &mut Step<V>,
     ) -> Result<(), StoreError> {
-        let exists = Place::Row(row.to_vec()).key();
-        let incarnation = self.held(table, &exists, committed, step).await?;
-        let incarnation = incarnation.and_then(|held| held.try_into().ok());
-        let named = Place::Column(column).key();
-        let named = self.held(table, &named, committed, step).await?.is_some();
-        let incarnation = incarnation.filter(|_| named);
-        let value = match incarnation {
-            Some(incarnation) => {
-                let cell = Place::Cell(row.to_vec(), incarnation, column).key();
-                let held = self.held(table, &cell, committed, step).await?;
+        let values = self.values(table, columns, row, committed, step).await?;
+        let entry = values.map(|values| Place::index(columns, &values, row));
 
-                held.and_then(|held| encoding::decode::<Value>(&held))
-            }
-
-            None => None,
-        };
-        let value = value.filter(|value| *value != Value::Null);
-        let entry = value.map(|value| Place::index(column, &value, row));
-
-        let whereabouts = keys::indexed(self.id, committed, table, column.as_bytes(), row);
+        let of = Place::indexed(columns);
+        let whereabouts = keys::indexed(self.id, committed, table, &of, row);
         let was = step.get(&whereabouts).await?;
         if was == entry {
             return Ok(());
@@ -304,10 +353,12 @@ impl Group {
     /// Does a part of filling, or throwing away, the first index that
     /// needs it.
     async fn fill<V: View>(&mut self, step: &mut Step<V>) -> Result<(), StoreError> {
-        let unfinished = |(_, build): &(&(ModelId, ColumnId), &Build)| **build != Build::Ready;
-        let Some((&(table, column), build)) = self.indexes.iter().find(unfinished) else {
+        let unfinished = |(_, build): &(&(ModelId, Vec<ColumnId>), &Build)| **build != Build::Ready;
+        let Some(((table, columns), build)) = self.indexes.iter().find(unfinished) else {
             return Ok(());
         };
+
+        let (table, columns) = (*table, columns.clone());
 
         let (first, last) = Place::rows();
         let next = match build.clone() {
@@ -315,9 +366,10 @@ impl Group {
             Build::Clearing | Build::Dropping => {
                 let mut cleared = true;
                 for committed in [false, true] {
-                    let entries = Place::index_of(column);
+                    let entries = Place::index_of(&columns);
                     let entries = keys::index(self.id, committed, table, &entries);
-                    let places = keys::indexed(self.id, committed, table, column.as_bytes(), b"");
+                    let of = Place::indexed(&columns);
+                    let places = keys::indexed(self.id, committed, table, &of, b"");
                     for prefix in [entries, places] {
                         let (start, end) = keys::range(prefix);
                         let page = step.scan_page(&start, &end, PAGE).await?;
@@ -342,8 +394,8 @@ impl Group {
                 let page = step.scan_page(&start, &end, PAGE).await?;
                 for (key, _) in &page {
                     if let Some(row) = keys::parse(key).and_then(keys::Record::row) {
-                        self.file(table, column, &row, false, step).await?;
-                        self.file(table, column, &row, true, step).await?;
+                        self.file(table, &columns, &row, false, step).await?;
+                        self.file(table, &columns, &row, true, step).await?;
                     }
                 }
 
@@ -362,7 +414,7 @@ impl Group {
                 let page = step.scan_page(&start, &end, PAGE).await?;
                 for (key, _) in &page {
                     if let Some(row) = keys::parse(key).and_then(keys::Record::row) {
-                        self.file(table, column, &row, false, step).await?;
+                        self.file(table, &columns, &row, false, step).await?;
                     }
                 }
 
@@ -371,7 +423,7 @@ impl Group {
                     step.changed(Changed::Indexed {
                         group: self.id,
                         model: table,
-                        column,
+                        columns: columns.clone(),
                     });
 
                     Some(Build::Ready)
@@ -382,8 +434,8 @@ impl Group {
         };
 
         match next {
-            Some(next) => self.indexes.insert((table, column), next),
-            None => self.indexes.remove(&(table, column)),
+            Some(next) => self.indexes.insert((table, columns), next),
+            None => self.indexes.remove(&(table, columns)),
         };
         self.keep_indexes(step);
 

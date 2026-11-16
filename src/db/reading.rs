@@ -8,8 +8,9 @@ use super::step::{self, Step};
 use super::{Answer, Database, Error, GroupId, Outputs, Part, Pending, Reached, parts};
 
 impl<S: Store> Database<S> {
-    /// Starts keeping an index of `column` of `table`, so that the
-    /// rows that hold a value in it can be found with [`Query::index`]
+    /// Starts keeping an index of `columns` of `table`, one column or
+    /// several in order, so that the rows that hold a value in them
+    /// can be found with [`Query::index`] or [`Query::index_within`]
     /// without reading the table.
     ///
     /// An index is this device's own. Nothing is written to the group,
@@ -27,16 +28,16 @@ impl<S: Store> Database<S> {
         &mut self,
         group: GroupId,
         table: ModelId,
-        column: ColumnId,
+        columns: impl AsRef<[ColumnId]>,
     ) -> Result<Outputs, Error> {
         let mut step = self.begin()?;
         let held = self.groups.get_mut(&group).ok_or(Error::UnknownGroup)?;
-        held.index(table, column, &mut step);
+        held.index(table, columns.as_ref(), &mut step);
 
         self.finish(step).await
     }
 
-    /// Stops keeping an index of `column` of `table`, and throws away
+    /// Stops keeping an index of `columns` of `table`, and throws away
     /// what it held.
     ///
     /// # Errors
@@ -46,22 +47,27 @@ impl<S: Store> Database<S> {
         &mut self,
         group: GroupId,
         table: ModelId,
-        column: ColumnId,
+        columns: impl AsRef<[ColumnId]>,
     ) -> Result<Outputs, Error> {
         let mut step = self.begin()?;
         let held = self.groups.get_mut(&group).ok_or(Error::UnknownGroup)?;
-        held.unindex(table, column, &mut step);
+        held.unindex(table, columns.as_ref(), &mut step);
 
         self.finish(step).await
     }
 
-    /// Whether this device keeps an index of `column` of `table` that
+    /// Whether this device keeps an index of `columns` of `table` that
     /// has every row. Until it does, reads through it can miss some.
     #[must_use]
-    pub fn has_index(&self, group: GroupId, table: ModelId, column: ColumnId) -> bool {
+    pub fn has_index(
+        &self,
+        group: GroupId,
+        table: ModelId,
+        columns: impl AsRef<[ColumnId]>,
+    ) -> bool {
         let held = self.groups.get(&group);
 
-        held.is_some_and(|held| held.has_index(table, column))
+        held.is_some_and(|held| held.has_index(table, columns.as_ref()))
     }
 
     /// Answers `query` from whole steps: all of a step's writes, or none.
