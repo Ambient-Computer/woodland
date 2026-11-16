@@ -90,6 +90,7 @@ pub(crate) fn found(identity: &Identity, seed: [u8; 32]) -> (Secret, Vec<u8>) {
             blinded: blind.commitment(),
             blind: secret.wrap(&about_blind(0), &blind),
         }),
+        succeeds: None,
     };
 
     (secret, encoding::encode(&covers))
@@ -487,6 +488,7 @@ impl Group {
 
         self.clocks.clear();
         self.folded = 0;
+        self.originate(step);
         self.base = 0;
         self.staging = None;
         self.folding = None;

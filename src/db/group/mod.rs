@@ -19,6 +19,7 @@ mod restore;
 mod root;
 mod rules;
 mod sealing;
+mod succession;
 mod sync;
 mod verdicts;
 
@@ -44,6 +45,7 @@ pub(crate) use sealing::Handed;
 pub(crate) use sealing::found as found_sealed;
 #[cfg(test)]
 pub(crate) use sealing::{Sealing, about as sealed_about};
+use succession::Origin;
 use sync::Remote;
 
 #[cfg(test)]
@@ -76,6 +78,11 @@ pub(crate) struct Group {
     requests: BTreeMap<Peer, Signed<Request>>,
     /// The indexes this device keeps of the group's tables.
     indexes: indexes::Indexes,
+    /// Whether this device has the state the group starts from, if
+    /// it carries on from another group.
+    origin: Origin,
+    /// Where it has got to, as a peer being sent a snapshot.
+    heir: Remote,
     /// Proposed checkpoints this device has checked against its own
     /// copy, and would vote for.
     sound: BTreeSet<Digest>,
@@ -126,6 +133,7 @@ struct Meta {
     staging: Option<Staging>,
     wanted: Option<Electorate>,
     requests: Vec<Signed<Request>>,
+    origin: Origin,
     interest: Option<BTreeSet<ClockId>>,
     passed: bool,
     folding: Option<u64>,
@@ -195,6 +203,8 @@ impl Group {
             wanted: None,
             requests: BTreeMap::new(),
             indexes: BTreeMap::new(),
+            origin: Origin::Whole,
+            heir: Remote::default(),
             sound: BTreeSet::new(),
             fore: Foresight::default(),
             #[cfg(test)]
@@ -221,6 +231,7 @@ impl Group {
         let id = id_of(founding);
         step.save(keys::founding(id), founding);
         let mut group = Self::new(id, chain);
+        group.originate(step);
         group.said = true;
         group.persist(step);
 
@@ -252,6 +263,7 @@ impl Group {
         group.base = meta.base;
         group.staging = meta.staging;
         group.wanted = meta.wanted;
+        group.origin = meta.origin;
         let requests = verify_all(meta.requests).into_iter();
         group.requests = requests
             .map(|it| (it.author(), it.signed().clone()))
@@ -378,6 +390,7 @@ impl Group {
             staging: self.staging.clone(),
             wanted: self.wanted.clone(),
             requests: self.requests.values().cloned().collect(),
+            origin: self.origin,
             interest: self.interest.clone(),
             passed: self.passed,
             folding: self.folding,
@@ -481,7 +494,11 @@ impl Group {
     pub(crate) fn is_busy(&self) -> bool {
         let unswept = self.clocks.values().any(Clock::is_unswept);
 
-        self.is_partway() || self.is_ahead() || unswept || self.is_indexing()
+        self.is_partway()
+            || self.is_ahead()
+            || unswept
+            || self.is_indexing()
+            || self.is_inheriting()
     }
 
     /// Whether committed state is partway between two checkpoints, and

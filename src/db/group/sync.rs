@@ -41,6 +41,8 @@ pub(super) struct Remote {
     folded: u64,
     /// Whether it lacks the checkpoint after that one.
     gap: bool,
+    /// Whether it lacks the state the group starts from.
+    unfounded: bool,
     /// The last entry of each chain it last said it holds.
     said: BTreeMap<ClockId, Frontier>,
     /// The last entry of each chain it's been sent since the last tick.
@@ -143,6 +145,7 @@ impl Group {
         remote.height = message.summary.height;
         remote.folded = message.summary.folded;
         remote.gap = message.summary.gap;
+        remote.unfounded = message.summary.unfounded;
         remote.staged = message.summary.staged;
         remote.said.clone_from(&message.summary.heads);
         remote.proven.clone_from(&message.summary.proven);
@@ -341,6 +344,7 @@ impl Group {
         // and then the rest.
         let behind =
             remote.folded < self.shed_below(remote) || (remote.gap && remote.folded < self.folded);
+        let behind = behind || remote.unfounded;
         let snapshot = if behind && remote.heard {
             self.piece(remote, step).await?
         } else {
@@ -445,6 +449,7 @@ impl Group {
             height: self.chain.tip().height,
             folded: self.folded,
             gap: self.gap(),
+            unfounded: self.is_unfounded(),
             staged: self.staging.as_ref().map(|it| (it.height, it.upto.clone())),
             heads: self
                 .clocks

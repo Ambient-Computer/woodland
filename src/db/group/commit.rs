@@ -24,6 +24,7 @@ use super::Group;
 use super::clock::Clock;
 use super::root::Root;
 use super::sealing::Sealing;
+use super::succession::Succeeds;
 
 /// How many entries a step commits before leaving the rest to the
 /// next. Small under test, so that every test meets a checkpoint
@@ -37,6 +38,8 @@ pub(super) struct Covers {
     pub(super) clocks: BTreeMap<ClockId, Covered>,
     /// What it says about the group's secret, if the group is sealed.
     pub(super) sealing: Option<Sealing>,
+    /// In a group's first checkpoint: the group it carries on from.
+    pub(super) succeeds: Option<Succeeds>,
 }
 
 /// What a checkpoint makes final in one clock.
@@ -159,6 +162,7 @@ impl Group {
         // Vouching for a checkpoint is vouching for every clock in it,
         // and there's no vouching for what can't be read.
         if self.partial()
+            || self.is_unfounded()
             || self.wanting().is_some()
             || self.folded != tip.height
             || !self.clocks.iter().all(kept)
@@ -258,6 +262,7 @@ impl Group {
 
         let free = self.chain.attempt().is_none() || self.stalled > patience;
         let held_up = self.folded != tip.height || self.partial() || self.wanting().is_some();
+        let held_up = held_up || self.is_unfounded();
         // Checking someone else's attempt comes before making another.
         if !free || held_up || self.fore.vetting {
             return Ok(());
@@ -327,6 +332,7 @@ impl Group {
         let mut covers = Covers {
             clocks: kept.collect(),
             sealing,
+            succeeds: None,
         };
         let Some(states) = self.ahead(&read, step).await? else {
             self.fore.proposing = Some(frontiers);

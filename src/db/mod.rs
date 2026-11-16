@@ -19,6 +19,7 @@ mod outcome;
 mod pending;
 mod proof;
 mod step;
+mod succession;
 #[cfg(test)]
 mod tests;
 mod transaction;
@@ -655,6 +656,7 @@ impl<S: Store> Database<S> {
     /// If the store fails.
     pub async fn resume(&mut self) -> Result<Outputs, Error> {
         let mut step = self.begin()?;
+        self.inherit(&mut step).await?;
         for group in self.groups.values_mut().filter(|group| group.is_busy()) {
             let resumed = group.resume(&self.identity, &mut step).await;
             if resumed.is_err() {

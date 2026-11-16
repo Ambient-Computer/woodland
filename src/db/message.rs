@@ -64,6 +64,9 @@ pub(crate) struct Summary {
     /// doesn't hold the checkpoint after the last one it committed.
     /// It joined partway along, and needs the state instead.
     pub(crate) gap: bool,
+    /// Whether it lacks the state its group starts from: the group
+    /// carries on from another.
+    pub(crate) unfounded: bool,
     /// The snapshot it's part of the way through receiving: the height
     /// it's for, and the last key it has.
     pub(crate) staged: Option<(u64, Option<Vec<u8>>)>,

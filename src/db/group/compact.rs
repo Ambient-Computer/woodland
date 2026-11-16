@@ -25,6 +25,7 @@ use super::Group;
 use super::carry::Unsealed;
 use super::commit::{Covers, covers_of};
 use super::root::Accumulator;
+use super::succession::Origin;
 use super::sync::Remote;
 
 /// How many values go in one piece of a snapshot.
@@ -135,7 +136,7 @@ impl Group {
         // A device that holds only some clocks has the whole state of
         // nothing but those. Partway through a checkpoint it has the
         // state of none.
-        if self.is_partway() || !self.serves(remote) {
+        if self.is_partway() || self.is_unfounded() || !self.serves(remote) {
             return Ok(None);
         }
 
@@ -197,7 +198,10 @@ impl Group {
         piece: Piece,
         step: &mut Step<V>,
     ) -> Result<(), StoreError> {
-        if piece.height <= self.folded || self.installing.is_some() {
+        // A group that carries on from another starts from state, which
+        // is the one snapshot of a checkpoint this device is already at.
+        let news = piece.height > self.folded || self.is_unfounded();
+        if !news || self.installing.is_some() {
             return Ok(());
         }
         let piece = match self.open_piece(piece) {
@@ -463,6 +467,7 @@ impl Group {
     /// covers is in place.
     pub(super) fn caught_up<V: View>(&mut self, height: u64, step: &mut Step<V>) {
         self.folded = height;
+        self.origin = Origin::Whole;
         self.base = height;
         self.folding = None;
         self.installing = None;

@@ -61,5 +61,7 @@ A configuration says which [peers](peers.md) hold a role in a [group](groups.md)
 - Succession is a decision by people, not a protocol step. Nothing can prove a quorum is gone for good rather than away.
 - A peer follows a successor the way it joins any group: by being told, by someone it trusts.
 - Two sets of survivors may each found a successor. They are different groups from then on, and nothing reconciles them.
+- [Clocks](peers.md) and [models](models.md) keep the names they had, so what was read from the old group is read from the successor the same way.
+- The successor's state is a [snapshot](compaction.md) at its founding. A peer that joins takes it like any other.
 - Uncommitted work in the old group is not carried over. Its authors write it again in the successor.
 - The old group is not ended by succession. A quorum that returns finds its chain intact and its peers elsewhere.

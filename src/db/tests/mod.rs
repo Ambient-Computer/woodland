@@ -21,6 +21,7 @@ mod roles;
 mod sealed;
 mod sequences;
 mod single;
+mod succession;
 mod sync;
 mod tables;
 
