@@ -255,3 +255,58 @@ fn a_secret_handed_over_has_to_be_the_one_the_chain_names() {
         Some(NEEDLE)
     );
 }
+
+/// A secret that may have leaked is replaced for the asking. Nobody
+/// loses anything: each secret opens the way to the one before.
+#[test]
+fn a_secret_is_replaced_on_request_for_the_same_readers() {
+    let (mut sim, group) = sealed();
+    sim.write_to(PHONE, group, set(notes(group), "plan", NEEDLE));
+    sim.settle();
+    let epoch = |sim: &Sim, device: usize| sim.devices[device].groups[&group].epoch();
+    let before = epoch(&sim, PHONE);
+
+    let outputs = block_on(sim.devices[LAPTOP].replace_secret(group)).expect("asked");
+    sim.absorb(LAPTOP, outputs);
+    sim.settle();
+
+    assert!(epoch(&sim, PHONE) > before);
+    sim.write_to(PHONE, group, set(notes(group), "later", LATER));
+    sim.settle();
+    for device in [PHONE, LAPTOP, FRIEND] {
+        assert_eq!(epoch(&sim, device), epoch(&sim, PHONE));
+        assert!(sim.devices[device].reads(group));
+        let plan = read_note(&sim, device, group, "plan");
+        assert_eq!(plan.as_deref(), Some(NEEDLE), "device {device}");
+        let later = read_note(&sim, device, group, "later");
+        assert_eq!(later.as_deref(), Some(LATER), "device {device}");
+    }
+
+    // It's replaced once, not with every checkpoint from then on.
+    let after = epoch(&sim, PHONE);
+    sim.restart(LAPTOP);
+    sim.connect_all();
+    sim.write_to(LAPTOP, group, set(notes(group), "more", "words"));
+    sim.settle();
+    assert_eq!(epoch(&sim, PHONE), after);
+    assert_eq!(
+        read_note(&sim, PHONE, group, "more").as_deref(),
+        Some("words")
+    );
+}
+
+/// Only a device that reads the group and has a say can ask.
+#[test]
+fn a_device_without_the_secret_or_a_say_cant_have_it_replaced() {
+    let (mut sim, group) = sealed();
+    for device in [NAS, FRIEND, 4] {
+        let asked = block_on(sim.devices[device].replace_secret(group));
+        assert!(matches!(asked, Err(Error::Unreadable)), "device {device}");
+    }
+
+    let (mut open, group) = Sim::group(1, 1);
+    let asked = block_on(open.devices[PHONE].replace_secret(group));
+    assert!(matches!(asked, Err(Error::Unreadable)));
+    sim.settle();
+    open.settle();
+}

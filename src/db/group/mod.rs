@@ -119,6 +119,10 @@ pub(crate) struct Group {
     /// The height of the sealed snapshot this device keeps without
     /// being able to read it.
     carrying: Option<u64>,
+    /// The secret this device wants replaced: the one brought in by
+    /// the checkpoint at this height. Once another is in force, it's
+    /// done.
+    renewing: Option<u64>,
     /// How many kinds of model the library had when this was last
     /// saved.
     spoke: u8,
@@ -142,6 +146,7 @@ struct Meta {
     mending: bool,
     keys: Keyring,
     carrying: Option<u64>,
+    renewing: Option<u64>,
     /// How many kinds of model the library had when this was saved.
     spoke: u8,
 }
@@ -220,6 +225,7 @@ impl Group {
             mending: false,
             keys,
             carrying: None,
+            renewing: None,
             spoke: crate::model::vocabulary(),
         }
     }
@@ -276,6 +282,7 @@ impl Group {
         group.mending = meta.mending;
         group.keys = meta.keys;
         group.carrying = meta.carrying;
+        group.renewing = meta.renewing;
         group.spoke = meta.spoke;
         group.recall(step).await?;
         group.recall_indexes(step).await?;
@@ -399,6 +406,7 @@ impl Group {
             mending: self.mending,
             keys: self.keys.clone(),
             carrying: self.carrying,
+            renewing: self.renewing,
             spoke: crate::model::vocabulary(),
         };
         step.save(keys::meta(self.id), &meta);

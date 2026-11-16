@@ -228,7 +228,8 @@ impl Group {
             due.filter_map(grant).collect()
         };
 
-        if !takes_away(&tip.electorate, electorate) {
+        let renewing = self.renewing == Some(now.epoch);
+        if !takes_away(&tip.electorate, electorate) && !renewing {
             return Some(Sealing {
                 epoch: now.epoch,
                 commitment: now.commitment,
@@ -258,6 +259,38 @@ impl Group {
             blinded: now.blinded,
             blind: next.wrap(&about_blind(epoch), blind),
         })
+    }
+
+    /// Has the next checkpoint this device proposes replace the secret
+    /// in force, whoever reads. Returns whether it will: this device
+    /// has a say, and the secret.
+    pub(crate) async fn renew<V: View>(
+        &mut self,
+        identity: &Identity,
+        step: &mut Step<V>,
+    ) -> Result<bool, StoreError> {
+        let allowed = self.chain.tip().electorate.includes(identity.peer());
+        let Some(now) = self.sealing().filter(|_| allowed && self.reads()) else {
+            return Ok(false);
+        };
+
+        self.renewing = Some(now.epoch);
+        self.persist(step);
+        self.progress(identity, None, step).await?;
+
+        Ok(true)
+    }
+
+    /// Whether this device has asked for a secret other than the one
+    /// in force, and not got it yet.
+    pub(super) fn is_renewing(&self) -> bool {
+        self.renewing.is_some() && self.renewing == self.sealing().map(|it| it.epoch)
+    }
+
+    /// The checkpoint that brought in the secret in force.
+    #[cfg(test)]
+    pub(crate) fn epoch(&self) -> Option<u64> {
+        Some(self.sealing()?.epoch)
     }
 
     /// Whether `checkpoint` says what it should about the secret.

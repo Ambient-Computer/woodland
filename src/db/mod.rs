@@ -365,6 +365,27 @@ impl<S: Store> Database<S> {
         self.finish(step).await
     }
 
+    /// Asks a sealed group to replace its secret with the next
+    /// checkpoint, for the same readers. It's for a secret that may
+    /// have got out: whoever holds the old one reads everything
+    /// written under it, and nothing written after.
+    ///
+    /// # Errors
+    ///
+    /// If this device doesn't hold `group`; if it has no say in it, or
+    /// lacks the secret, which goes for every device if the group is
+    /// open; or the store fails.
+    pub async fn replace_secret(&mut self, group: GroupId) -> Result<Outputs, Error> {
+        let mut step = self.begin()?;
+        let held = self.groups.get_mut(&group).ok_or(Error::UnknownGroup)?;
+        let asked = held.renew(&self.identity, &mut step).await;
+        if !self.guard(asked)? {
+            return Err(Error::Unreadable);
+        }
+
+        self.finish(step).await
+    }
+
     /// Starts keeping an index of `column` of `table`, so that the
     /// rows that hold a value in it can be found with [`Query::index`]
     /// without reading the table.

@@ -312,7 +312,8 @@ impl Group {
 
             committed != Some(frontier)
         };
-        if !frontiers.iter().any(news) && electorate == tip.electorate {
+        let same = electorate == tip.electorate && !self.is_renewing();
+        if !frontiers.iter().any(news) && same {
             return Ok(());
         }
 
