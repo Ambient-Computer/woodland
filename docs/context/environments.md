@@ -34,6 +34,17 @@ Woodland runs inside other people's programs, on other people's devices. This pa
 - Verified by running the driver's tests in Firefox 159 and Chromium 156, November 2026: keys of raw bytes order bytewise, the empty key included; a transaction asked for strict durability is accepted; a held lock refuses a second owner and is free again once released.
 - Not verified: any of this in Safari, in a worker, or across two real tabs. The tests run in one page.
 
+## Stores looked at and not used
+
+- Looked at in November 2026, from documentation and release notes. None was run.
+- The native driver sits on redb: one file, written in Rust, with atomic batches and consistent views. A device with a large disk that keeps everything needs nothing more.
+- Fjall is a log-structured store in Rust with atomic batches and views. It is the alternative if write volume ever strains the native driver.
+- SlateDB is a log-structured store kept in object storage, with range reads and atomic batches. It is the candidate if an archive ever has to outgrow a disk.
+- Not verified for SlateDB: how it keeps a second writer out, and how far its views had got. Sources disagreed.
+- DynamoDB limits one atomic write to 100 items and 4 MB. A step's batch has no such limit, so a driver would need a log of its own on top.
+- Object storage used directly has no ordered range that changes atomically. A driver on it would be a storage engine.
+- Any remote store makes each of a step's many small reads a round trip, and needs something to guarantee one writer. Neither is solved here.
+
 ## Why not the origin-private file system
 
 - Its only durable interface is synchronous, and exists only in a dedicated worker: not a shared worker, not a service worker, not the page.
@@ -64,5 +75,6 @@ Woodland runs inside other people's programs, on other people's devices. This pa
 - File system access handles: MDN and the WHATWG File System standard.
 - Storage eviction: MDN's storage quota page and WebKit's storage policy posts.
 - Iroh: its documentation on browser support, deployment, and endpoint identity.
+- Stores: the redb, Fjall, and SlateDB documentation, and the DynamoDB API reference for transactional writes.
 - IndexedDB durability and multi-tab behaviour: long use of both browser stores by the project's author, and the IndexedDB standard.
 - Not verified: what strict durability does on each browser's disk, and whether a persistence grant exempts an origin from Safari's week limit.

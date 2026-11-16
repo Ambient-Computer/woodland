@@ -29,6 +29,7 @@ Woodland is a replicated relational database for small groups of devices that ar
 - Serializable isolation for optimistic work. See [transactions](transactions.md).
 - Running application code during replay. A transaction records effects, not statements.
 - Wall-clock ordering. Time is whatever a contributor says it was.
+- A query engine. The core reads bounded ranges and reports change; see [reads](reads.md).
 - Compatibility with SQL's surface. The capabilities are relational; the deviations are listed in [tables](tables.md) and [commit operations](commit-operations.md).
 
 ## Pages
@@ -39,7 +40,7 @@ Woodland is a replicated relational database for small groups of devices that ar
 - [membership](membership.md): configurations, quorums, joining, and removal.
 - [checkpoints](checkpoints.md): the chain that makes history final.
 - [transactions](transactions.md): effects, guards, and verdicts.
-- [reads](reads.md): optimistic and committed reads, and watching for change.
+- [reads](reads.md): optimistic and committed reads, watching for change, and mirrors.
 - [tables](tables.md): rows, cells, constraints, references, and indexes.
 - [commit operations](commit-operations.md): operations that take effect only when final.
 - [migrations](migrations.md): changing a schema while old devices keep writing.

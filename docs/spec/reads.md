@@ -17,9 +17,12 @@ A read is local and never waits on another peer. The reader chooses how certain 
 
 ## Queries
 
-- Reads are computed over local state, so what can be asked is limited by the query engine and not by replication.
+- A read is a bounded, ordered range: of a [model's](models.md) keys, of a [table's](tables.md) rows by key, or of an [index](tables.md) by value.
+- A read takes a limit and says where it stopped, so a range of any size is read a part at a time.
+- The core does not join, aggregate, sort, or evaluate expressions. An application computes those from what it read.
+- A capability is the core's only if an application could not have it without reading everything. Bounded ranges and indexes are; whatever follows from rows already read is not.
 - A query that is not monotone, a count or an absence, is stable only at the committed level.
-- Derived structures, [indexes](tables.md) and aggregates, are maintained locally and incrementally, by retracting and asserting as verdicts change.
+- Indexes are maintained locally and incrementally, by retracting and asserting as verdicts change.
 - The cost of a late arrival is proportional to what it changes, not to how much history follows it.
 
 ## Watching
@@ -27,3 +30,15 @@ A read is local and never waits on another peer. The reader chooses how certain 
 - A peer reports what changed, at which level, so a query can be re-run or updated.
 - A report says where to look, not what is there. It may be reported when nothing a reader sees differs.
 - A committed read changes only when a checkpoint arrives. An optimistic read changes when a transaction arrives, is pruned, or is revived.
+- The expected use is to read, compute, and read again when a report touches what was read. What an application displays is kept current that way.
+- The core never reports a query's new answer, or how it differs from the last. A consumer that wants differences reads the keys reported.
+
+## Mirrors
+
+- A mirror is a copy of committed state kept outside the core, in whatever form its owner wants: another database, a search index, a log of events.
+- A committed read says which [checkpoint](checkpoints.md) it is of, and a report of committed change says which checkpoint made it. A mirror knows from those where it stands.
+- A mirror is built by reading everything, and kept by reading what each later checkpoint is reported to have changed.
+- Reading everything takes many reads, and a checkpoint may arrive between them. Its report covers whatever the earlier reads missed.
+- The core keeps no record of past reports. A mirror that missed one reads everything again, as a peer far behind takes a [snapshot](compaction.md).
+- A mirror follows committed state only. Optimistic state is revised, and what a mirror has passed on cannot be.
+- An engine that queries a mirror is the application's. The core includes none and binds to none.

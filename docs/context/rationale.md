@@ -41,6 +41,28 @@ The spec states decisions without their history. This page keeps the history: wh
 - The cost is that an effect cannot say "every row where". Those cases are [commit operations](../spec/commit-operations.md), evaluated once on final history.
 - The split follows a known result: an invariant can be kept without coordination only if concurrent valid changes always merge into a valid state. The rest must wait for agreement, and here that means waiting for a checkpoint.
 
+## Why the core has no query engine
+
+- Considered in November 2026: growing the read surface toward joins, aggregates, and a planner, or leaning on an existing engine for them.
+- Reads are local and never voted on. A wrong plan costs time and not agreement, so an existing engine would be safe there, which it would not be on the write path.
+- The engines looked at were DataFusion, GlueSQL, and SQLite kept as a derived copy.
+- DataFusion is the most capable and the heaviest. A community build for the browser was about 30 MB, by the project author's reading of it; no published figure was found. That rules it out of a library shipped to browsers.
+- GlueSQL is built around storage supplied by its host and runs in a browser. It is much lighter and much less proven. Read about, not tried.
+- SQLite as a derived copy is the most proven engine there is, and a second store to keep in step with the first. It has no good home in a browser, and optimistic state fits it badly.
+- None of them answers the common case in a browser, which is keeping something on screen current. Their unit is a query run once.
+- So the core stops at what only it can do, bounded ordered reads and reports of change, and everything richer is built from those by the application.
+- The same two things serve every engine an application might want: all of committed state at a known checkpoint, and what each later checkpoint changed. That is the [mirror](../spec/reads.md).
+- Bindings to particular engines were rejected even as optional features of the core. A feature's dependencies are still built and tested with the core, on every target.
+- Incremental view maintenance is the relational answer to live results, and DBSP is in the reading list for it. At the sizes expected here, reading again is cheaper than maintaining a view, and nothing prevents an application from doing either.
+- A mirror that falls behind reads everything again. Keeping reports for slow consumers would be unbounded growth inside the core, and a consumer that minds can keep its own.
+
+## Why nothing general runs on the write path
+
+- What a filter matches and what a rule allows are worked out on every device and must come out the same on all of them, across every version there will ever be.
+- A general engine there would make its planner, its arithmetic, and its text handling part of the protocol. The vocabulary is kept small so that all of it can be frozen.
+- A cell that is added to, a counter, was considered and dropped. Next to being set it needs a rule for which wins, and next to a bound such as stock never below zero it is wrong by construction.
+- Both cases already have answers that are right: allowances for a bounded quantity, and a merging model for an unbounded total.
+
 ## Why storage is awaited
 
 - Three shapes were considered: storage as requests and replies through the state machine, storage called synchronously, and storage awaited.
@@ -87,3 +109,4 @@ The spec states decisions without their history. This page keeps the history: wh
 - How a contributor decides when to start a checkpoint attempt without wasting others' time.
 - What a merging model needs from the core beyond a pure function, and whether text fits.
 - How much of confidentiality survives contact with real readers at scale.
+- Whether a derived structure an application defines, such as a text index, should live in the core's store and change in the step that changes its source, or stay a [mirror](../spec/reads.md) outside it.

@@ -50,9 +50,12 @@ A table is a [model](models.md) of rows with typed cells, under a schema that is
 - An index is never written by a transaction, so indexing a column does not change how its cells merge.
 - Adding or dropping an index needs no agreement and no history.
 - Rows and index entries are ordered, and a range of either is read directly.
+- An index may cover several columns in a stated order, and is then read by a range over them in that order.
 
 ## Numbers
 
+- A cell is written whole, never as a change to what it held. A cell that could be added to and also set would need a rule for which wins, and has none.
+- A total that several devices add to without bound is a [merging](models.md) model.
 - A quantity several devices spend from is split into allowances, one per contributor. Each spends its own without asking.
 - A bound on the total holds because no allowance is overspent. Moving allowance between contributors is an ordinary transaction.
 - An allowance is written only by its owner, so a spend within it is never pruned by what another device does.
