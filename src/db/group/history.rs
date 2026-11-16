@@ -57,12 +57,15 @@ impl History {
     /// since the checkpoint the entry was written under. `decided` is
     /// what the latest checkpoint covers, or one proposed to follow it
     /// would: an author that has since been stopped still wrote those.
+    /// `stood` is whether another author has been a contributor ever
+    /// since that same checkpoint.
     pub(super) fn accepts(
         &self,
         entry: &Checked,
         standing: bool,
         writers: Writers<'_>,
         decided: &Frontier,
+        stood: impl Fn(Peer) -> bool,
     ) -> bool {
         let (author, header) = (entry.author(), entry.header());
         let last = self.heads.get(&author);
@@ -72,7 +75,8 @@ impl History {
         let allowed = standing || header.seq <= reach(decided, author);
 
         // Whatever a removed author wrote past its last checkpoint is
-        // void, so nothing waits for it. The same goes for an entry a
+        // void, so nothing waits for it, whether or not the author has
+        // been let back in since. The same goes for an entry a
         // checkpoint passed over for another in its place: it's named
         // where something else was committed.
         let held = |(&other, link): (&Peer, &Link)| {
@@ -81,7 +85,9 @@ impl History {
             let same = settled || known.is_none_or(|known| known.hash == link.hash);
             let held = reach(&self.heads, other) >= link.seq && same;
 
-            other != author && link.lamport < header.lamport && (held || !writers.includes(other))
+            let void = !writers.includes(other) || !stood(other);
+
+            other != author && link.lamport < header.lamport && (held || void)
         };
 
         next && allowed && header.after.iter().all(held)
@@ -109,15 +115,23 @@ impl History {
     /// Whether a checkpoint could cover exactly `frontier`: it reaches
     /// at least as far as what's committed, this device holds every
     /// entry it names, and nothing it covers was written on top of
-    /// something it leaves out.
-    pub(super) fn supports(&self, frontier: &Frontier, writers: Writers<'_>) -> bool {
+    /// something it leaves out. `stood` is whether an author has been a
+    /// contributor ever since the checkpoint at some height.
+    pub(super) fn supports(
+        &self,
+        frontier: &Frontier,
+        writers: Writers<'_>,
+        stood: impl Fn(Peer, u64) -> bool,
+    ) -> bool {
         let keeps = |(author, link): (&Peer, &Link)| {
             frontier.get(author).is_some_and(|it| it.seq >= link.seq)
         };
         let holds = |(&author, link): (&Peer, &Link)| self.link_at(author, link.seq) == Some(*link);
         let closed = |outline: &Outline| {
             let within = |(&other, link): (&Peer, &Link)| {
-                reach(frontier, other) >= link.seq || !writers.includes(other)
+                reach(frontier, other) >= link.seq
+                    || !writers.includes(other)
+                    || !stood(other, outline.under)
             };
 
             outline.after.iter().all(within)
@@ -190,7 +204,17 @@ impl History {
     /// every chain as far as it goes, short of anything written on top
     /// of an entry this device doesn't hold. The chains of `barred`
     /// authors go no further than what's committed.
-    pub(super) fn closed(&self, writers: Writers<'_>, barred: &BTreeSet<Peer>) -> Frontier {
+    ///
+    /// `stood` is whether an author has been a contributor ever since
+    /// the checkpoint at some height. If not, what it had written by
+    /// then and wasn't committed never will be, and nothing written on
+    /// top of that waits for it: not even once the author is back.
+    pub(super) fn closed(
+        &self,
+        writers: Writers<'_>,
+        barred: &BTreeSet<Peer>,
+        stood: impl Fn(Peer, u64) -> bool,
+    ) -> Frontier {
         let mut frontier = self.heads.clone();
         for author in barred {
             match self.committed.get(author) {
@@ -202,7 +226,9 @@ impl History {
         loop {
             let open = |outline: &&Outline| {
                 let within = |(&other, link): (&Peer, &Link)| {
-                    reach(&frontier, other) >= link.seq || !writers.includes(other)
+                    reach(&frontier, other) >= link.seq
+                        || !writers.includes(other)
+                        || !stood(other, outline.under)
                 };
 
                 !outline.after.iter().all(within)

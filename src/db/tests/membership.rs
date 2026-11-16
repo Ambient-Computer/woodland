@@ -148,3 +148,41 @@ fn coming_back_doesnt_bring_back_what_removal_cut() {
         assert_eq!(kept.as_deref(), Some("after coming back"));
     }
 }
+
+/// The laptop writes on top of something the friend wrote, and the
+/// friend is removed before anyone else has seen either. What the
+/// friend wrote is gone for good. What the laptop wrote isn't, and
+/// letting the friend back in doesn't leave it waiting for an entry
+/// that will never come.
+#[test]
+fn work_on_top_of_a_cut_entry_counts_even_once_its_author_is_back() {
+    let (mut sim, group) = Sim::group(4, 4);
+    let everyone = |it: usize| (it, Role::contributor(u32::from(it != FRIEND)));
+    sim.assign(PHONE, group, (0..4).map(everyone));
+    sim.settle();
+    sim.disconnect_all();
+
+    sim.connect(FRIEND, LAPTOP);
+    write(&mut sim, FRIEND, "guest", "was here");
+    sim.run();
+    write(&mut sim, LAPTOP, "host", "saw that");
+    sim.disconnect_all();
+
+    // The phone and the NAS remove the friend, and let it back in.
+    sim.connect(PHONE, NAS);
+    sim.assign(PHONE, group, (0..3).map(everyone));
+    sim.settle();
+    sim.assign(PHONE, group, (0..4).map(everyone));
+    sim.settle();
+
+    sim.connect_all();
+    sim.settle();
+
+    let model = household_notes(&sim);
+    for device in [PHONE, LAPTOP, NAS, FRIEND] {
+        let host = sim.committed(device, group, model, "host");
+        assert_eq!(host.as_deref(), Some("saw that"), "device {device}");
+        assert_eq!(sim.committed(device, group, model, "guest"), None);
+        assert_eq!(sim.shown(device, group, model, "guest"), None);
+    }
+}

@@ -149,7 +149,8 @@ impl Group {
             let unheard = Clock::new(self.id, id);
             let clock = self.clocks.get(&id).unwrap_or(&unheard);
             let writers = tip.electorate.writers(id).except(&proven);
-            if !clock.history.supports(&covered.frontier, writers) {
+            let stood = |peer: Peer, height: u64| self.standing(peer, id, height);
+            if !clock.history.supports(&covered.frontier, writers, stood) {
                 return Ok(false);
             }
 
@@ -221,7 +222,9 @@ impl Group {
         let frontiers = self.clocks.iter().map(|(&id, clock)| {
             let writers = tip.electorate.writers(id).except(&proven);
 
-            (id, clock.history.closed(writers, &proven))
+            let stood = |peer: Peer, height: u64| self.standing(peer, id, height);
+
+            (id, clock.history.closed(writers, &proven, stood))
         });
         let frontiers: Vec<(ClockId, Frontier)> = frontiers.collect();
         let news = |(id, frontier): &(ClockId, Frontier)| {

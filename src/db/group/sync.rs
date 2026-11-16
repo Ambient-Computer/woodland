@@ -206,7 +206,12 @@ impl Group {
                 let clock = self.clocks.get(&id).unwrap_or(&unheard);
                 let spoken = self.within_reach(id);
                 let writers = writers.writers(id).except(&proven);
-                if clock.history.accepts(&entry, standing, writers, &spoken) {
+                let under = header.under.height;
+                let stood = |peer: Peer| self.standing(peer, id, under);
+                if clock
+                    .history
+                    .accepts(&entry, standing, writers, &spoken, stood)
+                {
                     self.clock(id).integrate(&entry, step);
                 } else {
                     unfit.push(entry);
