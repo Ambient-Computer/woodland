@@ -435,6 +435,17 @@ impl Transaction {
         self
     }
 
+    /// Gives `table` a name, in place of any it had. The table has to
+    /// exist. Nothing else about it changes: everything is kept under
+    /// its ID, and whoever knows it by an older name still writes to
+    /// the same table.
+    pub fn rename_table(mut self, table: ModelId, name: impl Into<String>) -> Self {
+        let name = name.into();
+        let operation = Operation::table(table, crate::model::table::Operation::Name { name });
+        self.operations.push(operation);
+        self
+    }
+
     /// Changes the name of `column`, which the table has to have.
     /// Rows aren't touched: they know the column by its ID.
     pub fn rename_column(

@@ -183,6 +183,43 @@ fn a_dropped_column_cant_come_back() {
 }
 
 #[test]
+fn a_table_can_be_renamed() {
+    let (mut cluster, table) = table_of_people();
+    insert(&mut cluster, PHONE, table, "ada", 36);
+    let name =
+        |cluster: &Sim, device| read_table(cluster, device, table).map(|it| it.name().to_owned());
+    assert_eq!(name(&cluster, NAS).as_deref(), Some(""));
+
+    // Two devices rename it at once. The later in the timeline is
+    // what's read, everywhere, and its rows are where they were.
+    cluster.disconnect_all();
+    cluster.write(PHONE, Transaction::new().rename_table(table, "people"));
+    cluster.write(LAPTOP, Transaction::new().rename_table(table, "friends"));
+    cluster.connect_all();
+    cluster.settle();
+
+    let named = name(&cluster, NAS).expect("it exists");
+    assert!(named == "people" || named == "friends");
+    assert_eq!(name(&cluster, PHONE), Some(named.clone()));
+    assert_eq!(name(&cluster, LAPTOP), Some(named));
+    assert_eq!(
+        ages(&cluster, NAS, table),
+        [("ada".to_owned(), Value::Integer(36))]
+    );
+}
+
+/// A name is given to a table that exists.
+#[test]
+fn a_table_that_isnt_there_cant_be_named() {
+    let mut cluster = household();
+    let table = ModelId::table(cluster.home, [7; 32]);
+    cluster.write(PHONE, Transaction::new().rename_table(table, "people"));
+    cluster.settle();
+
+    assert!(read_table(&cluster, NAS, table).is_none());
+}
+
+#[test]
 fn a_column_can_be_renamed() {
     let (mut cluster, table) = table_of_people();
     insert(&mut cluster, PHONE, table, "ada", 36);

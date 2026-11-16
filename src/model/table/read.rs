@@ -15,6 +15,7 @@ use crate::model::{Fingerprint, Requirement};
 /// [`Query::results`]: crate::Query::results
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Table {
+    name: String,
     columns: BTreeMap<ColumnId, String>,
     rows: Vec<Row>,
 }
@@ -59,12 +60,12 @@ impl Table {
     /// creation didn't happen, or it was dropped.
     #[must_use]
     pub fn read(results: &[(Vec<u8>, Vec<u8>)]) -> Option<Self> {
-        let mut exists = false;
+        let mut name = None;
         let mut columns = BTreeMap::new();
         let mut parts = Parts::default();
         for (key, value) in results {
             match Place::parse(key) {
-                Some(Place::Table) => exists = true,
+                Some(Place::Table) => name = Some(String::from_utf8_lossy(value).into_owned()),
                 Some(Place::Column(id)) => {
                     columns.insert(id, String::from_utf8_lossy(value).into_owned());
                 }
@@ -101,7 +102,20 @@ impl Table {
 
         let rows = parts.rows(&columns);
 
-        exists.then_some(Self { columns, rows })
+        name.map(|name| Self {
+            name,
+            columns,
+            rows,
+        })
+    }
+
+    /// The table's name. Empty if it was never given one.
+    ///
+    /// A name is for people. Nothing is found by it, and renaming a
+    /// table moves nothing: rows are kept under the table's ID.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// The table's columns and their names, in no meaningful order.

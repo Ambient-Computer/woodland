@@ -227,6 +227,8 @@ pub(crate) enum Operation {
         /// Whether the column is new.
         add: bool,
     },
+    /// Gives the table a name, in place of any it had.
+    Name { name: String },
     /// Stops enforcing a rule. Putting one in force waits to be
     /// committed (see [`Deferred`]); letting go of one doesn't have to.
     Lift { rule: [u8; 32] },
@@ -250,9 +252,11 @@ impl Operation {
             }
             Self::Delete { keys, .. } => rows::keyed(keys),
             Self::NameColumn { column, .. } => column.takes(&Value::Null),
-            Self::Lift { .. } | Self::Refer { .. } | Self::Retire { .. } | Self::Restore { .. } => {
-                true
-            }
+            Self::Name { .. }
+            | Self::Lift { .. }
+            | Self::Refer { .. }
+            | Self::Retire { .. }
+            | Self::Restore { .. } => true,
         }
     }
 
@@ -282,6 +286,7 @@ impl Operation {
             } => rows::delete_requires(row, keys, *retired),
             Self::Refer { row } | Self::Retire { row, .. } => rows::refer_requires(row),
             Self::Restore { row } => rows::restore_requires(row),
+            Self::Name { .. } => vec![(Place::Table.key(), Requirement::Present)],
             Self::Lift { rule } => vec![(Place::Rule(*rule).key(), Requirement::Present)],
             Self::NameColumn { column, add, .. } => {
                 let table = (Place::Table.key(), Requirement::Present);
@@ -320,6 +325,7 @@ impl Operation {
             Self::Retire { row, token } => rows::retire_writes(row, *token),
             Self::Restore { row } => rows::restore_writes(row),
             Self::NameColumn { column, name, .. } => Self::named(*column, name).into(),
+            Self::Name { name } => vec![(Place::Table.key(), Some(name.clone().into_bytes()))],
             Self::Lift { rule } => vec![(Place::Rule(*rule).key(), None)],
         }
     }

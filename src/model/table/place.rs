@@ -14,7 +14,8 @@ pub(crate) type Incarnation = [u8; 16];
 /// What a key in a table's model is for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Place {
-    /// Holds a value while the table exists.
+    /// Holds the table's name while the table exists. One that was
+    /// never given a name has an empty one.
     Table,
     /// Holds a column's name while the table has that column.
     Column(ColumnId),
