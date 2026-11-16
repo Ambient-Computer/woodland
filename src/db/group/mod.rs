@@ -72,6 +72,10 @@ pub(crate) struct Group {
     sound: BTreeSet<Digest>,
     /// What it's working out ahead of a decision.
     fore: Foresight,
+    /// Makes it write entries under a checkpoint nobody decided, if
+    /// it isn't empty.
+    #[cfg(test)]
+    pub(crate) misnaming: Vec<u8>,
     /// How many ticks the current attempt at a checkpoint has gone on.
     stalled: u64,
     /// Whether the chain has anything peers haven't been told.
@@ -175,6 +179,8 @@ impl Group {
             wanted: None,
             sound: BTreeSet::new(),
             fore: Foresight::default(),
+            #[cfg(test)]
+            misnaming: Vec::new(),
             stalled: 0,
             said: false,
             interest: None,
@@ -356,6 +362,11 @@ impl Group {
         step: &mut Step<V>,
     ) -> Result<Wrote, StoreError> {
         let tip = self.chain.tip().clone();
+        #[cfg(test)]
+        let tip = Checkpoint {
+            body: [&tip.body[..], &self.misnaming].concat(),
+            ..tip
+        };
         // A device that learns it forked has lost track of what it
         // signed, and anything more it wrote would be dropped unread.
         let me = identity.peer();

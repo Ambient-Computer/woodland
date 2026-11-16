@@ -181,8 +181,16 @@ impl Group {
 
         let check = |entry: Entry| entry.check(self.id, &self.keys);
         let wanted = |entry: &Checked| self.wants(entry.header().clock);
+        // An entry names the checkpoint its author held. If another
+        // was decided at that height, the one it names never was.
+        let named = |entry: &Checked| {
+            let under = entry.header().under;
+            let decided = self.chain.at(under.height);
+
+            decided.is_none_or(|it| it.digest() == under.checkpoint)
+        };
         let entries = message.entries.into_iter().filter_map(check);
-        let mut waiting: Vec<Checked> = entries.filter(wanted).collect();
+        let mut waiting: Vec<Checked> = entries.filter(wanted).filter(named).collect();
 
         // Whatever can't be placed may be evidence: of a fork, or that a
         // checkpoint settled on an entry other than the one held. Either

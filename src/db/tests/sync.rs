@@ -152,3 +152,18 @@ fn a_message_from_another_group_or_from_nowhere_is_ignored() {
     assert_eq!(outputs, Outputs::default());
     assert_eq!(sim.shown(LAPTOP, group, notes(group), "todo"), None);
 }
+
+/// An entry names the checkpoint its author wrote it under. One that
+/// names a checkpoint that was never decided is no entry.
+#[test]
+fn an_entry_under_a_checkpoint_nobody_decided_is_refused() {
+    let (mut sim, group) = Sim::group(2, 2);
+    let phone = sim.devices[PHONE].groups.get_mut(&group).expect("held");
+    phone.misnaming = vec![0];
+    sim.write(PHONE, set(notes(group), "todo", "milk"));
+    sim.settle();
+
+    assert!(sim.shown(PHONE, group, notes(group), "todo").is_some());
+    assert_eq!(sim.shown(LAPTOP, group, notes(group), "todo"), None);
+    assert_eq!(sim.entries_kept(LAPTOP, group), 0);
+}
