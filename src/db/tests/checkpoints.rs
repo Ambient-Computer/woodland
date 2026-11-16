@@ -334,3 +334,28 @@ fn working_out_one_checkpoint_says_nothing_of_another() {
     assert_eq!(ask(false, 100), Some(as_it_is));
     assert_eq!(ask(true, 100), Some(with_it_all));
 }
+
+/// Rivals that keep outranking each other decide nothing. A device
+/// whose attempts go nowhere waits longer before each.
+#[test]
+fn a_device_waits_longer_before_each_attempt_at_the_same_checkpoint() {
+    let (mut sim, group) = Sim::group(3, 3);
+    sim.isolate(PHONE);
+    sim.write(PHONE, set(notes(group), "todo", "milk"));
+
+    let mut waits = Vec::new();
+    let (mut waited, mut last) = (0, None);
+    while waits.len() < 4 {
+        sim.tick(PHONE);
+        while sim.resume() {}
+        waited += 1;
+        let attempt = sim.devices[PHONE].groups[&group].attempt();
+        if attempt != last {
+            waits.push(waited);
+            (waited, last) = (0, attempt);
+        }
+        assert!(waited < 1000, "it gave up");
+    }
+
+    assert!(waits[1] < waits[2] && waits[2] < waits[3], "{waits:?}");
+}

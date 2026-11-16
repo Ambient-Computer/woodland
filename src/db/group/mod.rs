@@ -79,6 +79,11 @@ pub(crate) struct Group {
     pub(crate) misnaming: Vec<u8>,
     /// How many ticks the current attempt at a checkpoint has gone on.
     stalled: u64,
+    /// How far the attempt had got at the last tick.
+    gathered: (u64, usize),
+    /// The height this device last tried to follow, and how many
+    /// times it's tried.
+    tried: (u64, u32),
     /// Whether the chain has anything peers haven't been told.
     said: bool,
     /// The clocks this device wants. `None` if all of them.
@@ -184,6 +189,8 @@ impl Group {
             #[cfg(test)]
             misnaming: Vec::new(),
             stalled: 0,
+            gathered: (0, 0),
+            tried: (0, 0),
             said: false,
             interest: None,
             passed: false,
@@ -315,6 +322,13 @@ impl Group {
     #[cfg(test)]
     pub(crate) fn attempting(&self) -> bool {
         self.chain.attempt().is_some()
+    }
+
+    /// The rank of the highest attempt it knows of at the next
+    /// checkpoint.
+    #[cfg(test)]
+    pub(crate) fn attempt(&self) -> Option<u64> {
+        self.chain.attempt()
     }
 
     /// How many checkpoints it holds proposals of, for the next place
@@ -469,7 +483,10 @@ impl Group {
         identity: &Identity,
         step: &mut Step<V>,
     ) -> Result<(), StoreError> {
-        if self.chain.attempt().is_some() {
+        // An attempt that's getting somewhere is left to it.
+        let gathered = self.chain.gathered();
+        let moving = std::mem::replace(&mut self.gathered, gathered) != gathered;
+        if self.chain.attempt().is_some() && !moving {
             self.stalled += 1;
             self.said = true;
         } else {

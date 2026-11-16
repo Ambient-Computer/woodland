@@ -259,6 +259,17 @@ impl Chain {
         (round > 0).then_some(round)
     }
 
+    /// How far the attempts at the slot after the tip have got: the
+    /// highest one, and how much has been said in all. It changes
+    /// whenever anyone gets anywhere.
+    pub(crate) fn gathered(&self) -> (u64, usize) {
+        let slot = &self.slot;
+        let said = slot.prepares.len() + slot.promises.len();
+        let said = said + slot.proposals.len() + slot.votes.len();
+
+        (slot.highest_round(), said)
+    }
+
     /// Everything worth keeping across a restart.
     pub(crate) fn save(&self) -> Saved {
         let gossip = self.gossip(0);

@@ -230,7 +230,16 @@ impl Group {
             return Ok(());
         };
 
+        // Rivals that keep outranking each other decide nothing, so
+        // each waits longer every time it tries for the same place.
+        let height = tip.height;
+        let tries = if self.tried.0 == height {
+            self.tried.1
+        } else {
+            0
+        };
         let patience = 2 + u64::try_from(rank).unwrap_or(u64::MAX - 2);
+        let patience = patience << tries.min(6);
         if tip.electorate.is_reader(me) {
             return Ok(());
         }
@@ -333,6 +342,7 @@ impl Group {
         {
             self.said = true;
             self.stalled = 0;
+            self.tried = (height, tries + 1);
         }
 
         Ok(())
