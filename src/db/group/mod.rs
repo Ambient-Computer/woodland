@@ -216,6 +216,10 @@ impl Group {
             self.stalled = 0;
         }
 
+        for remote in self.remotes.values_mut() {
+            remote.doubt();
+        }
+
         self.propose(identity, step).await?;
         self.progress(identity, None, step).await
     }

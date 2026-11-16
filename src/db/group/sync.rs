@@ -1,9 +1,14 @@
 //! Sync: telling each peer what it lacks.
 //!
 //! Each side says how much it holds, and from then on each sends the
-//! other whatever it has that the other doesn't, as it gets it. What a
-//! peer is thought to hold only ever grows, so nothing is sent to it
-//! twice, and two peers with the same things have nothing to say.
+//! other whatever it has that the other doesn't, as it gets it. Two
+//! peers with the same things have nothing to say.
+//!
+//! What a peer says it holds is taken at its word, every time: it can
+//! hold less than it did, having let go of what a removal cut. What
+//! it's been sent since is assumed to have arrived, so nothing is sent
+//! twice. That assumption is dropped on every tick, because a peer may
+//! turn down what it was sent, and take it later.
 
 use std::collections::BTreeMap;
 
@@ -24,14 +29,16 @@ use super::compact::Sending;
 /// the rest as it answers.
 const PAGE: usize = 64;
 
-/// What a peer is thought to hold: what it said, what it sent, and what
-/// it was sent.
+/// What a peer is thought to hold.
 #[derive(Debug, Default)]
 pub(super) struct Remote {
     height: u64,
     /// The height of the latest checkpoint it has committed.
     folded: u64,
-    heads: BTreeMap<ClockId, Frontier>,
+    /// The last entry of each chain it last said it holds.
+    said: BTreeMap<ClockId, Frontier>,
+    /// The last entry of each chain it's been sent since the last tick.
+    sent: BTreeMap<ClockId, Frontier>,
     /// How far it says it has got with a snapshot.
     pub(super) staged: Option<(u64, Option<Vec<u8>>)>,
     /// The snapshot this device is sending it.
@@ -39,11 +46,28 @@ pub(super) struct Remote {
 }
 
 impl Remote {
-    fn holds(&mut self, clock: ClockId, author: Peer, link: Link) {
-        let heads = self.heads.entry(clock).or_default();
-        if reach(heads, author) <= link.seq {
-            heads.insert(author, link);
+    fn sent(&mut self, clock: ClockId, author: Peer, link: Link) {
+        let sent = self.sent.entry(clock).or_default();
+        if reach(sent, author) <= link.seq {
+            sent.insert(author, link);
         }
+    }
+
+    /// How far along each chain of `clock` it's thought to be.
+    fn holds(&self, clock: ClockId) -> Frontier {
+        let mut holds = self.said.get(&clock).cloned().unwrap_or_default();
+        for (&author, &link) in self.sent.get(&clock).into_iter().flatten() {
+            if reach(&holds, author) < link.seq {
+                holds.insert(author, link);
+            }
+        }
+
+        holds
+    }
+
+    /// Stops assuming that what it was sent arrived, and was kept.
+    pub(super) fn doubt(&mut self) {
+        self.sent.clear();
     }
 }
 
@@ -74,15 +98,7 @@ impl Group {
         remote.height = remote.height.max(message.summary.height);
         remote.folded = remote.folded.max(message.summary.folded);
         remote.staged = message.summary.staged;
-        for (&clock, heads) in &message.summary.heads {
-            for (&author, &link) in heads {
-                remote.holds(clock, author, link);
-            }
-        }
-        for entry in &message.entries {
-            let clock = entry.header.payload().clock;
-            remote.holds(clock, entry.header.author(), entry.link());
-        }
+        remote.said.clone_from(&message.summary.heads);
 
         self.said |= self.chain.receive(message.chain);
         let tip = self.chain.tip();
@@ -209,7 +225,7 @@ impl Group {
             }
             for entry in &message.entries {
                 let clock = entry.header.payload().clock;
-                remote.holds(clock, entry.header.author(), entry.link());
+                remote.sent(clock, entry.header.author(), entry.link());
             }
         }
 
@@ -241,11 +257,10 @@ impl Group {
         step: &Step<V>,
     ) -> Result<Vec<Entry>, StoreError> {
         let page = u64::try_from(PAGE).unwrap_or(u64::MAX);
-        let nothing = Frontier::new();
         let mut missing = Vec::new();
-        for (id, clock) in &self.clocks {
-            let theirs = remote.heads.get(id).unwrap_or(&nothing);
-            missing.extend(clock.missing(theirs, page, step).await?);
+        for (&id, clock) in &self.clocks {
+            let theirs = remote.holds(id);
+            missing.extend(clock.missing(&theirs, page, step).await?);
         }
 
         missing.sort_by_key(|(stamp, _)| *stamp);
