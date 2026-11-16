@@ -74,6 +74,7 @@
 //!
 //! [`Stamp`]: crate::clock::Stamp
 
+mod allowance;
 mod claims;
 mod kv;
 pub(crate) mod query;
@@ -81,6 +82,7 @@ pub(crate) mod table;
 
 use serde::{Deserialize, Serialize};
 
+pub use allowance::{Allowance, Allowances};
 pub use query::Query;
 pub use table::{ColumnId, Filter, Row, Table, Value};
 
@@ -101,6 +103,8 @@ pub(crate) struct Operation {
 pub(crate) enum Change {
     Kv(kv::Operation),
     Claims(claims::Operation),
+    /// Boxed because it names devices by their whole public keys.
+    Allowance(Box<allowance::Operation>),
     Table(table::Operation),
     /// A change to a table that's worked out when it's committed, and
     /// does nothing until then.
@@ -219,6 +223,7 @@ pub(crate) enum Kind {
     Claims = 2,
     Threshold = 3,
     Table = 4,
+    Allowances = 5,
 }
 
 impl Kind {
@@ -271,8 +276,25 @@ impl Operation {
     /// Fills in what only the transaction's author can work out, now
     /// that it's known which of its transactions this is part of.
     pub(crate) fn seal(&mut self, author: Peer, seq: u64, index: usize) {
-        if let Change::Table(operation) = &mut self.change {
-            operation.seal(author, seq, index);
+        match &mut self.change {
+            Change::Table(operation) => operation.seal(author, seq, index),
+            Change::Allowance(operation) => operation.seal(author, seq, index),
+            _ => {}
+        }
+    }
+
+    pub(crate) fn allowance(model: ModelId, operation: allowance::Operation) -> Self {
+        let change = Change::Allowance(Box::new(operation));
+
+        Self { model, change }
+    }
+
+    /// Whether `author` may make the change. Most changes are anyone's
+    /// who can write to the clock.
+    fn permits(&self, author: Peer) -> bool {
+        match &self.change {
+            Change::Allowance(operation) => operation.permits(author),
+            _ => true,
         }
     }
 
@@ -327,11 +349,13 @@ impl Operation {
             (Change::Kv(_), Some(Kind::Kv | Kind::Threshold))
             | (Change::Claims(_), Some(Kind::Claims))
             | (Change::Expect { .. } | Change::Drop, Some(_)) => true,
+            (Change::Allowance(operation), Some(Kind::Allowances)) => operation.belongs(),
             (Change::Table(operation), Some(Kind::Table)) => operation.belongs(),
             (Change::Deferred(deferred), Some(Kind::Table)) => deferred.belongs(),
             (
                 Change::Kv(_)
                 | Change::Claims(_)
+                | Change::Allowance(_)
                 | Change::Table(_)
                 | Change::Deferred(_)
                 | Change::Expect { .. }
@@ -343,7 +367,7 @@ impl Operation {
 
     /// Everything the operation declares, without its values: what it
     /// requires, then what it writes.
-    pub(crate) fn declares(&self) -> Vec<Declaration> {
+    pub(crate) fn declares(&self, author: Peer) -> Vec<Declaration> {
         let requires = self.requires().into_iter();
         let requires = requires.map(|(key, requirement)| Effect::Require { key, requirement });
         let writes = self.writes().into_iter().map(|write| Effect::Write {
@@ -353,7 +377,7 @@ impl Operation {
 
         let drops = self.drops().then_some(Effect::Drop);
         let effects = requires.chain(writes).chain(drops);
-        let belongs = self.belongs();
+        let belongs = self.belongs() && self.permits(author);
         let declare = |effect| Declaration {
             model: self.model,
             belongs,
@@ -368,6 +392,7 @@ impl Operation {
         let writes = match &self.change {
             Change::Kv(operation) => vec![operation.write()],
             Change::Claims(operation) => vec![operation.write()],
+            Change::Allowance(operation) => operation.writes(),
             Change::Table(operation) => operation.writes(),
             Change::Expect { .. } | Change::Drop | Change::Deferred(_) => Vec::new(),
         };
@@ -393,6 +418,7 @@ impl Operation {
             Change::Kv(_) | Change::Drop | Change::Deferred(_) => Vec::new(),
             Change::Claims(operation) => vec![operation.requires()],
             Change::Expect { key, requirement } => vec![(key.clone(), *requirement)],
+            Change::Allowance(operation) => operation.requires(),
             Change::Table(operation) => operation.requires(),
         }
     }
@@ -453,6 +479,16 @@ impl ModelId {
         Self::new(Kind::Threshold, clock.into(), nonce)
     }
 
+    /// Allowances: quantities that several devices spend from, each
+    /// out of its own share, so that none is ever overspent. See
+    /// [`Transaction::open_allowance`].
+    ///
+    /// [`Transaction::open_allowance`]: crate::Transaction::open_allowance
+    #[must_use]
+    pub fn allowances(clock: impl Into<ClockId>, nonce: [u8; 32]) -> Self {
+        Self::new(Kind::Allowances, clock.into(), nonce)
+    }
+
     /// A table: rows of typed cells, in columns that are themselves
     /// part of the data. It exists once a transaction [creates] it.
     ///
@@ -464,9 +500,15 @@ impl ModelId {
 
     /// `None` for an ID this version of the library didn't make.
     pub(crate) fn kind(&self) -> Option<Kind> {
-        [Kind::Kv, Kind::Claims, Kind::Threshold, Kind::Table]
-            .into_iter()
-            .find(|&kind| kind as u8 == self.id[0])
+        [
+            Kind::Kv,
+            Kind::Claims,
+            Kind::Threshold,
+            Kind::Table,
+            Kind::Allowances,
+        ]
+        .into_iter()
+        .find(|&kind| kind as u8 == self.id[0])
     }
 
     /// The clock the model belongs to. A transaction writes to the

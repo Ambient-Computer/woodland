@@ -41,7 +41,7 @@ mod testing;
 pub use actor::Identity;
 pub use chain::Role;
 pub use db::{Changed, ClockId, Database, Error, GroupId, Outputs, Pending, Transaction, Waiting};
-pub use model::{ColumnId, Filter, ModelId, Query, Row, Table, Value};
+pub use model::{Allowance, Allowances, ColumnId, Filter, ModelId, Query, Row, Table, Value};
 pub use store::{Entry, MemoryStore, MemoryView, Order, Store, StoreError, View, Write};
 #[cfg(feature = "file")]
 pub use store::{FileStore, FileView};

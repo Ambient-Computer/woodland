@@ -3,6 +3,7 @@
 //! The simulation plays the application: it delivers what each step
 //! asks to send, in an order the test controls, and nothing else moves.
 
+mod allowances;
 mod checkpoints;
 mod clocks;
 mod compaction;

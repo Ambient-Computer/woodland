@@ -55,6 +55,9 @@ A table is a [model](models.md) of rows with typed cells, under a schema that is
 
 - A quantity several devices spend from is split into allowances, one per contributor. Each spends its own without asking.
 - A bound on the total holds because no allowance is overspent. Moving allowance between contributors is an ordinary transaction.
+- An allowance is written only by its owner, so a spend within it is never pruned by what another device does.
+- Allowance moved to a contributor is theirs once they accept it. Until then nobody spends it.
+- A spend out of allowance that turns out never to have been given is pruned with it.
 - A dense sequence, one with no gaps, is assigned only at commit.
 - A row takes a number from a sequence once. A number is never given to a second row, even after the first is deleted.
 

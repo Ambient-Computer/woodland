@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use proptest::prelude::*;
 
 use super::*;
-use crate::model::{ColumnId, Table, Value};
+use crate::model::{Allowances, ColumnId, Table, Value};
 
 const DEVICES: usize = 4;
 const KEYS: [&str; 3] = ["a", "b", "c"];
@@ -25,6 +25,18 @@ enum Action {
         key: usize,
     },
     Number {
+        device: usize,
+    },
+    Spend {
+        device: usize,
+        amount: u64,
+    },
+    Give {
+        device: usize,
+        to: usize,
+        amount: u64,
+    },
+    Accept {
         device: usize,
     },
     Tick {
@@ -66,6 +78,10 @@ fn action() -> impl Strategy<Value = Action> {
         6 => (device(), key()).prop_map(|(device, key)| Action::Claim { device, key }),
         3 => (device(), key()).prop_map(|(device, key)| Action::Expect { device, key }),
         3 => device().prop_map(|device| Action::Number { device }),
+        3 => (device(), 0..4_u64).prop_map(|(device, amount)| Action::Spend { device, amount }),
+        2 => (device(), device(), 0..9_u64)
+            .prop_map(|(device, to, amount)| Action::Give { device, to, amount }),
+        2 => device().prop_map(|device| Action::Accept { device }),
         6 => device().prop_map(|device| Action::Tick { device }),
         12 => (1..12_usize).prop_map(|messages| Action::Deliver { messages }),
         3 => (device(), device()).prop_map(|(a, b)| Action::Connect { a, b }),
@@ -103,6 +119,13 @@ fn tickets(group: GroupId) -> ModelId {
 fn ticket_number(group: GroupId) -> ColumnId {
     ColumnId::integer(tickets(group), [1; 32])
 }
+
+/// Something there are only so many of.
+fn stock(group: GroupId) -> ModelId {
+    ModelId::allowances(group, [4; 32])
+}
+
+const STOCK: u64 = 40;
 
 /// Who holds each claim for good, as far as any device has said, and
 /// how many checkpoints that device had committed when it said so. The
@@ -164,7 +187,40 @@ impl Run {
                 self.attempt(device, numbered);
             }
 
-            Action::Tick { device } => sim.tick(device),
+            Action::Spend { device, amount } => {
+                let mine = self
+                    .allowances(device, false)
+                    .of("stock", self.sim.id(device));
+                self.attempt(
+                    device,
+                    Transaction::new().spend(stock(group), &mine, amount),
+                );
+            }
+
+            Action::Give { device, to, amount } => {
+                let mine = self
+                    .allowances(device, false)
+                    .of("stock", self.sim.id(device));
+                let to = self.sim.id(to);
+                // Only if a note is still what this device reads, which
+                // any write to it elsewhere undoes: so that gifts are
+                // accepted, and spent from, that were never given.
+                let seen = self.sim.shown(device, group, notes_of(group, 0), KEYS[0]);
+                let guarded = match seen {
+                    Some(seen) => Transaction::new().expect(notes_of(group, 0), KEYS[0], seen),
+                    None => Transaction::new().expect_absent(notes_of(group, 0), KEYS[0]),
+                };
+                self.attempt(device, guarded.give(stock(group), &mine, to, amount));
+            }
+
+            Action::Accept { device } => {
+                let mine = self
+                    .allowances(device, false)
+                    .of("stock", self.sim.id(device));
+                self.attempt(device, Transaction::new().accept(stock(group), &mine));
+            }
+
+            Action::Tick { device } => self.sim.tick(device),
             Action::Deliver { messages } => {
                 for _ in 0..messages {
                     sim.deliver();
@@ -230,6 +286,26 @@ impl Run {
         Ok(())
     }
 
+    fn allowances(&self, device: usize, committed: bool) -> Allowances {
+        let query = Query::prefix(self.group, stock(self.group), b"");
+        let query = if committed { query.committed() } else { query };
+
+        Allowances::read(&self.sim.read(device, &query))
+    }
+
+    /// No device ever reads more stock than there was, in either kind
+    /// of read: nothing is spent twice, and nothing given is kept.
+    fn check_stock(&self) -> Result<(), TestCaseError> {
+        for device in 0..DEVICES {
+            for committed in [false, true] {
+                let left = self.allowances(device, committed).left("stock");
+                prop_assert!(left <= STOCK, "device {device} reads {left} in stock");
+            }
+        }
+
+        Ok(())
+    }
+
     /// How many checkpoints `device` has committed.
     fn folded(&self, device: usize) -> u64 {
         self.sim.devices[device].groups[&self.group].folded()
@@ -250,12 +326,15 @@ proptest! {
         sim.assign(PHONE, group, roles);
         let columns = [(ticket_number(group), "number")];
         sim.write_to(PHONE, group, Transaction::new().create_table(tickets(group), columns));
+        let phone = sim.id(PHONE);
+        sim.write_to(PHONE, group, Transaction::new().open_allowance(stock(group), "stock", STOCK, phone));
         sim.settle();
         let electors = (0..3).collect();
         let mut run = Run { sim, group, written: 0, claims: Claims::new(), electors };
         for action in actions {
             run.act(action);
             run.check_finality()?;
+            run.check_stock()?;
         }
 
         // The network heals, and stays healed for a while.
@@ -263,6 +342,7 @@ proptest! {
         for _ in 0..4 {
             run.sim.settle();
             run.check_finality()?;
+            run.check_stock()?;
         }
 
         let everything = |device: usize, committed: bool| {
@@ -273,6 +353,7 @@ proptest! {
                 notes_of(group, last),
                 names_of(group, last),
                 tickets(group),
+                stock(group),
             ];
             let read = |model: ModelId| {
                 let query = Query::prefix(group, model, b"");

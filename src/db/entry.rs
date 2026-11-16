@@ -196,7 +196,9 @@ impl Checked {
             link: self.link(),
             after: self.header().after.clone(),
             under: self.header().under.height,
-            declared: operations.flat_map(Operation::declares).collect(),
+            declared: operations
+                .flat_map(|it| it.declares(self.author()))
+                .collect(),
             waits: waits.map(|it| it.model).collect(),
         }
     }

@@ -1,6 +1,11 @@
 use crate::db::ClockId;
 use crate::model::table::{Deferred, Each};
-use crate::model::{ColumnId, Filter, Fingerprint, ModelId, Operation, Requirement, Row, Value};
+use ed25519_dalek::VerifyingKey;
+
+use crate::actor::Peer;
+use crate::model::{
+    Allowance, ColumnId, Filter, Fingerprint, ModelId, Operation, Requirement, Row, Value,
+};
 
 /// A set of changes that happen together, or not at all.
 ///
@@ -455,6 +460,70 @@ impl Transaction {
     /// [pending]: crate::Database::pending
     pub fn drop_model(mut self, model: ModelId) -> Self {
         self.operations.push(Operation::drop(model));
+        self
+    }
+
+    /// Starts `quantity` in an [allowances] model: there are `total`
+    /// of it, all in `owner`'s allowance, which must be this device's.
+    /// Of two transactions that open one quantity, the first in the
+    /// timeline happens.
+    ///
+    /// [allowances]: ModelId::allowances
+    pub fn open_allowance(
+        mut self,
+        model: ModelId,
+        quantity: impl Into<Vec<u8>>,
+        total: u64,
+        owner: VerifyingKey,
+    ) -> Self {
+        let open = Allowance::open(quantity.into(), total, Peer::from(owner));
+        self.operations.push(Operation::allowance(model, open));
+        self
+    }
+
+    /// Uses up `amount` of an allowance, which must be this device's,
+    /// as it was just read. Nothing another device does stops it.
+    ///
+    /// The whole transaction is dropped, on every device, if `amount`
+    /// is more than the allowance, or if the allowance isn't what was
+    /// read at the transaction's place in the timeline: something this
+    /// device wrote before it didn't happen.
+    pub fn spend(mut self, model: ModelId, allowance: &Allowance, amount: u64) -> Self {
+        let spend = allowance.spend(amount);
+        self.operations.push(Operation::allowance(model, spend));
+        self
+    }
+
+    /// Moves `amount` out of an allowance, which must be this
+    /// device's, for `to` to [accept]. Until it does, nobody can spend
+    /// it. Dropped like a [spend] that asks for too much.
+    ///
+    /// [accept]: Self::accept
+    /// [spend]: Self::spend
+    pub fn give(
+        mut self,
+        model: ModelId,
+        allowance: &Allowance,
+        to: VerifyingKey,
+        amount: u64,
+    ) -> Self {
+        let give = allowance.give(Peer::from(to), amount);
+        self.operations.push(Operation::allowance(model, give));
+        self
+    }
+
+    /// Takes everything an allowance has been [given] into it. The
+    /// allowance must be this device's, as it was just read.
+    ///
+    /// The whole transaction is dropped if, at its place in the
+    /// timeline, one of those gifts isn't there: giving it didn't
+    /// happen.
+    ///
+    /// [given]: Self::give
+    pub fn accept(mut self, model: ModelId, allowance: &Allowance) -> Self {
+        let accepted = allowance.accept().into_iter();
+        self.operations
+            .extend(accepted.map(|it| Operation::allowance(model, it)));
         self
     }
 }
