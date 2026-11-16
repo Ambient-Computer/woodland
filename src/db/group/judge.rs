@@ -183,7 +183,7 @@ pub(super) async fn commit<V: View>(
                     let committed = keys::committed_value(id, model, &write.key);
                     let held = step.get(&committed).await?;
 
-                    Some(crate::model::combine(held.as_deref(), &value))
+                    Some(crate::model::combine(model, held.as_deref(), &value))
                 }
 
                 value => value,

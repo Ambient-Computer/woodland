@@ -383,7 +383,7 @@ impl Clock {
                     let now = self.tried(model, dropped, step);
                     let held = now.get(&write.key).await?;
 
-                    Some(crate::model::combine(held.as_deref(), &value))
+                    Some(crate::model::combine(model, held.as_deref(), &value))
                 }
 
                 value => value,

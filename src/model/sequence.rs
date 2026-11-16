@@ -178,11 +178,12 @@ pub(crate) fn combine(list: Option<&[u8]>, edit: &[u8]) -> Vec<u8> {
     encoding::encode(&items)
 }
 
-/// Every list as it reads: what's committed, with each edit that
-/// isn't applied to it in timeline order.
+/// Every key of a merging model as it reads: what's committed, with
+/// each write that isn't yet combined with it in timeline order.
 pub(crate) fn current(
     committed: impl IntoIterator<Item = (Vec<u8>, Vec<u8>)>,
     versions: impl IntoIterator<Item = (Vec<u8>, Stamp, Option<Vec<u8>>)>,
+    combine: impl Fn(Option<&[u8]>, &[u8]) -> Vec<u8>,
 ) -> BTreeMap<Vec<u8>, Vec<u8>> {
     let mut lists: BTreeMap<Vec<u8>, Vec<u8>> = committed.into_iter().collect();
     let mut edits: Vec<_> = versions.into_iter().collect();
@@ -443,7 +444,7 @@ mod tests {
         let first = version(1, insert(phone(), 1, Between::default(), "a"));
         let second = version(2, insert(phone(), 2, after(phone(), 1), "b"));
 
-        let lists = current([], [second, first]);
+        let lists = current([], [second, first], combine);
         let items: Items = encoding::decode(&lists[&b"list".to_vec()]).unwrap_or_default();
 
         assert_eq!(read(&items), ["a", "b"]);

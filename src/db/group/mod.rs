@@ -126,6 +126,8 @@ pub(crate) struct Group {
     /// How many kinds of model the library had when this was last
     /// saved.
     spoke: u8,
+    /// The kinds the application had added when this was opened.
+    extended: BTreeSet<u8>,
 }
 
 /// What's kept of a group besides its chain and its entries.
@@ -149,6 +151,8 @@ struct Meta {
     renewing: Option<u64>,
     /// How many kinds of model the library had when this was saved.
     spoke: u8,
+    /// The kinds the application had added.
+    extended: BTreeSet<u8>,
 }
 
 /// What came of trying to write.
@@ -227,6 +231,7 @@ impl Group {
             carrying: None,
             renewing: None,
             spoke: crate::model::vocabulary(),
+            extended: crate::model::extension::numbers(),
         }
     }
 
@@ -284,6 +289,7 @@ impl Group {
         group.carrying = meta.carrying;
         group.renewing = meta.renewing;
         group.spoke = meta.spoke;
+        group.extended = meta.extended;
         group.recall(step).await?;
         group.recall_indexes(step).await?;
         for (clock, kept) in meta.clocks {
@@ -408,6 +414,7 @@ impl Group {
             carrying: self.carrying,
             renewing: self.renewing,
             spoke: crate::model::vocabulary(),
+            extended: self.extended.clone(),
         };
         step.save(keys::meta(self.id), &meta);
         if self.said {

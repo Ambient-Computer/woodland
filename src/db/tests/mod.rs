@@ -8,6 +8,7 @@ mod checkpoints;
 mod clocks;
 mod compaction;
 mod conflicts;
+mod extensions;
 mod foreign;
 mod forks;
 mod guards;
@@ -58,6 +59,8 @@ struct Sim {
     /// The devices running a version of the library from before
     /// allowances were added.
     old: BTreeSet<usize>,
+    /// The devices whose application has added no kinds of model.
+    plain: BTreeSet<usize>,
 }
 
 /// One device's view of what's stored.
@@ -87,6 +90,7 @@ impl Sim {
             wrote: vec![None; 8],
             home: GroupId::from_bytes([0; 32]),
             old: BTreeSet::new(),
+            plain: BTreeSet::new(),
         }
     }
 
@@ -114,6 +118,7 @@ impl Sim {
     /// has.
     fn wake(&self, device: usize) {
         crate::model::predate(self.old.contains(&device));
+        crate::model::extension::hide(self.plain.contains(&device));
     }
 
     fn id(&self, device: usize) -> VerifyingKey {
@@ -419,6 +424,8 @@ impl Sim {
 
     /// What `key` holds, as the device would show it right now.
     fn shown(&self, device: usize, group: GroupId, model: ModelId, key: &str) -> Option<String> {
+        // What a query reads depends on the kind, as the device has it.
+        self.wake(device);
         let found = self.read(device, &Query::key(group, model, key.as_bytes()));
 
         found.into_iter().next().map(|(_, value)| text(value))

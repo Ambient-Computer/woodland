@@ -46,7 +46,8 @@ pub use db::{
     TransactionId, Waiting,
 };
 pub use model::{
-    Allowance, Allowances, ColumnId, Filter, ModelId, Query, Row, Sequence, Table, Value,
+    Allowance, Allowances, ColumnId, Combine, Declared, Extension, Filter, ModelId, Needs, Query,
+    Row, Sequence, Table, Value, extend,
 };
 pub use seal::SealingKey;
 #[cfg(all(feature = "browser", target_arch = "wasm32"))]

@@ -76,6 +76,7 @@
 
 mod allowance;
 mod claims;
+pub(crate) mod extension;
 mod kv;
 pub(crate) mod query;
 mod sequence;
@@ -84,6 +85,7 @@ pub(crate) mod table;
 use serde::{Deserialize, Serialize};
 
 pub use allowance::{Allowance, Allowances};
+pub use extension::{Combine, Declared, Extension, Needs, extend};
 pub use query::Query;
 pub use sequence::Sequence;
 pub use table::{ColumnId, Filter, Row, Table, Value};
@@ -123,6 +125,9 @@ pub(crate) enum Change {
     /// alive, so a transaction that names it later in the timeline is
     /// pruned.
     Drop,
+    /// A change to a model of a kind an application added, as only
+    /// that kind reads it.
+    Custom(Vec<u8>),
 }
 
 /// What an operation needs to be true of a key, at its transaction's
@@ -274,8 +279,11 @@ pub(crate) fn predate(old: bool) {
 
 /// What a key of a merging model holds once `write` is combined with
 /// what it held.
-pub(crate) fn combine(held: Option<&[u8]>, write: &[u8]) -> Vec<u8> {
-    sequence::combine(held, write)
+pub(crate) fn combine(model: ModelId, held: Option<&[u8]>, write: &[u8]) -> Vec<u8> {
+    match model.extension().and_then(|kind| kind.combine) {
+        Some(combine) => combine(held, write),
+        None => sequence::combine(held, write),
+    }
 }
 
 /// Set in the first byte of the ID of a model that's restricted to
@@ -366,7 +374,11 @@ impl Operation {
     /// Whether what the operation writes is combined with what its
     /// key holds, rather than taking its place.
     pub(crate) fn merges(&self) -> bool {
-        matches!(self.change, Change::Sequence(_))
+        match self.change {
+            Change::Sequence(_) => true,
+            Change::Custom(_) => self.model.merges(),
+            _ => false,
+        }
     }
 
     pub(crate) fn allowance(model: ModelId, operation: allowance::Operation) -> Self {
@@ -423,6 +435,22 @@ impl Operation {
         Self { model, change }
     }
 
+    pub(crate) fn custom(model: ModelId, operation: Vec<u8>) -> Self {
+        let change = Change::Custom(operation);
+
+        Self { model, change }
+    }
+
+    /// What an application's kind says the operation does, if it's
+    /// for a model of one this device has, and is one of its own.
+    fn declared(&self) -> Option<Declared> {
+        let Change::Custom(operation) = &self.change else {
+            return None;
+        };
+
+        (self.model.extension()?.declare)(operation)
+    }
+
     pub(crate) fn drop(model: ModelId) -> Self {
         let change = Change::Drop;
 
@@ -448,6 +476,8 @@ impl Operation {
             (Change::Allowance(operation), Some(Kind::Allowances)) => operation.belongs(),
             (Change::Table(operation), Some(Kind::Table)) => operation.belongs(),
             (Change::Deferred(deferred), Some(Kind::Table)) => deferred.belongs(),
+            (Change::Expect { .. } | Change::Drop, None) => self.model.extension().is_some(),
+            (Change::Custom(_), None) => self.declared().is_some(),
             (
                 Change::Kv(_)
                 | Change::Claims(_)
@@ -455,8 +485,7 @@ impl Operation {
                 | Change::Table(_)
                 | Change::Sequence(_)
                 | Change::Deferred(_)
-                | Change::Expect { .. }
-                | Change::Drop,
+                | Change::Custom(_),
                 _,
             ) => false,
         }
@@ -473,8 +502,16 @@ impl Operation {
         });
 
         let drops = self.drops().then_some(Effect::Drop);
-        let effects = requires.chain(writes).chain(drops);
         let belongs = self.belongs() && self.permits(author);
+        // One that isn't its model's to take may say nothing at all,
+        // and still takes its transaction with it.
+        let stray = || Effect::Require {
+            key: Vec::new(),
+            requirement: Requirement::Present,
+        };
+        let effects: Vec<Effect> = requires.chain(writes).chain(drops).collect();
+        let stray = (!belongs && effects.is_empty()).then(stray);
+        let effects = effects.into_iter().chain(stray);
         let declare = |effect| Declaration {
             model: self.model,
             belongs,
@@ -493,6 +530,7 @@ impl Operation {
             Change::Table(operation) => operation.writes(),
             Change::Sequence(operation) => vec![operation.write()],
             Change::Expect { .. } | Change::Drop | Change::Deferred(_) => Vec::new(),
+            Change::Custom(_) => self.declared().unwrap_or_default().writes,
         };
 
         let write = |(key, value)| Write {
@@ -518,6 +556,12 @@ impl Operation {
             Change::Expect { key, requirement } => vec![(key.clone(), *requirement)],
             Change::Allowance(operation) => operation.requires(),
             Change::Table(operation) => operation.requires(),
+            Change::Custom(_) => {
+                let requires = self.declared().unwrap_or_default().requires;
+                let requirement = |(key, needs): (Vec<u8>, Needs)| (key, needs.into());
+
+                requires.into_iter().map(requirement).collect()
+            }
         }
     }
 }
@@ -597,6 +641,19 @@ impl ModelId {
         Self::new(Kind::Sequence, clock.into(), nonce)
     }
 
+    /// A model of a kind the application added with [`extend`], by the
+    /// number it was added under. `None` if the number is 64 or more.
+    #[must_use]
+    pub fn of_kind(number: u8, clock: impl Into<ClockId>, nonce: [u8; 32]) -> Option<Self> {
+        let clock = clock.into();
+        let mut id = encoding::hash("woodland/model", &(clock.as_bytes(), nonce));
+        id[0] = extension::FIRST
+            .checked_add(number)
+            .filter(|it| it & HELD == 0)?;
+
+        Some(Self { clock, id })
+    }
+
     /// A table: rows of typed cells, in columns that are themselves
     /// part of the data. It exists once a transaction [creates] it.
     ///
@@ -619,7 +676,11 @@ impl ModelId {
     /// Whether readers see writes that aren't committed. If not, they
     /// aren't kept as versions at all: they wait in the log.
     pub(crate) fn shows_uncommitted(&self) -> bool {
-        self.id[0] & HELD == 0 && self.kind().is_some_and(Kind::shows_uncommitted)
+        let shows = self
+            .kind()
+            .map_or(self.extension().is_some(), Kind::shows_uncommitted);
+
+        self.id[0] & HELD == 0 && shows
     }
 
     /// `None` for an ID this version of the library didn't make.
@@ -634,6 +695,25 @@ impl ModelId {
         ]
         .into_iter()
         .find(|&kind| kind as u8 == self.id[0] & !HELD && kind as u8 <= vocabulary())
+    }
+
+    /// The kind an application added that the model is of, if this
+    /// device has it.
+    pub(crate) fn extension(&self) -> Option<Extension> {
+        extension::of(self.id[0] & !HELD)
+    }
+
+    /// Whether a key of the model holds every write to it combined,
+    /// rather than the last.
+    pub(crate) fn merges(&self) -> bool {
+        let extended = self.extension().is_some_and(|kind| kind.combine.is_some());
+
+        self.kind().is_some_and(Kind::merges) || extended
+    }
+
+    /// Whether the model is of a kind this device has.
+    pub(crate) fn is_known(&self) -> bool {
+        self.kind().is_some() || self.extension().is_some()
     }
 
     /// The clock the model belongs to. A transaction writes to the

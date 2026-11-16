@@ -20,7 +20,17 @@ impl Group {
     /// that state is wrong, and it fetches it all again.
     pub(crate) async fn outgrow<V: View>(&mut self, step: &mut Step<V>) -> Result<(), StoreError> {
         let latest = model::vocabulary();
-        if self.spoke >= latest {
+        let extended = model::extension::numbers();
+        let grown = self.spoke < latest || !extended.is_subset(&self.extended);
+        // A kind the application no longer adds is one to catch up
+        // with if it's ever added again.
+        let same = self.extended == extended;
+        self.extended = extended;
+        if !grown {
+            if !same {
+                self.persist(step);
+            }
+
             return Ok(());
         }
 

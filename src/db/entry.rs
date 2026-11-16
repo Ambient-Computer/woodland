@@ -196,7 +196,7 @@ fn understood(plain: &[u8], clock: ClockId) -> Read {
     let latest = crate::model::vocabulary();
     if carried
         .iter()
-        .any(|it| it.model.kind().is_none() || it.since > latest)
+        .any(|it| !it.model.is_known() || it.since > latest)
     {
         return Read::Foreign;
     }

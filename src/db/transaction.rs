@@ -86,6 +86,16 @@ impl Transaction {
         self
     }
 
+    /// Changes a model of a kind the application [added]. What
+    /// `operation` means is the kind's to say.
+    ///
+    /// [added]: crate::extend
+    pub fn change(mut self, model: ModelId, operation: impl Into<Vec<u8>>) -> Self {
+        self.operations
+            .push(Operation::custom(model, operation.into()));
+        self
+    }
+
     /// Makes the whole transaction depend on `key` still holding
     /// `value`, as its author read it.
     pub fn expect(
