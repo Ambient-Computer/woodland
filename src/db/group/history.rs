@@ -1,7 +1,7 @@
 //! What a device holds of everyone's chains, and how much of it is
 //! committed.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::actor::Peer;
 use crate::chain::Writers;
@@ -55,8 +55,8 @@ impl History {
     /// top of things this device holds, by someone allowed to write.
     /// `standing` is whether its author has been a contributor ever
     /// since the checkpoint the entry was written under. `decided` is
-    /// what the latest checkpoint covers: an author that has since been
-    /// removed still wrote those.
+    /// what the latest checkpoint covers, or one proposed to follow it
+    /// would: an author that has since been stopped still wrote those.
     pub(super) fn accepts(
         &self,
         entry: &Checked,
@@ -175,19 +175,84 @@ impl History {
         self.commit(frontier);
     }
 
-    /// Lets go of everything `author` wrote that isn't committed.
-    pub(super) fn cut(&mut self, author: Peer) -> Vec<Outline> {
-        let theirs = |outline: &&Outline| outline.author == author;
+    /// The most that a new checkpoint should cover of what's held:
+    /// every chain as far as it goes, short of anything written on top
+    /// of an entry this device doesn't hold. The chains of `barred`
+    /// authors go no further than what's committed.
+    pub(super) fn closed(&self, writers: Writers<'_>, barred: &BTreeSet<Peer>) -> Frontier {
+        let mut frontier = self.heads.clone();
+        for author in barred {
+            match self.committed.get(author) {
+                Some(&link) => frontier.insert(*author, link),
+                None => frontier.remove(author),
+            };
+        }
+
+        loop {
+            let open = |outline: &&Outline| {
+                let within = |(&other, link): (&Peer, &Link)| {
+                    reach(&frontier, other) >= link.seq || !writers.includes(other)
+                };
+
+                !outline.after.iter().all(within)
+            };
+            let Some(first) = self.covered(&frontier).find(open) else {
+                return frontier;
+            };
+
+            // Everything its author wrote from there on goes with it.
+            let (author, before) = (first.author, first.link.seq - 1);
+            match self.link_at(author, before) {
+                Some(link) => frontier.insert(author, link),
+                None => frontier.remove(&author),
+            };
+        }
+    }
+
+    /// Whether `entry`, which `decided` covers, can't take its place
+    /// because of something else held in its author's name: the author
+    /// signed two, and a checkpoint settled on the other.
+    pub(super) fn displaces(&self, entry: &Checked, decided: &Frontier) -> bool {
+        let (author, header) = (entry.author(), entry.header());
+        let committed = reach(&self.committed, author);
+        let last = self.heads.get(&author);
+        let held = last.map_or(0, |link| link.seq);
+        let differs = if header.seq <= held {
+            let known = self.link_at(author, header.seq);
+
+            known.is_some_and(|known| known.hash != entry.link().hash)
+        } else {
+            header.seq == held + 1 && header.previous != last.map(|link| link.hash)
+        };
+
+        // Holding the very entry the checkpoint names settles it.
+        let named = decided.get(&author);
+        let settled = named.is_some_and(|link| self.link_at(author, link.seq) == Some(*link));
+
+        header.seq > committed
+            && header.seq <= reach(decided, author)
+            && held > committed
+            && differs
+            && !settled
+    }
+
+    /// Lets go of everything `author` wrote past `seq` that isn't
+    /// committed.
+    pub(super) fn cut(&mut self, author: Peer, seq: u64) -> Vec<Outline> {
+        let theirs = |outline: &&Outline| outline.author == author && outline.link.seq > seq;
         let stamps: Vec<Stamp> = self
             .uncommitted
             .values()
             .filter(theirs)
             .map(Outline::stamp)
             .collect();
-        match self.committed.get(&author) {
-            Some(&link) => self.heads.insert(author, link),
-            None => self.heads.remove(&author),
-        };
+        if reach(&self.heads, author) > seq {
+            let kept = self.link_at(author, seq);
+            match kept.or_else(|| self.committed.get(&author).copied()) {
+                Some(link) => self.heads.insert(author, link),
+                None => self.heads.remove(&author),
+            };
+        }
 
         stamps
             .into_iter()
@@ -206,7 +271,7 @@ impl History {
 
         let ours = self.link_at(author, theirs.seq);
         if ours.is_some_and(|ours| ours.hash != theirs.hash) {
-            return reach(&self.committed, author).min(theirs.seq);
+            return reach(&self.committed, author).min(theirs.seq - 1);
         }
 
         theirs.seq

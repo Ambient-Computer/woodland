@@ -8,7 +8,10 @@ use crate::chain::Gossip;
 use crate::db::{ClockId, GroupId};
 use crate::model::ModelId;
 
+use crate::actor::Peer;
+
 use super::entry::{Entry, Frontier};
+use super::proof::Proof;
 
 /// Everything one peer tells another about one group, at once. Every
 /// part is safe to hear twice, late, or from someone else.
@@ -18,6 +21,8 @@ pub(crate) struct Message {
     pub(crate) summary: Summary,
     pub(crate) chain: Gossip,
     pub(crate) entries: Vec<Entry>,
+    /// Fork proofs the other side hasn't said it holds.
+    pub(crate) proofs: Vec<Proof>,
     pub(crate) snapshot: Option<Piece>,
 }
 
@@ -33,6 +38,8 @@ pub(crate) struct Summary {
     pub(crate) staged: Option<(u64, Option<Vec<u8>>)>,
     /// The last entry it holds of each author's chain, in each clock.
     pub(crate) heads: BTreeMap<ClockId, Frontier>,
+    /// Everyone it holds a fork proof against.
+    pub(crate) proven: BTreeSet<Peer>,
 }
 
 /// Part of a snapshot: committed values, in key order.

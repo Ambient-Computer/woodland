@@ -4,6 +4,7 @@
 mod clock;
 mod commit;
 mod compact;
+mod forks;
 mod history;
 mod judge;
 mod root;
@@ -19,6 +20,7 @@ use crate::db::{ClockId, GroupId, keys};
 use crate::model::Operation;
 use crate::store::{StoreError, View};
 
+use super::proof::Proof;
 use super::step::Step;
 use clock::{Clock, Kept};
 use compact::Staging;
@@ -38,6 +40,8 @@ pub(crate) struct Group {
     base: u64,
     /// A snapshot that's part of the way in.
     staging: Option<Staging>,
+    /// Proof against each contributor known to have forked.
+    proofs: BTreeMap<Peer, Proof>,
     /// What each connected peer is thought to hold.
     remotes: BTreeMap<Peer, Remote>,
     /// The electorate this device has been asked to bring about.
@@ -75,6 +79,7 @@ impl Group {
             folded: 0,
             base: 0,
             staging: None,
+            proofs: BTreeMap::new(),
             remotes: BTreeMap::new(),
             wanted: None,
             sound: BTreeSet::new(),
@@ -110,6 +115,7 @@ impl Group {
         group.base = meta.base;
         group.staging = meta.staging;
         group.wanted = meta.wanted;
+        group.recall(step).await?;
         for (clock, kept) in meta.clocks {
             let held = Clock::load(id, clock, kept, step).await?;
             group.clocks.insert(clock, held);
@@ -153,7 +159,10 @@ impl Group {
         step: &mut Step<V>,
     ) -> Result<bool, StoreError> {
         let tip = self.chain.tip().clone();
-        if !tip.electorate.writers(clock).includes(identity.peer()) {
+        // A device that learns it forked has lost track of what it
+        // signed, and anything more it wrote would be dropped unread.
+        let me = identity.peer();
+        if !tip.electorate.writers(clock).includes(me) || self.proofs.contains_key(&me) {
             return Ok(false);
         }
 

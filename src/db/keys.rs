@@ -7,6 +7,7 @@
 //! [GROUP][group][PROTOCOL][CHAIN]               → the checkpoint chain
 //! [GROUP][group][PROTOCOL][META]                → what's held, what's committed
 //! [GROUP][group][PROTOCOL][LOG][clock][author][seq] → an entry
+//! [GROUP][group][PROTOCOL][PROOF][author]     → proof that the author forked
 //! [GROUP][group][PROTOCOL][STATE][clock]        → the sum the clock's state root is the hash of
 //! [GROUP][group][COMMITTED][model][key…]        → the key's committed value
 //! [GROUP][group][UNCOMMITTED][model][key…][stamp] → a version: a value, or none
@@ -60,6 +61,7 @@ const CHAIN: u8 = 1;
 const META: u8 = 2;
 const LOG: u8 = 3;
 const STATE: u8 = 4;
+const PROOF: u8 = 5;
 
 /// A stored key of model data, parsed back into what it names.
 #[derive(Debug, PartialEq, Eq)]
@@ -119,6 +121,16 @@ pub(crate) fn meta(id: GroupId) -> Vec<u8> {
 /// The running sum of everything committed in a clock.
 pub(crate) fn state(id: GroupId, clock: ClockId) -> Vec<u8> {
     [protocol(id), vec![STATE], clock.as_bytes().to_vec()].concat()
+}
+
+/// Every fork proof held.
+pub(crate) fn proofs(id: GroupId) -> Vec<u8> {
+    [protocol(id), vec![PROOF]].concat()
+}
+
+/// The proof that `author` forked. One is enough.
+pub(crate) fn proof(id: GroupId, author: Peer) -> Vec<u8> {
+    [proofs(id), author.as_bytes().to_vec()].concat()
 }
 
 /// Every entry held.

@@ -282,19 +282,23 @@ impl Clock {
         let removed = authors.filter(|&author| !writers.includes(author));
         let removed: BTreeSet<Peer> = removed.collect();
         for author in removed {
-            self.void(author, step);
+            self.void(author, 0, step);
         }
     }
 
-    /// Drops everything `author` wrote that isn't committed.
-    pub(super) fn void<V: View>(&mut self, author: Peer, step: &mut Step<V>) {
-        let entries = self.history.cut(author);
+    /// Drops everything `author` wrote past `seq` that isn't committed.
+    pub(super) fn void<V: View>(&mut self, author: Peer, seq: u64, step: &mut Step<V>) {
+        let entries = self.history.cut(author, seq);
+        if entries.is_empty() {
+            return;
+        }
+
         tracing::info!(
             group = ?self.group,
             clock = ?self.id,
             ?author,
             entries = entries.len(),
-            "dropped what a contributor wrote after the checkpoint that stopped it writing here"
+            "dropped entries that will never count"
         );
         for entry in entries {
             step.delete(keys::log(self.group, self.id, author, entry.link.seq));
@@ -351,17 +355,22 @@ impl Clock {
         Ok(())
     }
 
-    /// The first `page` entries of each chain that a peer holding
-    /// `theirs` lacks.
+    /// The first `page` entries of each chain that a peer lacks, if it
+    /// `said` it holds this much and has been `sent` this much since.
+    /// What it was sent isn't sent again, whatever it says it holds: it
+    /// may be holding another entry in that place, and keeping it.
     pub(super) async fn missing<V: View>(
         &self,
-        theirs: &Frontier,
+        said: &Frontier,
+        sent: &Frontier,
         page: u64,
         step: &Step<V>,
     ) -> Result<Vec<(Stamp, Entry)>, StoreError> {
         let mut missing = Vec::new();
         for (&author, head) in &self.history.heads {
-            let held = self.history.shared(author, theirs.get(&author));
+            let said = self.history.shared(author, said.get(&author));
+            let sent = self.history.shared(author, sent.get(&author));
+            let held = said.max(sent);
             if held >= head.seq {
                 continue;
             }

@@ -84,13 +84,21 @@ pub(crate) struct Electorate(BTreeMap<Peer, Role>);
 pub(crate) struct Writers<'a> {
     electorate: &'a Electorate,
     clock: ClockId,
+    barred: Option<&'a BTreeSet<Peer>>,
 }
 
-impl Writers<'_> {
+impl<'a> Writers<'a> {
     pub(crate) fn includes(&self, peer: Peer) -> bool {
         let role = self.electorate.0.get(&peer);
+        let barred = self.barred.is_some_and(|barred| barred.contains(&peer));
 
-        role.is_some_and(|role| role.writes(self.clock))
+        !barred && role.is_some_and(|role| role.writes(self.clock))
+    }
+
+    /// The same, less anyone in `barred`, whatever their role says.
+    pub(crate) fn except(mut self, barred: &'a BTreeSet<Peer>) -> Self {
+        self.barred = Some(barred);
+        self
     }
 }
 
@@ -127,6 +135,7 @@ impl Electorate {
         Writers {
             electorate: self,
             clock,
+            barred: None,
         }
     }
 
@@ -135,6 +144,13 @@ impl Electorate {
         let voters = self.0.iter().filter(|(_, role)| role.weight > 0);
 
         voters.map(|(&peer, _)| peer)
+    }
+
+    /// The same, with none of `peers` holding any role.
+    pub(crate) fn without(&self, peers: &BTreeSet<Peer>) -> Self {
+        let kept = self.0.iter().filter(|(peer, _)| !peers.contains(peer));
+
+        Self(kept.map(|(&peer, role)| (peer, role.clone())).collect())
     }
 
     /// Whether `peer` has any role at all.

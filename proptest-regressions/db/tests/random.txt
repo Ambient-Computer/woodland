@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc b0cef5e96207363181038743e7e51228dade7b357d96c15197d0b55538a327e4 # shrinks to actions = [Claim { device: 3, key: 0 }, Deliver { messages: 1 }, Deliver { messages: 1 }, Disconnect { a: 1, b: 2 }, Forget { device: 3 }, Tick { device: 1 }, Connect { a: 3, b: 0 }, Set { device: 0, key: 0 }, Set { device: 0, key: 0 }, Set { device: 0, key: 0 }, Deliver { messages: 6 }, Set { device: 3, key: 0 }, Set { device: 0, key: 0 }, Set { device: 0, key: 0 }, Set { device: 0, key: 0 }]

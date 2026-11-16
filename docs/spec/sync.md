@@ -22,6 +22,8 @@ Sync is what two connected [peers](peers.md) exchange so each ends up with every
 - Sends are best-effort. Nothing depends on a message arriving, only on peers connecting again.
 - Work is bounded per exchange. No step needs either side to hold a whole clock in memory.
 - A peer never advertises what it has not made durable.
+- A peer's account of what it holds is taken as it stands. It may hold less than it did, having let go of what a [removal](membership.md) or a [fork](log.md) made void.
+- A peer may turn down what it is sent and want it later. What was sent is offered again after a while, not at once.
 - Cost is proportional to the difference between the two sides, not to the size of what they share.
 
 ## Validation

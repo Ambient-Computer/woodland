@@ -27,11 +27,15 @@ The log is every [transaction](transactions.md) a peer holds, as signed chains. 
 
 ## Forks
 
-- Two entries signed by one contributor that name the same predecessor are a fork.
+- Two entries signed by one contributor for the same position in one chain are a fork, unless one of them is [void](membership.md).
 - The two headers are a fork proof: self-contained, checkable by anyone, and valid forever.
 - Fork proofs are kept and relayed like any other signed data, by every peer that sees one.
 - A contributor with a fork proof against it is removed by the next checkpoint; see [membership](membership.md).
 - Of a forked chain, what counts is what a checkpoint covered. Nothing else of it is integrated.
+- A peer that holds a proof keeps of the author's chains only what a checkpoint covers or a proposed one names, and accepts nothing more. A vote already cast for a checkpoint can still be honoured.
+- Nothing waits for the rest. A transaction written on top of an entry that will never count is not held back by it.
+- A new checkpoint covers no more of a proven author's chains than the last one did.
+- A contributor that learns of a proof against itself stops writing. It has lost track of what it signed.
 - The goal is accountability, not tolerance. A group of a few devices cannot outvote a liar, but it can prove one.
 
 ## Validation

@@ -164,6 +164,21 @@ impl Chain {
         held.into_iter().skip(from).map(|it| &it.electorate)
     }
 
+    /// The electorates in force from `first` to `last`, if the chain
+    /// reaches that far.
+    pub(crate) fn electorates_between(
+        &self,
+        first: u64,
+        last: u64,
+    ) -> Option<impl Iterator<Item = &Electorate>> {
+        let held: Vec<&Checkpoint> = self.checkpoints().collect();
+        let from = held.iter().rposition(|it| it.height <= first).unwrap_or(0);
+        let within = held.into_iter().skip(from);
+        let within = within.take_while(move |it| it.height <= last);
+
+        (last <= self.tip().height).then_some(within.map(|it| &it.electorate))
+    }
+
     /// Sheds every checkpoint below `height` that isn't needed to prove
     /// the ones after it: those that left the electorate as it was.
     pub(crate) fn compact(&mut self, height: u64) {

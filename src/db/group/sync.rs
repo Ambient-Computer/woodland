@@ -10,7 +10,7 @@
 //! twice. That assumption is dropped on every tick, because a peer may
 //! turn down what it was sent, and take it later.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::actor::{Identity, Peer};
 use crate::chain::{Electorate, Gossip};
@@ -39,6 +39,10 @@ pub(super) struct Remote {
     said: BTreeMap<ClockId, Frontier>,
     /// The last entry of each chain it's been sent since the last tick.
     sent: BTreeMap<ClockId, Frontier>,
+    /// Everyone it last said it holds a fork proof against.
+    proven: BTreeSet<Peer>,
+    /// Everyone it's been sent a proof against since the last tick.
+    told: BTreeSet<Peer>,
     /// How far it says it has got with a snapshot.
     pub(super) staged: Option<(u64, Option<Vec<u8>>)>,
     /// The snapshot this device is sending it.
@@ -53,21 +57,10 @@ impl Remote {
         }
     }
 
-    /// How far along each chain of `clock` it's thought to be.
-    fn holds(&self, clock: ClockId) -> Frontier {
-        let mut holds = self.said.get(&clock).cloned().unwrap_or_default();
-        for (&author, &link) in self.sent.get(&clock).into_iter().flatten() {
-            if reach(&holds, author) < link.seq {
-                holds.insert(author, link);
-            }
-        }
-
-        holds
-    }
-
     /// Stops assuming that what it was sent arrived, and was kept.
     pub(super) fn doubt(&mut self) {
         self.sent.clear();
+        self.told.clear();
     }
 }
 
@@ -99,8 +92,13 @@ impl Group {
         remote.folded = remote.folded.max(message.summary.folded);
         remote.staged = message.summary.staged;
         remote.said.clone_from(&message.summary.heads);
+        remote.proven.clone_from(&message.summary.proven);
 
         self.said |= self.chain.receive(message.chain);
+        for proof in message.proofs {
+            self.accuse(proof, step);
+        }
+
         let tip = self.chain.tip();
         let writers = tip.electorate.clone();
         let decided = covers_of(tip).unwrap_or_default();
@@ -113,35 +111,32 @@ impl Group {
             self.stage(piece, step).await?;
         }
 
-        let check = |entry: Entry| {
-            let entry = entry.check(self.id)?;
-            let header = entry.header();
-            let standing = self.standing(entry.author(), header.clock, header.under.height);
+        let check = |entry: Entry| entry.check(self.id);
+        let mut waiting: Vec<Checked> = message.entries.into_iter().filter_map(check).collect();
 
-            Some((entry, standing))
-        };
-        let mut waiting: Vec<(Checked, bool)> =
-            message.entries.into_iter().filter_map(check).collect();
-        loop {
-            let before = waiting.len();
-            let mut unfit = Vec::new();
-            for (entry, standing) in waiting {
+        // Whatever can't be placed may be evidence: of a fork, or that a
+        // checkpoint settled on an entry other than the one held. Either
+        // changes what can be placed, so it's tried again. The rounds
+        // are counted so that nothing a peer sends can keep this going.
+        for _ in 0..4 {
+            waiting = self.place(waiting, &writers, step);
+            let mut moved = false;
+            for entry in &waiting {
+                if let Some(proof) = self.suspect(entry, step).await? {
+                    moved |= self.accuse(proof, step);
+                }
+
                 let id = entry.header().clock;
-                let unheard = Clock::new(self.id, id);
-                let clock = self.clocks.get(&id).unwrap_or(&unheard);
                 let decided = decided.frontier(id);
-                if clock
-                    .history
-                    .accepts(&entry, standing, writers.writers(id), &decided)
-                {
-                    self.clock(id).integrate(&entry, step);
-                } else {
-                    unfit.push((entry, standing));
+                let Some(clock) = self.clocks.get_mut(&id) else {
+                    continue;
+                };
+                if clock.history.displaces(entry, &decided) {
+                    clock.void(entry.author(), 0, step);
+                    moved = true;
                 }
             }
-
-            waiting = unfit;
-            if waiting.len() == before {
+            if !moved {
                 break;
             }
         }
@@ -156,6 +151,41 @@ impl Group {
         }
 
         self.progress(identity, owed, step).await
+    }
+
+    /// Integrates every entry that follows from what's held, and
+    /// returns the rest.
+    fn place<V: View>(
+        &mut self,
+        mut waiting: Vec<Checked>,
+        writers: &Electorate,
+        step: &mut Step<V>,
+    ) -> Vec<Checked> {
+        let proven = self.proven();
+        loop {
+            let before = waiting.len();
+            let mut unfit = Vec::new();
+            for entry in waiting {
+                let (author, header) = (entry.author(), entry.header());
+                let id = header.clock;
+                let standing =
+                    self.standing(author, id, header.under.height) && !proven.contains(&author);
+                let unheard = Clock::new(self.id, id);
+                let clock = self.clocks.get(&id).unwrap_or(&unheard);
+                let spoken = self.spoken_for(id);
+                let writers = writers.writers(id).except(&proven);
+                if clock.history.accepts(&entry, standing, writers, &spoken) {
+                    self.clock(id).integrate(&entry, step);
+                } else {
+                    unfit.push(entry);
+                }
+            }
+
+            waiting = unfit;
+            if waiting.len() == before {
+                return waiting;
+            }
+        }
     }
 
     /// Whether `author` has been allowed to write to `clock` ever since
@@ -204,8 +234,21 @@ impl Group {
             Gossip::default()
         };
 
-        let news =
-            !entries.is_empty() || snapshot.is_some() || statements || remote.height < height;
+        let known = |author: &&Peer| remote.proven.contains(author) || remote.told.contains(author);
+        let accused: Vec<Peer> = self
+            .proofs
+            .keys()
+            .filter(|it| !known(it))
+            .copied()
+            .collect();
+        let proofs = accused.iter().filter_map(|author| self.proofs.get(author));
+        let proofs: Vec<_> = proofs.cloned().collect();
+
+        let news = !entries.is_empty()
+            || !proofs.is_empty()
+            || snapshot.is_some()
+            || statements
+            || remote.height < height;
         if !(news || always) {
             return Ok(());
         }
@@ -215,6 +258,7 @@ impl Group {
             summary: self.summary(),
             chain,
             entries,
+            proofs,
             snapshot,
         };
         step.send(peer, &message);
@@ -223,6 +267,7 @@ impl Group {
             if sending.is_some() {
                 remote.sending = sending;
             }
+            remote.told.extend(accused);
             for entry in &message.entries {
                 let clock = entry.header.payload().clock;
                 remote.sent(clock, entry.header.author(), entry.link());
@@ -245,6 +290,7 @@ impl Group {
                 .iter()
                 .map(|(&id, clock)| (id, clock.history.heads.clone()))
                 .collect(),
+            proven: self.proofs.keys().copied().collect(),
         }
     }
 
@@ -257,10 +303,12 @@ impl Group {
         step: &Step<V>,
     ) -> Result<Vec<Entry>, StoreError> {
         let page = u64::try_from(PAGE).unwrap_or(u64::MAX);
+        let nothing = Frontier::new();
         let mut missing = Vec::new();
-        for (&id, clock) in &self.clocks {
-            let theirs = remote.holds(id);
-            missing.extend(clock.missing(&theirs, page, step).await?);
+        for (id, clock) in &self.clocks {
+            let said = remote.said.get(id).unwrap_or(&nothing);
+            let sent = remote.sent.get(id).unwrap_or(&nothing);
+            missing.extend(clock.missing(said, sent, page, step).await?);
         }
 
         missing.sort_by_key(|(stamp, _)| *stamp);

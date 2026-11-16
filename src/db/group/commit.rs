@@ -131,14 +131,13 @@ impl Group {
             return Ok(false);
         }
 
+        let proven = self.proven();
         let mut trial = step.fork();
         for (&id, covered) in &covers.clocks {
             let unheard = Clock::new(self.id, id);
             let clock = self.clocks.get(&id).unwrap_or(&unheard);
-            if !clock
-                .history
-                .supports(&covered.frontier, tip.electorate.writers(id))
-            {
+            let writers = tip.electorate.writers(id).except(&proven);
+            if !clock.history.supports(&covered.frontier, writers) {
                 return Ok(false);
             }
 
@@ -181,28 +180,46 @@ impl Group {
 
         let patience = 2 + u64::try_from(rank).unwrap_or(u64::MAX - 2);
         let free = self.chain.attempt().is_none() || self.stalled > patience;
-        let unsettled = |clock: &Clock| !clock.history.uncommitted.is_empty();
-        let pending = self.clocks.values().any(unsettled) || self.wanted.is_some();
-        let closed = |clock: &Clock| {
-            let writers = tip.electorate.writers(clock.id);
+        if !free || self.folded != tip.height {
+            return Ok(());
+        }
 
-            clock.history.supports(&clock.history.heads, writers)
+        // Whoever is proven to have forked goes, if this device has a
+        // say in who stays and someone would be left to carry on.
+        let electorate = self.wanted.clone();
+        let electorate = electorate.unwrap_or_else(|| tip.electorate.clone());
+        let proven = self.proven();
+        let honest = electorate.without(&proven);
+        let purge = tip.electorate.includes(me) && honest.is_viable();
+        let electorate = if purge { honest } else { electorate };
+
+        // As much as can be covered: an entry written on top of one
+        // that isn't held waits for it.
+        let frontiers = self.clocks.iter().map(|(&id, clock)| {
+            let writers = tip.electorate.writers(id).except(&proven);
+
+            (id, clock.history.closed(writers, &proven))
+        });
+        let frontiers: Vec<(ClockId, Frontier)> = frontiers.collect();
+        let news = |(id, frontier): &(ClockId, Frontier)| {
+            let committed = self.clocks.get(id).map(|clock| &clock.history.committed);
+
+            committed != Some(frontier)
         };
-        let sound = self.folded == tip.height && self.clocks.values().all(closed);
-        if !(free && pending && sound) {
+        if !frontiers.iter().any(news) && electorate == tip.electorate {
             return Ok(());
         }
 
         let mut trial = step.fork();
         let mut covers = Covers::default();
-        for (&id, clock) in &self.clocks {
-            let frontier = clock.history.heads.clone();
+        for (id, frontier) in frontiers {
+            let Some(clock) = self.clocks.get(&id) else {
+                continue;
+            };
+
             let state = clock.settle(&frontier, &mut trial).await?.state;
             covers.clocks.insert(id, Covered { frontier, state });
         }
-
-        let electorate = self.wanted.clone();
-        let electorate = electorate.unwrap_or_else(|| tip.electorate.clone());
         if self
             .chain
             .propose(identity, electorate, encoding::encode(&covers))
@@ -276,6 +293,7 @@ impl Group {
 
         self.folded = checkpoint.height;
         self.sound.clear();
+        self.silence_all(step);
 
         // A request to reconfigure was made of the electorate as it was.
         // Once that changes, however it changes, the request is spent.

@@ -43,6 +43,9 @@ enum Action {
     Compact {
         device: usize,
     },
+    Forget {
+        device: usize,
+    },
     Reconfigure {
         device: usize,
         members: Vec<(usize, usize)>,
@@ -64,6 +67,7 @@ fn action() -> impl Strategy<Value = Action> {
         3 => (device(), device()).prop_map(|(a, b)| Action::Disconnect { a, b }),
         1 => device().prop_map(|device| Action::Restart { device }),
         2 => device().prop_map(|device| Action::Compact { device }),
+        3 => device().prop_map(|device| Action::Forget { device }),
         1 => (device(), members).prop_map(|(device, members)| Action::Reconfigure { device, members }),
     ]
 }
@@ -94,6 +98,11 @@ struct Run {
     group: GroupId,
     written: u64,
     claims: Claims,
+    /// Every device that has ever been offered a say. One that loses
+    /// its store forgets what it voted for, and no protocol survives
+    /// that: it's why a device that loses its store comes back as
+    /// someone new. A device with no say can only fork its own chain.
+    electors: BTreeSet<usize>,
 }
 
 impl Run {
@@ -142,9 +151,13 @@ impl Run {
 
             Action::Connect { a, b } if a != b => sim.connect(a, b),
             Action::Disconnect { a, b } if a != b => sim.disconnect(a, b),
-            Action::Connect { .. } | Action::Disconnect { .. } => {}
             Action::Restart { device } => sim.restart(device),
             Action::Compact { device } => sim.compact(device, group),
+            Action::Forget { device } if !self.electors.contains(&device) => {
+                sim.forget(device, group);
+            }
+
+            Action::Connect { .. } | Action::Disconnect { .. } | Action::Forget { .. } => {}
             Action::Reconfigure { device, members } => {
                 // Mostly contributors to everything. Now and then a
                 // witness, a contributor to one clock, or one with no say.
@@ -154,6 +167,8 @@ impl Run {
                     2 => Role::contributor(0).only([clock_of(group, KEYS.len() - 1)]),
                     _ => Role::contributor(1),
                 };
+                let counted = members.iter().filter(|(_, kind)| *kind != 2);
+                self.electors.extend(counted.map(|&(it, _)| it));
                 let weights: Vec<_> = members
                     .iter()
                     .map(|&(it, kind)| (sim.id(it), role(kind)))
@@ -212,8 +227,14 @@ proptest! {
     fn devices_agree_on_what_is_committed_and_end_up_the_same(
         actions in proptest::collection::vec(action(), 1..120),
     ) {
-        let (sim, group) = Sim::group(DEVICES, 3);
-        let mut run = Run { sim, group, written: 0, claims: Claims::new() };
+        // Three devices decide. The fourth writes, has no say, and is
+        // the one that can lose its store without breaking agreement.
+        let (mut sim, group) = Sim::group(DEVICES, 3);
+        let roles = (0..DEVICES).map(|it| (it, Role::contributor(u32::from(it < 3))));
+        sim.assign(PHONE, group, roles);
+        sim.settle();
+        let electors = (0..3).collect();
+        let mut run = Run { sim, group, written: 0, claims: Claims::new(), electors };
         for action in actions {
             run.act(action);
             run.check_finality()?;

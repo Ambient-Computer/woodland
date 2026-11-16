@@ -15,6 +15,7 @@ mod group;
 mod id;
 pub(crate) mod keys;
 mod message;
+mod proof;
 mod step;
 #[cfg(test)]
 mod tests;

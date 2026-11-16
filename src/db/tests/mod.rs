@@ -6,6 +6,7 @@
 mod checkpoints;
 mod clocks;
 mod compaction;
+mod forks;
 mod guards;
 mod membership;
 mod random;
@@ -257,6 +258,17 @@ impl Sim {
         let store = self.devices[device].store.clone();
         let reopened = block_on(Database::open(store, [0xEE; 32]));
         self.devices[device] = reopened.expect("reopened");
+    }
+
+    /// The device loses its store, and comes back under the same key
+    /// with nothing but an invitation.
+    fn forget(&mut self, device: usize, group: GroupId) {
+        self.isolate(device);
+        let invitation = self.devices[PHONE].invite(group).expect("held");
+        let reopened = block_on(Database::open(MemoryStore::default(), secret(device)));
+        self.devices[device] = reopened.expect("opened");
+        let (_, outputs) = block_on(self.devices[device].join(&invitation)).expect("joined");
+        self.absorb(device, outputs);
     }
 
     fn reader(&self, device: usize) -> Reader<'_> {

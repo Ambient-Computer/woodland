@@ -263,7 +263,7 @@ impl Group {
             let void = entries.filter(|entry| !self.standing(entry.author, id, entry.under));
             let void: BTreeSet<Peer> = void.map(|entry| entry.author).collect();
             for author in void {
-                self.clock(id).void(author, step);
+                self.clock(id).void(author, 0, step);
             }
         }
 
