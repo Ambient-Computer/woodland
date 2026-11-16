@@ -1,4 +1,5 @@
 use crate::db::ClockId;
+use crate::model::table::Deferred;
 use crate::model::{ColumnId, Fingerprint, ModelId, Operation, Requirement, Row, Value};
 
 /// A set of changes that happen together, or not at all.
@@ -139,6 +140,49 @@ impl Transaction {
         let cells = cells.into_iter().collect();
         self.operations
             .push(Operation::insert_row(table, key.into(), cells));
+        self
+    }
+
+    /// Adds a row, like [`insert`], and gives it the next number of
+    /// `column`'s sequence once the transaction is committed: one more
+    /// than the last row numbered there, starting from 1. No number is
+    /// ever skipped or given twice, because none is given out until
+    /// nothing can change which row came first.
+    ///
+    /// Until then the row is there, and `column` holds nothing. That
+    /// can take as long as the group's next checkpoint.
+    ///
+    /// `column` must hold whole numbers, or the transaction is dropped.
+    ///
+    /// [`insert`]: Self::insert
+    pub fn insert_numbered(
+        self,
+        table: ModelId,
+        key: impl Into<Vec<u8>>,
+        cells: impl IntoIterator<Item = (ColumnId, Value)>,
+        column: ColumnId,
+    ) -> Self {
+        let row: Vec<u8> = key.into();
+        let mut numbered = self.insert(table, row.clone(), cells);
+        let number = Deferred::Number {
+            row,
+            incarnation: None,
+            column,
+        };
+        numbered.operations.push(Operation::deferred(table, number));
+        numbered
+    }
+
+    /// Gives `row` of `table` the next number of `column`'s sequence,
+    /// once the transaction is committed. See [`insert_numbered`].
+    ///
+    /// The whole transaction is dropped, for good, if by then the row
+    /// is gone or has a number in `column` already.
+    ///
+    /// [`insert_numbered`]: Self::insert_numbered
+    pub fn number(mut self, table: ModelId, row: &Row, column: ColumnId) -> Self {
+        let number = row.number(column);
+        self.operations.push(Operation::deferred(table, number));
         self
     }
 

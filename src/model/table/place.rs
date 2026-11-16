@@ -41,6 +41,9 @@ pub(crate) enum Place {
     /// Holds a value while a row has a value in an indexed column: the
     /// column, the value as in [`Place::Unique`], and the row's key.
     Index(ColumnId, Vec<u8>, Vec<u8>),
+    /// Holds the last number given out in a column that numbers its
+    /// rows.
+    Sequence(ColumnId),
 }
 
 const TABLE: u8 = 0;
@@ -49,6 +52,7 @@ const ROW: u8 = 2;
 const ADDED: u8 = 3;
 const UNIQUE: u8 = 4;
 const INDEX: u8 = 5;
+const SEQUENCE: u8 = 6;
 
 /// What follows a row's key, in the keys of its parts.
 const KEYS: u8 = 1;
@@ -78,6 +82,7 @@ impl Place {
             Self::Index(column, value, row) => {
                 [&[INDEX][..], column.as_bytes(), value, row].concat()
             }
+            Self::Sequence(column) => [&[SEQUENCE][..], column.as_bytes()].concat(),
         }
     }
 
@@ -115,6 +120,7 @@ impl Place {
             TABLE if rest.is_empty() => Some(Self::Table),
             COLUMN => Some(Self::Column(ColumnId::from_bytes(rest.try_into().ok()?))),
             ADDED => Some(Self::Added(ColumnId::from_bytes(rest.try_into().ok()?))),
+            SEQUENCE => Some(Self::Sequence(ColumnId::from_bytes(rest.try_into().ok()?))),
             ROW => {
                 let (row, part) = unescape(rest)?;
                 match part.split_first() {

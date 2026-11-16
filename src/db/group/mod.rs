@@ -4,6 +4,7 @@
 mod clock;
 mod commit;
 mod compact;
+mod deferred;
 mod forks;
 mod history;
 mod judge;

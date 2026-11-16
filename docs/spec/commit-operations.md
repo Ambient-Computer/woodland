@@ -14,6 +14,7 @@ A commit operation is one whose effect depends on state its author cannot know, 
 - Its effect appears in neither [read](reads.md) level until its transaction commits. An application can see that it is pending.
 - It is evaluated at its transaction's place in the committed timeline, against the state every earlier committed transaction left.
 - If it cannot apply, its transaction is pruned, finally.
+- The guards of its own transaction are judged without its effect, like every other guard.
 - Its effects are part of the checkpoint's state, so the checkpoint's signers have agreed on what it did.
 
 ## The set

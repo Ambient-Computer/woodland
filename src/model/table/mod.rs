@@ -138,12 +138,14 @@
 //! whether transactions happen reads more than keys. Find the rows
 //! when reading, by key or through an index, and write to those.
 
+mod deferred;
 mod order;
 mod place;
 mod read;
 mod rows;
 mod value;
 
+pub(crate) use deferred::Deferred;
 pub(crate) use order::successor;
 use place::Incarnation;
 pub(crate) use place::{Place, UNSEALED, rows, schema, values};

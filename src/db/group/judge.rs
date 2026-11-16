@@ -167,19 +167,7 @@ pub(super) async fn commit<V: View>(
     for operation in operations {
         let model = operation.model;
         for write in operation.writes() {
-            let key = keys::committed_value(id, model, &write.key);
-            if let Some(old) = step.get(&key).await? {
-                state.clear(model, &write.key, &old);
-            }
-
-            match write.value {
-                Some(value) => {
-                    state.hold(model, &write.key, &value);
-                    step.put(key, value);
-                }
-
-                None => step.delete(key),
-            }
+            self::write(id, model, &write.key, write.value, state, step).await?;
         }
 
         if operation.drops() {
@@ -191,6 +179,33 @@ pub(super) async fn commit<V: View>(
             }
             state.drop(model);
         }
+    }
+
+    Ok(())
+}
+
+/// Makes `value` the committed value of a key, or leaves it without
+/// one.
+pub(super) async fn write<V: View>(
+    id: GroupId,
+    model: ModelId,
+    key: &[u8],
+    value: Option<Vec<u8>>,
+    state: &mut Accumulator,
+    step: &mut Step<V>,
+) -> Result<(), StoreError> {
+    let committed = keys::committed_value(id, model, key);
+    if let Some(old) = step.get(&committed).await? {
+        state.clear(model, key, &old);
+    }
+
+    match value {
+        Some(value) => {
+            state.hold(model, key, &value);
+            step.put(committed, value);
+        }
+
+        None => step.delete(committed),
     }
 
     Ok(())

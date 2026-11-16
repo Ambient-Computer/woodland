@@ -2,6 +2,7 @@
 //! each transaction requires.
 
 mod indexes;
+mod numbers;
 pub(super) mod references;
 mod schema;
 pub(super) mod unique;

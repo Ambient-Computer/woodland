@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use proptest::prelude::*;
 
 use super::*;
+use crate::model::{ColumnId, Table, Value};
 
 const DEVICES: usize = 4;
 const KEYS: [&str; 3] = ["a", "b", "c"];
@@ -22,6 +23,9 @@ enum Action {
     Expect {
         device: usize,
         key: usize,
+    },
+    Number {
+        device: usize,
     },
     Tick {
         device: usize,
@@ -61,6 +65,7 @@ fn action() -> impl Strategy<Value = Action> {
         6 => (device(), key()).prop_map(|(device, key)| Action::Set { device, key }),
         6 => (device(), key()).prop_map(|(device, key)| Action::Claim { device, key }),
         3 => (device(), key()).prop_map(|(device, key)| Action::Expect { device, key }),
+        3 => device().prop_map(|device| Action::Number { device }),
         6 => device().prop_map(|device| Action::Tick { device }),
         12 => (1..12_usize).prop_map(|messages| Action::Deliver { messages }),
         3 => (device(), device()).prop_map(|(a, b)| Action::Connect { a, b }),
@@ -88,6 +93,15 @@ fn notes_of(group: GroupId, key: usize) -> ModelId {
 
 fn names_of(group: GroupId, key: usize) -> ModelId {
     ModelId::claims(clock_of(group, key), [2; 32])
+}
+
+/// Rows that are numbered as they become final.
+fn tickets(group: GroupId) -> ModelId {
+    ModelId::table(group, [3; 32])
+}
+
+fn ticket_number(group: GroupId) -> ColumnId {
+    ColumnId::integer(tickets(group), [1; 32])
 }
 
 /// Who holds each claim for good, as far as any device has said, and
@@ -142,6 +156,12 @@ impl Run {
                     device,
                     transaction.set(notes_of(group, key), KEYS[key], value.as_str()),
                 );
+            }
+
+            Action::Number { device } => {
+                let (table, column) = (tickets(group), ticket_number(group));
+                let numbered = Transaction::new().insert_numbered(table, value, [], column);
+                self.attempt(device, numbered);
             }
 
             Action::Tick { device } => sim.tick(device),
@@ -228,6 +248,8 @@ proptest! {
         let (mut sim, group) = Sim::group(DEVICES, 3);
         let roles = (0..DEVICES).map(|it| (it, Role::contributor(u32::from(it < 3))));
         sim.assign(PHONE, group, roles);
+        let columns = [(ticket_number(group), "number")];
+        sim.write_to(PHONE, group, Transaction::new().create_table(tickets(group), columns));
         sim.settle();
         let electors = (0..3).collect();
         let mut run = Run { sim, group, written: 0, claims: Claims::new(), electors };
@@ -250,6 +272,7 @@ proptest! {
                 names_of(group, 0),
                 notes_of(group, last),
                 names_of(group, last),
+                tickets(group),
             ];
             let read = |model: ModelId| {
                 let query = Query::prefix(group, model, b"");
@@ -265,6 +288,19 @@ proptest! {
             prop_assert_eq!(everything(device, true), everything(0, true), "device {} committed something else", device);
         }
         prop_assert_eq!(everything(0, false), everything(0, true), "something was never committed");
+
+        // Every row that made it has a number, and no number is
+        // missing or given twice.
+        let table = Query::table(group, tickets(group)).committed();
+        let table = Table::read(&run.sim.read(0, &table));
+        let rows = table.iter().flat_map(Table::rows);
+        let mut given: Vec<Value> = rows.map(|row| row.get(ticket_number(group)).clone()).collect();
+        given.sort_by_key(|number| match number {
+            Value::Integer(number) => *number,
+            _ => 0,
+        });
+        let dense: Vec<Value> = (1..).map(Value::Integer).take(given.len()).collect();
+        prop_assert_eq!(given, dense, "the numbers have a gap");
 
         // Nobody with a say lost its store, so nobody went back on its
         // word, and nothing honest should look as if it had.

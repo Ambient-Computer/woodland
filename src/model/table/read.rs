@@ -88,7 +88,10 @@ impl Table {
                 Some(Place::Retired(key)) => {
                     parts.retired.insert(key, Fingerprint::of(value));
                 }
-                Some(Place::Added(_) | Place::Unique(..) | Place::Index(..)) | None => {}
+                Some(
+                    Place::Added(_) | Place::Unique(..) | Place::Index(..) | Place::Sequence(_),
+                )
+                | None => {}
             }
         }
 
@@ -225,6 +228,16 @@ impl Row {
 
     pub(crate) fn restore(&self) -> Operation {
         Operation::Restore { row: self.target() }
+    }
+
+    /// The change that gives the row the next number of `column`'s
+    /// sequence, once it's committed.
+    pub(crate) fn number(&self, column: ColumnId) -> super::Deferred {
+        super::Deferred::Number {
+            row: self.key.clone(),
+            incarnation: Some(self.incarnation),
+            column,
+        }
     }
 
     fn target(&self) -> Target {

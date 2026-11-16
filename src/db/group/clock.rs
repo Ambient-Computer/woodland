@@ -12,13 +12,14 @@ use serde::{Deserialize, Serialize};
 use crate::actor::{Identity, Peer};
 use crate::chain::{Checkpoint, Writers};
 use crate::clock::Stamp;
-use crate::db::{ClockId, GroupId, keys};
+use crate::db::{Changed, ClockId, GroupId, keys};
 use crate::encoding;
 use crate::model::{ModelId, Operation};
 use crate::store::{StoreError, View};
 
 use super::super::entry::{Checked, Entry, Frontier, Hash, Header, Outline, Under, reach};
 use super::super::step::Step;
+use super::deferred;
 use super::history::History;
 use super::judge::{self, Written};
 use super::root::{Accumulator, Root};
@@ -53,6 +54,9 @@ pub(super) struct Settled {
     dropped: BTreeSet<ModelId>,
     /// The covered entries, in timeline order, and whether each happens.
     verdicts: Vec<(Stamp, bool)>,
+    /// The keys written by changes that were worked out on the way.
+    /// No entry declared them.
+    resolved: Vec<(ModelId, Vec<u8>)>,
 }
 
 impl Clock {
@@ -225,12 +229,38 @@ impl Clock {
         let mut state = stored.unwrap_or_default();
         let mut dropped = self.dropped.clone();
         let mut verdicts = Vec::new();
+        let mut resolved = Vec::new();
         for entry in self.history.covered(frontier) {
-            let happens = judge::weigh(self.group, entry, &Written::on(&dropped), step).await?;
+            let mut happens = judge::weigh(self.group, entry, &Written::on(&dropped), step).await?;
             if happens {
                 let operations = self.operations(entry, step).await?;
-                judge::commit(self.group, &operations, &mut state, step).await?;
-                let drops = operations.iter().filter(|it| it.drops());
+                if operations.iter().any(|it| it.waits().is_some()) {
+                    // Whether it can all be done isn't known until
+                    // it's been tried, and it's all or nothing.
+                    let (mut trial, mut sum) = (step.fork(), state.clone());
+                    let tried = deferred::carry_out(
+                        self.group,
+                        &operations,
+                        &dropped,
+                        &mut sum,
+                        &mut trial,
+                    );
+                    happens = tried.await?.is_some();
+                    if happens {
+                        let done = deferred::carry_out(
+                            self.group,
+                            &operations,
+                            &dropped,
+                            &mut state,
+                            step,
+                        );
+                        resolved.extend(done.await?.unwrap_or_default());
+                    }
+                } else {
+                    judge::commit(self.group, &operations, &mut state, step).await?;
+                }
+
+                let drops = operations.iter().filter(|it| happens && it.drops());
                 dropped.extend(drops.map(|it: &Operation| it.model));
             }
             verdicts.push((entry.stamp(), happens));
@@ -242,6 +272,7 @@ impl Clock {
             state: state.root(),
             dropped,
             verdicts,
+            resolved,
         })
     }
 
@@ -267,6 +298,15 @@ impl Clock {
             judge::hide(self.group, &entry, step);
             judge::notify(self.group, &entry, false, step);
             self.live.remove(&stamp);
+        }
+
+        for (model, key) in settled.resolved {
+            step.changed(Changed::Key {
+                group: self.group,
+                model,
+                key,
+                committed: true,
+            });
         }
 
         self.history.commit(frontier);

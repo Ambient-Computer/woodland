@@ -87,6 +87,7 @@ pub use table::{ColumnId, Row, Table, Value};
 use crate::actor::Peer;
 use crate::db::ClockId;
 use crate::encoding;
+use crate::store::StoreError;
 
 /// One step of a transaction: a change to one model.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,6 +102,9 @@ pub(crate) enum Change {
     Kv(kv::Operation),
     Claims(claims::Operation),
     Table(table::Operation),
+    /// A change to a table that's worked out when it's committed, and
+    /// does nothing until then.
+    Deferred(table::Deferred),
     /// Changes nothing, and requires something of a key, in any kind of
     /// model. It's what makes the rest of its transaction conditional.
     Expect {
@@ -143,6 +147,20 @@ impl Fingerprint {
 
         Self(fingerprint)
     }
+}
+
+/// What a model reads of its own committed state, to work out a
+/// change that waited for it.
+pub(crate) trait Reads {
+    fn get(&self, key: &[u8]) -> impl Future<Output = Result<Option<Vec<u8>>, StoreError>>;
+}
+
+/// What a change that waited to be committed comes to: requirements
+/// and writes like any other operation's, in the order they apply.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Resolved {
+    pub(crate) requires: Vec<(Vec<u8>, Requirement)>,
+    pub(crate) writes: Vec<(Vec<u8>, Option<Vec<u8>>)>,
 }
 
 /// One thing an operation declares, apart from the values it carries.
@@ -252,6 +270,21 @@ impl Operation {
         Self { model, change }
     }
 
+    pub(crate) fn deferred(model: ModelId, deferred: table::Deferred) -> Self {
+        let change = Change::Deferred(deferred);
+
+        Self { model, change }
+    }
+
+    /// The change to work out when the operation is committed, if
+    /// it's one that waits.
+    pub(crate) fn waits(&self) -> Option<&table::Deferred> {
+        match &self.change {
+            Change::Deferred(deferred) => Some(deferred),
+            _ => None,
+        }
+    }
+
     pub(crate) fn expect(model: ModelId, key: Vec<u8>, requirement: Requirement) -> Self {
         let change = Change::Expect { key, requirement };
 
@@ -277,10 +310,12 @@ impl Operation {
             | (Change::Claims(_), Some(Kind::Claims))
             | (Change::Expect { .. } | Change::Drop, Some(_)) => true,
             (Change::Table(operation), Some(Kind::Table)) => operation.belongs(),
+            (Change::Deferred(deferred), Some(Kind::Table)) => deferred.belongs(),
             (
                 Change::Kv(_)
                 | Change::Claims(_)
                 | Change::Table(_)
+                | Change::Deferred(_)
                 | Change::Expect { .. }
                 | Change::Drop,
                 _,
@@ -316,7 +351,7 @@ impl Operation {
             Change::Kv(operation) => vec![operation.write()],
             Change::Claims(operation) => vec![operation.write()],
             Change::Table(operation) => operation.writes(),
-            Change::Expect { .. } | Change::Drop => Vec::new(),
+            Change::Expect { .. } | Change::Drop | Change::Deferred(_) => Vec::new(),
         };
 
         let write = |(key, value)| Write {
@@ -337,7 +372,7 @@ impl Operation {
     /// transaction to happen.
     pub(crate) fn requires(&self) -> Vec<(Vec<u8>, Requirement)> {
         match &self.change {
-            Change::Kv(_) | Change::Drop => Vec::new(),
+            Change::Kv(_) | Change::Drop | Change::Deferred(_) => Vec::new(),
             Change::Claims(operation) => vec![operation.requires()],
             Change::Expect { key, requirement } => vec![(key.clone(), *requirement)],
             Change::Table(operation) => operation.requires(),
