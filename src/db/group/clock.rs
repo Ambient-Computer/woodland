@@ -32,6 +32,9 @@ pub(super) struct Clock {
     pub(super) history: History,
     /// The last entry of each author's chain that's been shed.
     shed: Frontier,
+    /// The height of the checkpoint whose entries were last shed. A
+    /// peer that hasn't committed that far can't be sent what it lacks.
+    pub(super) base: u64,
     /// Models dropped by committed entries.
     pub(super) dropped: BTreeSet<ModelId>,
     /// The uncommitted entries that happen, as storage shows them.
@@ -46,6 +49,7 @@ pub(super) struct Kept {
     heads: Frontier,
     committed: Frontier,
     shed: Frontier,
+    base: u64,
     dropped: BTreeSet<ModelId>,
 }
 
@@ -67,6 +71,7 @@ impl Clock {
             id,
             history: History::default(),
             shed: Frontier::new(),
+            base: 0,
             dropped: BTreeSet::new(),
             live: BTreeSet::new(),
             stale: false,
@@ -82,6 +87,7 @@ impl Clock {
     ) -> Result<Self, StoreError> {
         let mut clock = Self::new(group, id);
         clock.shed = kept.shed;
+        clock.base = kept.base;
         clock.dropped = kept.dropped;
         clock.history = History::resume(kept.heads, kept.committed);
         for (author, head) in clock.history.heads.clone() {
@@ -109,6 +115,7 @@ impl Clock {
             heads: self.history.heads.clone(),
             committed: self.history.committed.clone(),
             shed: self.shed.clone(),
+            base: self.base,
             dropped: self.dropped.clone(),
         }
     }

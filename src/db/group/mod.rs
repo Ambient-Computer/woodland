@@ -300,9 +300,10 @@ impl Group {
     pub(crate) async fn shed<V: View>(
         &mut self,
         identity: &Identity,
+        only: Option<ClockId>,
         step: &mut Step<V>,
     ) -> Result<(), StoreError> {
-        self.compact(step).await?;
+        self.compact(only, step).await?;
 
         self.progress(identity, None, step).await
     }

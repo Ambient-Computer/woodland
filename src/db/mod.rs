@@ -300,7 +300,30 @@ impl<S: Store> Database<S> {
     pub async fn compact(&mut self, group: GroupId) -> Result<Outputs, Error> {
         let mut step = self.begin()?;
         let held = self.groups.get_mut(&group).ok_or(Error::UnknownGroup)?;
-        let shed = held.shed(&self.identity, &mut step).await;
+        let shed = held.shed(&self.identity, None, &mut step).await;
+        self.guard(shed)?;
+
+        self.finish(step).await
+    }
+
+    /// Sheds the committed history of one clock of `group`, as
+    /// [`compact`] does for all of them. The other clocks keep theirs,
+    /// and this device can still hand it to a peer that wants only
+    /// those.
+    ///
+    /// [`compact`]: Self::compact
+    ///
+    /// # Errors
+    ///
+    /// If this device doesn't hold `group`, or the store fails.
+    pub async fn compact_clock(
+        &mut self,
+        group: GroupId,
+        clock: ClockId,
+    ) -> Result<Outputs, Error> {
+        let mut step = self.begin()?;
+        let held = self.groups.get_mut(&group).ok_or(Error::UnknownGroup)?;
+        let shed = held.shed(&self.identity, Some(clock), &mut step).await;
         self.guard(shed)?;
 
         self.finish(step).await

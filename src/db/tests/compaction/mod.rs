@@ -1,5 +1,7 @@
 use super::*;
 
+mod clocks;
+
 /// Fills a group's notes, so its state takes several pieces to send.
 fn fill(sim: &mut Sim, group: GroupId, notes_written: usize) {
     for note in 0..notes_written {
@@ -73,7 +75,7 @@ fn a_committed_removal_leaves_nothing_behind() {
 
     let (start, end) = keys::range(keys::group(group));
     let view = sim.devices[PHONE].store.view();
-    let stored = block_on(super::super::step::scan(&view, &start, &end)).expect("scanned");
+    let stored = block_on(crate::db::step::scan(&view, &start, &end)).expect("scanned");
     let data = stored
         .iter()
         .filter(|(key, _)| !key.starts_with(&keys::protocol(group)));
@@ -150,7 +152,7 @@ fn a_snapshot_that_isnt_the_committed_state_is_refused() {
     assert_eq!(all_notes(&sim, LAPTOP, group, true), []);
     let (start, end) = keys::range(keys::staged(group));
     let view = sim.devices[LAPTOP].store.view();
-    let staged = block_on(super::super::step::scan(&view, &start, &end)).expect("scanned");
+    let staged = block_on(crate::db::step::scan(&view, &start, &end)).expect("scanned");
     assert_eq!(staged, [], "nothing of it is kept");
 }
 
@@ -256,7 +258,7 @@ fn a_snapshot_carries_on_after_a_restart() {
     let staged = |sim: &Sim| {
         let view = sim.devices[LAPTOP].store.view();
 
-        block_on(super::super::step::scan(&view, &start, &end)).expect("scanned")
+        block_on(crate::db::step::scan(&view, &start, &end)).expect("scanned")
     };
     for _ in 0..8 {
         if !staged(&sim).is_empty() {

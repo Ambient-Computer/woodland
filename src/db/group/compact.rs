@@ -49,15 +49,29 @@ pub(super) struct Sending {
 }
 
 impl Group {
-    /// Sheds every entry a checkpoint covers, and every checkpoint that
-    /// isn't needed to prove a later one.
-    pub(crate) async fn compact<V: View>(&mut self, step: &mut Step<V>) -> Result<(), StoreError> {
-        for clock in self.clocks.values_mut() {
+    /// Sheds every entry a checkpoint covers, in `only` one clock or in
+    /// all of them, and every checkpoint that isn't needed to prove a
+    /// later one or to commit what's left.
+    pub(crate) async fn compact<V: View>(
+        &mut self,
+        only: Option<ClockId>,
+        step: &mut Step<V>,
+    ) -> Result<(), StoreError> {
+        let folded = self.folded;
+        let chosen = |id: &ClockId| only.is_none_or(|only| only == *id);
+        for (_, clock) in self.clocks.iter_mut().filter(|(id, _)| chosen(id)) {
             let committed = clock.history.committed.clone();
             clock.shed_through(&committed, step).await?;
+            clock.base = folded;
         }
-        self.base = self.folded;
-        self.chain.compact(self.folded);
+        if only.is_none() {
+            self.base = folded;
+        }
+
+        // A clock that keeps its history keeps the checkpoints that
+        // history is committed by.
+        let bases = self.clocks.values().map(|clock| clock.base.max(self.base));
+        self.chain.compact(bases.min().unwrap_or(self.base));
         self.said = true;
 
         Ok(())

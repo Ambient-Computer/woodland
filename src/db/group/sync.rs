@@ -272,7 +272,8 @@ impl Group {
         // it lacks, and one that joined partway along can't commit them
         // one checkpoint at a time. Either gets committed state instead,
         // and then the rest.
-        let behind = remote.folded < self.base || (remote.gap && remote.folded < self.folded);
+        let behind =
+            remote.folded < self.shed_below(remote) || (remote.gap && remote.folded < self.folded);
         let snapshot = if behind && remote.heard {
             self.piece(remote, step).await?
         } else {

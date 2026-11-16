@@ -45,6 +45,15 @@ impl Group {
         }
     }
 
+    /// The height `remote` has to have committed to be sent entries:
+    /// below it, something it wants has been shed here.
+    pub(super) fn shed_below(&self, remote: &Remote) -> u64 {
+        let wanted = self.clocks.iter().filter(|(id, _)| remote.wants(**id));
+        let bases = wanted.map(|(_, clock)| clock.base);
+
+        bases.max().unwrap_or(0).max(self.base)
+    }
+
     /// Whether some clocks are left out.
     pub(super) fn partial(&self) -> bool {
         self.interest.is_some()
