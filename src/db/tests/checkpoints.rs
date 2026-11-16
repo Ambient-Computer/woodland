@@ -465,7 +465,9 @@ fn a_read_says_which_level_it_answers_at() {
     let query = Query::key(group, notes(group), b"todo");
     assert_eq!(read(&query), Answer::Optimistic(found("eggs")));
     assert_eq!(read(&query).committed(), None);
-    assert_eq!(read(&query.committed()), Answer::Committed(found("milk")));
+    let committed = read(&query.committed());
+    assert!(committed.reached().is_some_and(|reached| reached.settled));
+    assert_eq!(committed.committed(), Some(found("milk")));
 
     // A model that shows only what's committed answers that way
     // without being asked.

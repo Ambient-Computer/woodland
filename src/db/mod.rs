@@ -40,7 +40,7 @@ use crate::encoding;
 use crate::seal::Secret;
 use crate::store::{Store, StoreError};
 
-pub use answer::{Answer, Found, Part};
+pub use answer::{Answer, Found, Part, Reached};
 pub use changed::Changed;
 use group::{Group, Invitation, Wrote};
 pub use id::{ClockId, GroupId};

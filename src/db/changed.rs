@@ -1,3 +1,4 @@
+use crate::model::table::Place;
 use crate::model::{ColumnId, ModelId};
 
 use super::GroupId;
@@ -43,7 +44,27 @@ pub enum Changed {
         model: ModelId,
         column: ColumnId,
     },
+    /// Committed reads in the group are now of the checkpoint at this
+    /// height, exactly: every key it changed has been reported, in this
+    /// step or the ones before. No read is different because of it.
+    Checkpoint { group: GroupId, height: u64 },
     /// Anything in the group, for either kind of read. The device
     /// caught up from a snapshot, or dropped writes that were discarded.
     Everything { group: GroupId },
+}
+
+impl Changed {
+    /// The key of the [table] row a change is to, if it's to one: the
+    /// row itself, or anything it holds. A copy of a table kept
+    /// somewhere else reads that row [again].
+    ///
+    /// [table]: ModelId::table
+    /// [again]: crate::Query::row
+    #[must_use]
+    pub fn row(&self) -> Option<Vec<u8>> {
+        match self {
+            Self::Key { key, .. } => Place::row_of(key),
+            _ => None,
+        }
+    }
 }

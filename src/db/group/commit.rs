@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::actor::{Identity, Peer};
 use crate::chain::Checkpoint;
-use crate::db::ClockId;
+use crate::db::{Changed, ClockId};
 use crate::encoding;
 use crate::store::{StoreError, View};
 
@@ -460,6 +460,10 @@ impl Group {
         }
 
         self.folded = checkpoint.height;
+        step.changed(Changed::Checkpoint {
+            group: self.id,
+            height: checkpoint.height,
+        });
         self.passed |= passed;
         self.sound.clear();
         self.silence_all();

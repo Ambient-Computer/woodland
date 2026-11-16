@@ -3,8 +3,9 @@
 use crate::model::{ColumnId, ModelId, Query};
 use crate::store::Store;
 
+use super::group::Group;
 use super::step::{self, Step};
-use super::{Answer, Database, Error, GroupId, Outputs, Part, Pending, parts};
+use super::{Answer, Database, Error, GroupId, Outputs, Part, Pending, Reached, parts};
 
 impl<S: Store> Database<S> {
     /// Starts keeping an index of `column` of `table`, so that the
@@ -81,7 +82,7 @@ impl<S: Store> Database<S> {
         let found = query.results(&scanned);
 
         Ok(if query.is_committed() {
-            Answer::Committed(found)
+            Answer::Committed(found, self.reached(query))
         } else {
             Answer::Optimistic(found)
         })
@@ -108,7 +109,7 @@ impl<S: Store> Database<S> {
     pub async fn read_some(&self, query: &Query, limit: usize) -> Result<Part, Error> {
         let (found, rest) = parts::read(&self.store.view(), query, limit).await?;
         let answer = if query.is_committed() {
-            Answer::Committed(found)
+            Answer::Committed(found, self.reached(query))
         } else {
             Answer::Optimistic(found)
         };
@@ -117,6 +118,17 @@ impl<S: Store> Database<S> {
             answer,
             rest: rest.map(|from| query.rest(from)),
         })
+    }
+
+    /// How far what's committed has got in the group `query` reads.
+    fn reached(&self, query: &Query) -> Reached {
+        let held = self.groups.get(&query.group());
+        let nothing = Reached {
+            checkpoint: 0,
+            settled: true,
+        };
+
+        held.map_or(nothing, Group::committed_at)
     }
 
     /// The changes in `group` that are waiting to be committed before

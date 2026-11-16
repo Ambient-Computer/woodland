@@ -14,4 +14,5 @@ A few devices share a group. Each writes whenever it likes, online or not, and r
   - `catching_up`: shedding history, joining late, skipping ahead, and restoring.
   - `sealed`: a group only some of its holders can read.
   - `tables`: rows, a change by filter, and an index.
+  - `mirror`: a count kept outside the library, from a read in parts and what each step reports.
   - `custom_kind`: a kind of model the application defines.

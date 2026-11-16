@@ -16,6 +16,7 @@ mod interest;
 mod joining;
 mod leaving;
 mod membership;
+mod mirrors;
 mod outcomes;
 mod random;
 mod roles;

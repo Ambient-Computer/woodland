@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::actor::{Identity, Peer, Signed, verify_all};
 use crate::chain::{Certificate, Chain, Checkpoint, Digest, Electorate, Saved};
-use crate::db::{ClockId, GroupId, Pending, keys};
+use crate::db::{ClockId, GroupId, Pending, Reached, keys};
 use crate::encoding;
 use crate::model::Operation;
 use crate::seal::Keyring;
@@ -564,6 +564,14 @@ impl Group {
             || unswept
             || self.is_indexing()
             || self.is_inheriting()
+    }
+
+    /// Which checkpoint a committed read is of right now.
+    pub(crate) fn committed_at(&self) -> Reached {
+        Reached {
+            checkpoint: self.folded,
+            settled: !self.is_partway(),
+        }
     }
 
     /// Whether committed state is partway between two checkpoints, and

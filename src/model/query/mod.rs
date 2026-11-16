@@ -167,6 +167,11 @@ impl Query {
         self
     }
 
+    /// The group whose model this reads.
+    pub(crate) fn group(&self) -> GroupId {
+        self.group
+    }
+
     /// Whether this reads only what's committed: it was [asked] to, or
     /// the model shows nothing else.
     ///
@@ -222,7 +227,7 @@ impl Query {
     pub fn is_affected_by(&self, change: &Changed) -> bool {
         match change {
             Changed::Everything { group } => *group == self.group,
-            Changed::Pending { .. } => false,
+            Changed::Pending { .. } | Changed::Checkpoint { .. } => false,
             Changed::Indexed {
                 group,
                 model,

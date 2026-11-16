@@ -16,9 +16,30 @@ pub enum Answer {
     /// Everything this device knows of, committed or not. It's the
     /// latest there is, and may be revised.
     Optimistic(Vec<Found>),
-    /// Only what's committed. It's the same on every device that has
-    /// got this far, and never goes back.
-    Committed(Vec<Found>),
+    /// Only what's committed, and how far that has got. It's the same
+    /// on every device that has got this far, and never goes back.
+    Committed(Vec<Found>, Reached),
+}
+
+/// How far what's committed on a device has got: which checkpoint a
+/// committed read is of.
+///
+/// A copy kept somewhere else of what's committed, kept up from each
+/// step's [`Changed`], is the state of a checkpoint whenever a step
+/// reports [`Changed::Checkpoint`]. A copy that was last at one, and
+/// finds the device [settled] at the same one, has missed nothing.
+///
+/// [`Changed`]: crate::Changed
+/// [`Changed::Checkpoint`]: crate::Changed::Checkpoint
+/// [settled]: Self::settled
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Reached {
+    /// The height of the last checkpoint all of which is in.
+    pub checkpoint: u64,
+    /// Whether that's all that's in. A checkpoint can cover more than
+    /// one step commits, and between those steps some of the next
+    /// checkpoint is in as well.
+    pub settled: bool,
 }
 
 /// Some of the answer to a [query], and how to ask for the rest.
@@ -37,14 +58,24 @@ impl Answer {
     /// Whether this is only what's committed.
     #[must_use]
     pub fn is_committed(&self) -> bool {
-        matches!(self, Self::Committed(_))
+        matches!(self, Self::Committed(..))
     }
 
     /// What was found, whichever it is.
     #[must_use]
     pub fn found(&self) -> &[Found] {
         match self {
-            Self::Optimistic(found) | Self::Committed(found) => found,
+            Self::Optimistic(found) | Self::Committed(found, _) => found,
+        }
+    }
+
+    /// How far what's committed had got, if this is only what's
+    /// committed.
+    #[must_use]
+    pub fn reached(&self) -> Option<Reached> {
+        match self {
+            Self::Optimistic(_) => None,
+            Self::Committed(_, reached) => Some(*reached),
         }
     }
 
@@ -52,7 +83,7 @@ impl Answer {
     #[must_use]
     pub fn into_found(self) -> Vec<Found> {
         match self {
-            Self::Optimistic(found) | Self::Committed(found) => found,
+            Self::Optimistic(found) | Self::Committed(found, _) => found,
         }
     }
 
@@ -60,7 +91,7 @@ impl Answer {
     #[must_use]
     pub fn committed(self) -> Option<Vec<Found>> {
         match self {
-            Self::Committed(found) => Some(found),
+            Self::Committed(found, _) => Some(found),
             Self::Optimistic(_) => None,
         }
     }

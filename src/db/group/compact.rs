@@ -510,6 +510,10 @@ impl Group {
     /// covers is in place.
     pub(super) fn caught_up<V: View>(&mut self, height: u64, step: &mut Step<V>) {
         self.folded = height;
+        step.changed(Changed::Checkpoint {
+            group: self.id,
+            height,
+        });
         self.origin = Origin::Whole;
         self.base = height;
         self.folding = None;
