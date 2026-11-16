@@ -6,6 +6,7 @@ A few devices share a group. Each writes whenever it likes, online or not, and r
 
 - [`docs/spec`](docs/spec/README.md) is the design.
 - [`docs/context`](docs/context/README.md) is why.
+- [`docs/guide`](docs/guide/README.md) is how an application uses it.
 - `src/lib.rs` says where each part of the design lives.
 - [`examples`](examples) show it in use, each over a store in memory with `cargo run --example <name>`:
   - `alone`: one device, a write, and the two levels of read.
