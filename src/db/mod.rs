@@ -526,6 +526,39 @@ impl<S: Store> Database<S> {
         }
     }
 
+    /// Asks `peer` for only these clocks of `group`, or with `None`,
+    /// for every clock this device holds, which is how a connection
+    /// starts out. It lasts until the peer is disconnected, and can be
+    /// changed at any time.
+    ///
+    /// It's for a connection that shouldn't carry everything: a
+    /// metered one, or one to a peer trusted with only so much. What's
+    /// held back still arrives over other connections, and nothing is
+    /// committed here until it has. It narrows what's sent as it's
+    /// written, not what [want] has this device hold, and not the
+    /// committed state a device that's far behind is sent in place of
+    /// history, which comes whole.
+    ///
+    /// [want]: Self::want
+    ///
+    /// # Errors
+    ///
+    /// If this device doesn't hold `group`, or the store fails. A
+    /// peer that isn't connected is asked nothing.
+    pub async fn ask(
+        &mut self,
+        peer: VerifyingKey,
+        group: GroupId,
+        clocks: Option<BTreeSet<ClockId>>,
+    ) -> Result<Outputs, Error> {
+        let mut step = self.begin()?;
+        let held = self.groups.get_mut(&group).ok_or(Error::UnknownGroup)?;
+        let asked = held.ask(Peer::from(peer), clocks, &mut step).await;
+        self.guard(asked)?;
+
+        self.finish(step).await
+    }
+
     /// Stops holding `group`, and deletes everything kept for it.
     ///
     /// Only a device with no role in the group can. One that could

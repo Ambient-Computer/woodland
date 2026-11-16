@@ -76,6 +76,9 @@ pub(crate) struct Summary {
     pub(crate) proven: BTreeSet<Peer>,
     /// The clocks it wants anything of. `None` if all.
     pub(crate) interest: Option<BTreeSet<ClockId>>,
+    /// Of those, the clocks it wants entries of from whoever this is
+    /// said to. `None` if all.
+    pub(crate) only: Option<BTreeSet<ClockId>>,
     /// The entry of each chain it shed and wants back next.
     pub(crate) restoring: BTreeMap<ClockId, Frontier>,
     /// The height of the checkpoint it shed and wants back next.

@@ -370,3 +370,105 @@ fn a_device_holding_some_clocks_doesnt_offer_state_it_cant_complete() {
 
     assert!(bytes < LONG);
 }
+
+fn ask(sim: &mut Sim, device: usize, peer: usize, group: GroupId, clocks: Option<&[ClockId]>) {
+    let clocks = clocks.map(|it| it.iter().copied().collect());
+    let peer = sim.id(peer);
+    let outputs = block_on(sim.devices[device].ask(peer, group, clocks)).expect("asked");
+    sim.absorb(device, outputs);
+    sim.run();
+}
+
+/// The friend reaches the phone over a connection it wants little of.
+/// The rest waits for another connection, and so does committing.
+#[test]
+fn a_connection_carries_only_the_clocks_asked_of_it() {
+    let (mut sim, group) = followed();
+    sim.isolate(FRIEND);
+    sim.connect(FRIEND, PHONE);
+    ask(&mut sim, FRIEND, PHONE, group, Some(&[photos(group)]));
+    sim.write_to(PHONE, group, set(notes(group), "todo", "milk"));
+    sim.write_to(PHONE, group, set(captions(group), "beach", "sunset"));
+    sim.settle();
+
+    let caption = sim.shown(FRIEND, group, captions(group), "beach");
+    assert_eq!(caption.as_deref(), Some("sunset"));
+    assert_eq!(sim.shown(FRIEND, group, notes(group), "todo"), None);
+    assert_eq!(sim.committed(FRIEND, group, captions(group), "beach"), None);
+    assert!(folded(&sim, FRIEND, group) < folded(&sim, PHONE, group));
+
+    // It still holds the clock, and takes it from anyone else.
+    sim.connect(FRIEND, LAPTOP);
+    sim.settle();
+    let todo = sim.committed(FRIEND, group, notes(group), "todo");
+    assert_eq!(todo.as_deref(), Some("milk"));
+    assert_eq!(folded(&sim, FRIEND, group), folded(&sim, PHONE, group));
+}
+
+#[test]
+fn what_a_connection_is_asked_for_can_change() {
+    let (mut sim, group) = followed();
+    sim.isolate(FRIEND);
+    sim.connect(FRIEND, PHONE);
+    ask(&mut sim, FRIEND, PHONE, group, Some(&[]));
+    sim.write_to(PHONE, group, set(notes(group), "todo", "milk"));
+    sim.settle();
+    assert_eq!(sim.shown(FRIEND, group, notes(group), "todo"), None);
+
+    ask(&mut sim, FRIEND, PHONE, group, None);
+    sim.settle();
+    let todo = sim.committed(FRIEND, group, notes(group), "todo");
+    assert_eq!(todo.as_deref(), Some("milk"));
+}
+
+#[test]
+fn what_was_asked_of_a_connection_ends_with_it() {
+    let (mut sim, group) = followed();
+    sim.isolate(FRIEND);
+    sim.connect(FRIEND, PHONE);
+    ask(&mut sim, FRIEND, PHONE, group, Some(&[]));
+    sim.write_to(PHONE, group, set(notes(group), "todo", "milk"));
+    sim.settle();
+    assert_eq!(sim.shown(FRIEND, group, notes(group), "todo"), None);
+
+    sim.disconnect(FRIEND, PHONE);
+    sim.connect(FRIEND, PHONE);
+    sim.settle();
+    let todo = sim.committed(FRIEND, group, notes(group), "todo");
+    assert_eq!(todo.as_deref(), Some("milk"));
+
+    // Asking a peer that isn't there asks nothing.
+    sim.disconnect(FRIEND, PHONE);
+    ask(&mut sim, FRIEND, PHONE, group, Some(&[]));
+    let unknown = GroupId::from_bytes([3; 32]);
+    let peer = sim.id(PHONE);
+    let asked = block_on(sim.devices[FRIEND].ask(peer, unknown, None));
+    assert!(matches!(asked, Err(Error::UnknownGroup)));
+    sim.connect(FRIEND, PHONE);
+    sim.write_to(PHONE, group, set(notes(group), "todo", "eggs"));
+    sim.settle();
+    let todo = sim.committed(FRIEND, group, notes(group), "todo");
+    assert_eq!(todo.as_deref(), Some("eggs"));
+}
+
+/// Committed state stands in for history a peer has let go of, and
+/// it's the state of everything the device holds or it's no use.
+#[test]
+fn a_device_far_behind_is_sent_whole_state_whatever_it_asked() {
+    let (mut sim, group) = followed();
+    sim.isolate(FRIEND);
+    sim.write_to(PHONE, group, set(notes(group), "todo", "milk"));
+    sim.write_to(PHONE, group, set(captions(group), "beach", "sunset"));
+    sim.settle();
+    sim.compact(PHONE, group);
+
+    sim.connect(FRIEND, PHONE);
+    ask(&mut sim, FRIEND, PHONE, group, Some(&[photos(group)]));
+    sim.settle();
+
+    let todo = sim.committed(FRIEND, group, notes(group), "todo");
+    assert_eq!(todo.as_deref(), Some("milk"));
+    let caption = sim.committed(FRIEND, group, captions(group), "beach");
+    assert_eq!(caption.as_deref(), Some("sunset"));
+    assert_eq!(folded(&sim, FRIEND, group), folded(&sim, PHONE, group));
+}

@@ -6,6 +6,7 @@ Sync is what two connected [peers](peers.md) exchange so each ends up with every
 
 - Each side says which [groups](groups.md) and [clocks](groups.md) it wants. Only the intersection is exchanged.
 - Interest is per connection and may change during it.
+- What a peer wants of one connection may be less than it holds. That narrows the transactions it is sent there, not a [snapshot](compaction.md), which is the state of everything it holds or of nothing.
 - A peer need not want everything it holds, or hold everything it wants.
 - A peer with a say in [checkpoints](checkpoints.md) wants every clock: a vote vouches for all of them.
 - A peer that leaves a clock out still follows the chain, and commits checkpoints without that clock's state.

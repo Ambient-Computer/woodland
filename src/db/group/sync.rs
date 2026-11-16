@@ -55,6 +55,12 @@ pub(super) struct Remote {
     asked: BTreeSet<Peer>,
     /// The clocks it wants anything of. `None` if all.
     interest: Option<BTreeSet<ClockId>>,
+    /// Of those, the clocks it wants entries of over this connection.
+    /// `None` if all.
+    only: Option<BTreeSet<ClockId>>,
+    /// The clocks this device wants entries of from it, over this
+    /// connection. `None` if all it holds.
+    asking: Option<BTreeSet<ClockId>>,
     /// The entry of each chain it shed and wants back next.
     pub(super) restoring: BTreeMap<ClockId, Frontier>,
     /// The height of the checkpoint it shed and wants back next.
@@ -102,6 +108,11 @@ impl Remote {
         self.interest.as_ref().is_none_or(|it| it.contains(&clock))
     }
 
+    /// Whether it wants entries of `clock` over this connection.
+    fn takes(&self, clock: ClockId) -> bool {
+        self.wants(clock) && self.only.as_ref().is_none_or(|it| it.contains(&clock))
+    }
+
     /// It has `author`'s request: it's where this device got it.
     pub(super) fn asked(&mut self, author: Peer) {
         self.asked.insert(author);
@@ -127,6 +138,24 @@ impl Group {
         self.push(peer, true, true, step).await
     }
 
+    /// Asks `peer` for entries of only these clocks, for as long as
+    /// it stays connected, or with `None`, of every clock held here.
+    /// Returns whether it's connected.
+    pub(crate) async fn ask<V: View>(
+        &mut self,
+        peer: Peer,
+        clocks: Option<BTreeSet<ClockId>>,
+        step: &mut Step<V>,
+    ) -> Result<bool, StoreError> {
+        let Some(remote) = self.remotes.get_mut(&peer) else {
+            return Ok(false);
+        };
+        remote.asking = clocks;
+        self.push(peer, true, false, step).await?;
+
+        Ok(true)
+    }
+
     pub(crate) fn disconnected(&mut self, peer: Peer) {
         self.remotes.remove(&peer);
     }
@@ -150,6 +179,7 @@ impl Group {
         remote.said.clone_from(&message.summary.heads);
         remote.proven.clone_from(&message.summary.proven);
         remote.interest.clone_from(&message.summary.interest);
+        remote.only.clone_from(&message.summary.only);
         remote.restoring.clone_from(&message.summary.restoring);
         remote.lacking = message.summary.lacking;
         let asked = message
@@ -411,7 +441,10 @@ impl Group {
 
         let message = Message {
             group: self.id,
-            summary: self.summary(),
+            summary: Summary {
+                only: remote.asking.clone(),
+                ..self.summary()
+            },
             chain,
             entries,
             links,
@@ -458,6 +491,7 @@ impl Group {
                 .collect(),
             proven: self.proofs.keys().copied().collect(),
             interest: self.interest.clone(),
+            only: None,
             restoring: self.restoring(),
             lacking: self.lacking(),
             wanting: self.wanting(),
@@ -476,7 +510,7 @@ impl Group {
         let nothing = Frontier::new();
         let mut missing = Vec::new();
         for (id, clock) in &self.clocks {
-            if !remote.wants(*id) {
+            if !remote.takes(*id) {
                 continue;
             }
 
