@@ -282,7 +282,7 @@ impl Row {
         self.incarnation
     }
 
-    /// What the row holds in unique and indexed columns.
+    /// What the row holds in unique columns.
     pub(crate) fn keys(&self) -> &[(ColumnId, Value)] {
         &self.keys
     }
@@ -305,7 +305,7 @@ impl Row {
     pub(crate) fn set(&self, changes: impl IntoIterator<Item = (ColumnId, Value)>) -> Operation {
         let (unique, cells): (Vec<_>, Vec<_>) = changes
             .into_iter()
-            .partition(|(column, _)| column.is_keyed());
+            .partition(|(column, _)| column.is_unique());
 
         let rekey = (!unique.is_empty()).then(|| {
             let mut to: BTreeMap<_, _> = self.keys.iter().cloned().collect();
@@ -345,7 +345,7 @@ impl Row {
     /// the same incarnation, and the same thing, or nothing, in every
     /// column the table had.
     pub(crate) fn unchanged(&self) -> Vec<(Vec<u8>, Requirement)> {
-        let plain = self.columns.iter().filter(|column| !column.is_keyed());
+        let plain = self.columns.iter().filter(|column| !column.is_unique());
         let cells = plain.map(|column| {
             let key = Place::Cell(self.key.clone(), self.incarnation, *column).key();
             let requirement = match self.stored.get(column) {

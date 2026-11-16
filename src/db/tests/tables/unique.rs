@@ -16,9 +16,9 @@ pub(super) fn plan(table: ModelId) -> ColumnId {
     ColumnId::text(table, [2; 32])
 }
 
-/// How much an account pays for. Accounts can be found by it.
+/// How much an account pays for.
 pub(in crate::db::tests) fn tier(table: ModelId) -> ColumnId {
-    ColumnId::integer(table, [3; 32]).indexed()
+    ColumnId::integer(table, [3; 32])
 }
 
 pub(in crate::db::tests) fn open(cluster: &mut Sim, device: usize) -> ModelId {
@@ -40,12 +40,13 @@ pub(in crate::db::tests) fn open(cluster: &mut Sim, device: usize) -> ModelId {
 pub(super) fn create_accounts(cluster: &mut Sim, device: usize) -> ModelId {
     let table = open(cluster, device);
     cluster.settle();
+    cluster.keep_indexes(table, tier(table));
     table
 }
 
-/// What the table's storage says about who has which address and
-/// tier, on a device: first going by the rows, then by the keys they're
-/// looked up under. They should say the same thing.
+/// What the table's storage says about who has which address, on a
+/// device: first going by the rows, then by the keys they're looked up
+/// under. They should say the same thing.
 pub(in crate::db::tests) fn taken(cluster: &Sim, device: usize) -> [Vec<(Vec<u8>, Vec<u8>)>; 2] {
     let table = accounts(cluster);
     let query = Query::table(cluster.home, table);
@@ -54,24 +55,17 @@ pub(in crate::db::tests) fn taken(cluster: &Sim, device: usize) -> [Vec<(Vec<u8>
 
     let read = Table::read(&results);
     let rows = read.iter().flat_map(Table::rows);
-    let by_row = rows.flat_map(|row| {
-        let (address, paid) = (row.get(email(table)), row.get(tier(table)));
-        let address = (address != &Value::Null)
-            .then(|| (Place::unique(email(table), address), row.key().to_vec()));
-        let paid = (paid != &Value::Null)
-            .then(|| (Place::index(tier(table), paid, row.key()), Vec::new()));
+    let by_row = rows.filter_map(|row| {
+        let address = row.get(email(table));
 
-        address.into_iter().chain(paid)
+        (address != &Value::Null)
+            .then(|| (Place::unique(email(table), address), row.key().to_vec()))
     });
 
     let mut by_row: Vec<_> = by_row.collect();
     by_row.sort();
-    let unique = |(key, _): &(Vec<u8>, Vec<u8>)| {
-        matches!(
-            Place::parse(key),
-            Some(Place::Unique(..) | Place::Index(..))
-        )
-    };
+    let unique =
+        |(key, _): &(Vec<u8>, Vec<u8>)| matches!(Place::parse(key), Some(Place::Unique(..)));
     let by_key = results.iter().filter(|it| unique(it)).cloned().collect();
 
     [by_row, by_key]

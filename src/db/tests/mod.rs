@@ -300,6 +300,13 @@ impl Sim {
         self.run();
     }
 
+    /// Has every device keep an index of a column.
+    fn keep_indexes(&mut self, table: ModelId, column: crate::ColumnId) {
+        for device in 0..self.devices.len() {
+            self.keep_index(device, table, column);
+        }
+    }
+
     /// Asks for exactly these roles.
     fn assign(
         &mut self,

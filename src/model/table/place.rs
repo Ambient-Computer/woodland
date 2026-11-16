@@ -39,8 +39,10 @@ pub(crate) enum Place {
     /// What follows the column is the value, in a form that sorts the
     /// way values do (see [`order`]).
     Unique(ColumnId, Vec<u8>),
-    /// Holds a value while a row has a value in an indexed column: the
-    /// column, the value as in [`Place::Unique`], and the row's key.
+    /// A row's place in an index of a column: the column, the value the
+    /// row holds in it as in [`Place::Unique`], and the row's key. No
+    /// table has a key like it. It's what a device that keeps an index
+    /// files a row under, beside the table.
     Index(ColumnId, Vec<u8>, Vec<u8>),
     /// Holds the last number given out in a column that numbers its
     /// rows.
@@ -104,15 +106,11 @@ impl Place {
 
     /// Where the values of a column are looked up: every key that
     /// starts with this is for one of them, in the order of the
-    /// values. `None` if the column is neither unique nor indexed.
+    /// values. `None` if the column isn't unique.
     pub(crate) fn lookup(column: ColumnId) -> Option<Vec<u8>> {
-        let kind = match (column.is_unique(), column.is_indexed()) {
-            (true, _) => UNIQUE,
-            (false, true) => INDEX,
-            (false, false) => return None,
-        };
+        let unique = [&[UNIQUE][..], column.as_bytes()].concat();
 
-        Some([&[kind][..], column.as_bytes()].concat())
+        column.is_unique().then_some(unique)
     }
 
     /// Where an index of a column that isn't unique is: every key
@@ -214,8 +212,8 @@ pub(crate) fn rows(start: Bound<Vec<u8>>, end: Bound<Vec<u8>>) -> Range {
 }
 
 /// Where it says which rows hold a value between two bounds in a
-/// column: among the table's own keys if the column is unique or
-/// indexed, and in an index kept beside them if not.
+/// column: among the table's own keys if the column is unique, and in
+/// an index kept beside them if not.
 pub(crate) fn values(column: ColumnId, start: Bound<&Value>, end: Bound<&Value>) -> Option<Range> {
     let first = Place::lookup(column).unwrap_or_else(|| Place::index_of(column));
     let last = order::successor(&first)?;
@@ -263,7 +261,7 @@ mod tests {
     #[test]
     fn every_place_parses() {
         let column = ColumnId::from_bytes([3; 8]);
-        let indexed = ColumnId::text(crate::model::ModelId::from_bytes([0; 64]), [1; 32]).indexed();
+        let indexed = ColumnId::text(crate::model::ModelId::from_bytes([0; 64]), [1; 32]);
         let places = [
             Place::Table,
             Place::Column(column),

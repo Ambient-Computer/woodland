@@ -275,12 +275,22 @@ impl Group {
         if was == entry {
             return Ok(());
         }
+        // A query through the index is told like one of the table: by
+        // the key that changed.
+        let moved = |key: &[u8]| Changed::Key {
+            group: self.id,
+            model: table,
+            key: key.to_vec(),
+            committed,
+        };
         if let Some(was) = was {
+            step.changed(moved(&was));
             step.delete(keys::index(self.id, committed, table, &was));
         }
 
         match entry {
             Some(entry) => {
+                step.changed(moved(&entry));
                 step.put(keys::index(self.id, committed, table, &entry), Vec::new());
                 step.put(whereabouts, entry);
             }

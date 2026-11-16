@@ -336,16 +336,14 @@ impl Transaction {
     /// place in the timeline the row has been deleted, or a column
     /// given a value is gone.
     ///
-    /// A [unique] or [indexed] column is stricter. The transaction is
-    /// also dropped if any of the row's unique or indexed columns have
-    /// changed since it was read, or another row has the new value of
-    /// a unique one.
+    /// A [unique] column is stricter. The transaction is also dropped
+    /// if any of the row's unique columns have changed since it was
+    /// read, or another row has the new value of one.
     ///
     /// To change the row only if nothing at all has changed, add
     /// [`expect_unchanged`].
     ///
     /// [unique]: ColumnId::unique
-    /// [indexed]: ColumnId::indexed
     /// [`expect_unchanged`]: Self::expect_unchanged
     pub fn update(
         mut self,
@@ -360,8 +358,8 @@ impl Transaction {
 
     /// Removes `row` of `table`. The whole transaction is dropped, on
     /// every device, if at its place in the timeline the row is
-    /// already gone, or its [unique] or [indexed] columns have changed
-    /// since it was read.
+    /// already gone, or its [unique] columns have changed since it was
+    /// read.
     ///
     /// It's also dropped if anything has ever [referred] to the row,
     /// unless the row was [retired] when it was read and still is, in
@@ -369,7 +367,6 @@ impl Transaction {
     /// that others depend on.
     ///
     /// [unique]: ColumnId::unique
-    /// [indexed]: ColumnId::indexed
     /// [referred]: Self::refer
     /// [retired]: Row::is_retired
     /// [`retire`]: Self::retire

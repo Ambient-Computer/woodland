@@ -8,9 +8,9 @@ pub(in crate::db::tests) fn orders(cluster: &Sim) -> ModelId {
     ModelId::table(cluster.home, [8; 32])
 }
 
-/// Whose order it is: the key of an account. Orders are found by it.
+/// Whose order it is: the key of an account.
 pub(in crate::db::tests) fn buyer(table: ModelId) -> ColumnId {
-    ColumnId::text(table, [1; 32]).indexed()
+    ColumnId::text(table, [1; 32])
 }
 
 /// Accounts and orders, and Ada's account, known to everyone.
@@ -21,6 +21,8 @@ pub(super) fn shop() -> (Sim, GroupId) {
     open_orders(&mut cluster, PHONE);
     sign_up(&mut cluster, PHONE, "ada", None);
     cluster.settle();
+    let orders = orders(&cluster);
+    cluster.keep_indexes(orders, buyer(orders));
 
     (cluster, group)
 }

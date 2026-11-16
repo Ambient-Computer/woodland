@@ -403,7 +403,7 @@ async fn number(
         incarnation,
     };
     let value = Value::Integer(value);
-    let (cells, rekey) = if column.is_keyed() {
+    let (cells, rekey) = if column.is_unique() {
         let stored = state.get(&Place::Keys(row.to_vec()).key()).await?;
         let stored = stored.map(|it| encoding::decode::<BTreeMap<ColumnId, Value>>(&it));
         let Some(from) = stored.unwrap_or_else(|| Some(BTreeMap::new())) else {

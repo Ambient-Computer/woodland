@@ -187,40 +187,6 @@ fn a_column_that_isnt_indexed_finds_nothing() {
     assert_eq!(found(&cluster, NAS, &query), [""; 0]);
 }
 
-/// An index has to take back what a row held, so a change to an
-/// indexed column goes by what was read, like a unique one. Two
-/// devices that change it while apart can't both.
-#[test]
-fn only_one_of_two_changes_to_an_indexed_column_happens() {
-    let (mut cluster, group, table) = signed_up();
-    cluster.disconnect_all();
-    cluster.settle();
-
-    let ada = account(&cluster, PHONE, "ada").expect("signed up");
-    update(&mut cluster, PHONE, &ada, tier(table), 5);
-    update(&mut cluster, LAPTOP, &ada, tier(table), 6);
-    update(&mut cluster, NAS, &ada, plan(table), "paid");
-    cluster.connect_all();
-    cluster.settle();
-
-    let at = |paid: i64| Query::lookup(group, table, tier(table), &paid.into());
-    let (five, six) = (
-        found(&cluster, PHONE, &at(5)),
-        found(&cluster, PHONE, &at(6)),
-    );
-    assert_eq!(five.len() + six.len(), 1);
-    for device in [PHONE, LAPTOP, NAS, FRIEND] {
-        assert_eq!(found(&cluster, device, &at(1)), [""; 0], "device {device}");
-        assert_eq!(found(&cluster, device, &at(5)), five, "device {device}");
-        let [by_row, by_key] = taken(&cluster, device);
-        assert_eq!(by_row, by_key, "device {device}");
-
-        // The change to a column that isn't indexed went ahead.
-        let ada = account(&cluster, device, "ada").expect("signed up");
-        assert_eq!(ada.get(plan(table)), &Value::from("paid"));
-    }
-}
-
 #[test]
 fn queries_for_part_of_a_table_know_what_changes_them() {
     let (mut cluster, group, table) = signed_up();

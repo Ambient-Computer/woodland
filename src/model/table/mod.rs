@@ -66,16 +66,16 @@
 //!
 //! # Indexes
 //!
-//! A column can be indexed instead: any number of rows can hold a
-//! value, and each is found under the column, the value and its own
-//! key ([`Place::Index`]). Values are written so that they sort the
-//! way they compare (see [`order`]), and a range of them is a range of
-//! keys. A unique column is found the same way.
+//! An index of a column isn't part of the table. No operation writes
+//! one, and a column merges the same whether or not anyone indexes
+//! it. A device that wants one keeps it beside the table, worked out
+//! from the rows (see [`Database::add_index`]): each row is filed
+//! under the column, the value and its own key ([`Place::Index`]).
+//! Values are written so that they sort the way they compare (see
+//! [`order`]), and a range of them is a range of keys. A unique column
+//! is found the same way, among the table's own keys.
 //!
-//! An index has to take back what a row held, like a unique column
-//! does, so indexed columns are kept with the unique ones and follow
-//! their rule: changes to them go by what was read, and exclude each
-//! other. Being found without reading the table is paid for in merges.
+//! [`Database::add_index`]: crate::Database::add_index
 //!
 //! Rows are a range of keys too. A row's key is written so that no
 //! key starts another (see [`order::escape`]), everything about a row
@@ -207,8 +207,7 @@ pub(crate) enum Operation {
         row: Target,
         /// The columns it has cells in, as its author read it.
         cells: Vec<ColumnId>,
-        /// What it holds in unique and indexed columns, as its author
-        /// read it.
+        /// What it holds in unique columns, as its author read it.
         keys: Vec<(ColumnId, Value)>,
         /// The retirement it's in, as its author read it.
         retired: Option<Fingerprint>,

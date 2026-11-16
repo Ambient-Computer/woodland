@@ -112,13 +112,14 @@ impl Query {
     }
 
     /// Which rows of a [table] hold a value in a range, such as
-    /// `Value::from(18)..Value::from(65)`, in a column that's [indexed]
-    /// or [unique]. Decode the results with [`Table::row_keys`], and
-    /// read the rows themselves with [`Query::row`]. A column that's
-    /// neither finds nothing.
+    /// `Value::from(18)..Value::from(65)`, in a column this device keeps
+    /// an [index] of, or one that's [unique]. Decode the results with
+    /// [`Table::row_keys`], and read the rows themselves with
+    /// [`Query::row`]. A column that's neither finds nothing, and an
+    /// index that's still being filled finds what it has so far.
     ///
     /// [table]: ModelId::table
-    /// [indexed]: ColumnId::indexed
+    /// [index]: crate::Database::add_index
     /// [unique]: ColumnId::unique
     /// [`Table::row_keys`]: crate::Table::row_keys
     #[must_use]
@@ -130,7 +131,7 @@ impl Query {
     ) -> Self {
         let range = table::values(column, values.start_bound(), values.end_bound());
         let mut query = Self::ranges(group, table, range.into_iter().collect());
-        query.derived = (!column.is_keyed()).then_some(column);
+        query.derived = (!column.is_unique()).then_some(column);
         query
     }
 
@@ -210,20 +211,8 @@ impl Query {
                 committed,
             } => {
                 let ours = *group == self.group && *model == self.model;
-                let level = *committed != self.optimistic;
-                let Some(column) = self.derived else {
-                    return ours && level && self.wants(key);
-                };
 
-                // Whether a row is there, or what it holds in the
-                // column, is what puts it in the index.
-                let placed = match table::Place::parse(key) {
-                    Some(table::Place::Row(_)) => true,
-                    Some(table::Place::Cell(_, _, written)) => written == column,
-                    _ => false,
-                };
-
-                ours && level && placed
+                ours && *committed != self.optimistic && self.wants(key)
             }
         }
     }
