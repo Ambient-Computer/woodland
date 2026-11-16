@@ -31,7 +31,7 @@ use ed25519_dalek::VerifyingKey;
 use crate::actor::{Identity, Peer};
 use crate::chain::{Chain, Checkpoint, Electorate, Role};
 use crate::encoding;
-use crate::model::Query;
+use crate::model::{ColumnId, ModelId, Query};
 use crate::seal::{SealingKey, Secret};
 use crate::store::{Store, StoreError};
 
@@ -364,6 +364,62 @@ impl<S: Store> Database<S> {
         self.finish(step).await
     }
 
+    /// Starts keeping an index of `column` of `table`, so that the
+    /// rows that hold a value in it can be found with [`Query::index`]
+    /// without reading the table.
+    ///
+    /// An index is this device's own. Nothing is written to the group,
+    /// no other device hears of it, and it changes nothing about how
+    /// the column's cells are written or merged. It's filled a part at
+    /// a time: [resume] until [`has_index`] says it has every row.
+    ///
+    /// # Errors
+    ///
+    /// If this device doesn't hold `group`, or the store fails.
+    ///
+    /// [resume]: Self::resume
+    /// [`has_index`]: Self::has_index
+    pub async fn add_index(
+        &mut self,
+        group: GroupId,
+        table: ModelId,
+        column: ColumnId,
+    ) -> Result<Outputs, Error> {
+        let mut step = self.begin()?;
+        let held = self.groups.get_mut(&group).ok_or(Error::UnknownGroup)?;
+        held.index(table, column, &mut step);
+
+        self.finish(step).await
+    }
+
+    /// Stops keeping an index of `column` of `table`, and throws away
+    /// what it held.
+    ///
+    /// # Errors
+    ///
+    /// If this device doesn't hold `group`, or the store fails.
+    pub async fn drop_index(
+        &mut self,
+        group: GroupId,
+        table: ModelId,
+        column: ColumnId,
+    ) -> Result<Outputs, Error> {
+        let mut step = self.begin()?;
+        let held = self.groups.get_mut(&group).ok_or(Error::UnknownGroup)?;
+        held.unindex(table, column, &mut step);
+
+        self.finish(step).await
+    }
+
+    /// Whether this device keeps an index of `column` of `table` that
+    /// has every row. Until it does, reads through it can miss some.
+    #[must_use]
+    pub fn has_index(&self, group: GroupId, table: ModelId, column: ColumnId) -> bool {
+        let held = self.groups.get(&group);
+
+        held.is_some_and(|held| held.has_index(table, column))
+    }
+
     /// Sheds the history of `group` that's committed, keeping committed
     /// state and whatever isn't committed yet. Nothing reads differently
     /// afterwards. A peer that needs what was shed is sent the state
@@ -638,7 +694,16 @@ impl<S: Store> Database<S> {
         Ok(result?)
     }
 
-    async fn finish(&mut self, step: Step<S::View>) -> Result<Outputs, Error> {
+    async fn finish(&mut self, mut step: Step<S::View>) -> Result<Outputs, Error> {
+        let changes = step.changes();
+        for group in self.groups.values_mut() {
+            let derived = group.derive(&changes, &mut step).await;
+            if derived.is_err() {
+                self.broken = true;
+            }
+            derived?;
+        }
+
         let finished = step.finish();
         let applied = self.store.apply(finished.batch).await;
         self.guard(applied)?;

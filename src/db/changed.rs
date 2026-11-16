@@ -1,4 +1,4 @@
-use crate::model::ModelId;
+use crate::model::{ColumnId, ModelId};
 
 use super::GroupId;
 
@@ -33,6 +33,16 @@ pub enum Changed {
     ///
     /// [pending]: crate::Database::pending
     Pending { group: GroupId, model: ModelId },
+    /// An [index] of a column has every row: it was just added, or
+    /// has caught up after everything in the group changed. Reads
+    /// through it may have missed rows until now.
+    ///
+    /// [index]: crate::Database::add_index
+    Indexed {
+        group: GroupId,
+        model: ModelId,
+        column: ColumnId,
+    },
     /// Anything in the group, for either kind of read. The device
     /// caught up from a snapshot, or dropped writes that were discarded.
     Everything { group: GroupId },

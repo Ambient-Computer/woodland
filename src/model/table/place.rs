@@ -115,6 +115,12 @@ impl Place {
         Some([&[kind][..], column.as_bytes()].concat())
     }
 
+    /// Where an index of a column that isn't unique is: every key
+    /// that starts with this is a row's place in it.
+    pub(crate) fn index_of(column: ColumnId) -> Vec<u8> {
+        [&[INDEX][..], column.as_bytes()].concat()
+    }
+
     /// Where the rows are, and where they end.
     pub(crate) fn rows() -> (Vec<u8>, Vec<u8>) {
         (vec![ROW], vec![ROW + 1])
@@ -208,9 +214,10 @@ pub(crate) fn rows(start: Bound<Vec<u8>>, end: Bound<Vec<u8>>) -> Range {
 }
 
 /// Where it says which rows hold a value between two bounds in a
-/// column. `None` if the column is neither unique nor indexed.
+/// column: among the table's own keys if the column is unique or
+/// indexed, and in an index kept beside them if not.
 pub(crate) fn values(column: ColumnId, start: Bound<&Value>, end: Bound<&Value>) -> Option<Range> {
-    let first = Place::lookup(column)?;
+    let first = Place::lookup(column).unwrap_or_else(|| Place::index_of(column));
     let last = order::successor(&first)?;
     let at = |value: &Value| [&first[..], &order::ordered(value)].concat();
     let past = |value: &Value| order::successor(&at(value)).unwrap_or(last.clone());

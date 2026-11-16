@@ -353,6 +353,11 @@ proptest! {
         sim.write_to(PHONE, group, Transaction::new().create_table(tickets(group), columns));
         let phone = sim.id(PHONE);
         sim.write_to(PHONE, group, Transaction::new().open_allowance(stock(group), "stock", STOCK, phone));
+        // Each keeps an index, which is checked against the rows
+        // at every step.
+        for device in 0..DEVICES {
+            sim.keep_index(device, tickets(group), ticket_number(group));
+        }
         sim.settle();
         let electors = (0..3).collect();
         let mut run = Run { sim, group, written: 0, claims: Claims::new(), electors };

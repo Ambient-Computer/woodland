@@ -4,7 +4,7 @@ A migration changes a schema while devices that have not heard of it keep writin
 
 ## Additive changes
 
-- Adding a table, a column, or an [index](tables.md) is an ordinary [transaction](transactions.md) and takes effect optimistically.
+- Adding a table or a column is an ordinary [transaction](transactions.md) and takes effect optimistically.
 - Additive changes commute with each other and with every write to what already existed.
 - A device that has not seen an addition is unaffected by it. Its writes remain valid.
 

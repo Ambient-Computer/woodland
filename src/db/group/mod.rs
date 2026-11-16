@@ -10,6 +10,7 @@ mod deferred;
 mod foreign;
 mod forks;
 mod history;
+mod indexes;
 mod interest;
 mod job;
 mod judge;
@@ -73,6 +74,8 @@ pub(crate) struct Group {
     /// What members have asked the group to be made up of, this
     /// device included.
     requests: BTreeMap<Peer, Signed<Request>>,
+    /// The indexes this device keeps of the group's tables.
+    indexes: indexes::Indexes,
     /// Proposed checkpoints this device has checked against its own
     /// copy, and would vote for.
     sound: BTreeSet<Digest>,
@@ -191,6 +194,7 @@ impl Group {
             remotes: BTreeMap::new(),
             wanted: None,
             requests: BTreeMap::new(),
+            indexes: BTreeMap::new(),
             sound: BTreeSet::new(),
             fore: Foresight::default(),
             #[cfg(test)]
@@ -262,6 +266,7 @@ impl Group {
         group.carrying = meta.carrying;
         group.spoke = meta.spoke;
         group.recall(step).await?;
+        group.recall_indexes(step).await?;
         for (clock, kept) in meta.clocks {
             let held = Clock::load(id, clock, kept, group.keys.clone(), step).await?;
             group.clocks.insert(clock, held);
@@ -474,7 +479,9 @@ impl Group {
     ///
     /// [`resume`]: Self::resume
     pub(crate) fn is_busy(&self) -> bool {
-        self.is_partway() || self.is_ahead() || self.clocks.values().any(Clock::is_unswept)
+        let unswept = self.clocks.values().any(Clock::is_unswept);
+
+        self.is_partway() || self.is_ahead() || unswept || self.is_indexing()
     }
 
     /// Whether committed state is partway between two checkpoints, and

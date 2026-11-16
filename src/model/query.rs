@@ -52,6 +52,9 @@ pub struct Query {
     optimistic: bool,
     /// A single-key query also scans keys that extend it, and drops them.
     exact: Option<Vec<u8>>,
+    /// The column whose index is read, if it's one the device keeps
+    /// beside the table and not part of it.
+    derived: Option<ColumnId>,
 }
 
 /// Some of a model's keys: from the first, up to the second. `None` is
@@ -126,8 +129,9 @@ impl Query {
         values: impl RangeBounds<Value>,
     ) -> Self {
         let range = table::values(column, values.start_bound(), values.end_bound());
-
-        Self::ranges(group, table, range.into_iter().collect())
+        let mut query = Self::ranges(group, table, range.into_iter().collect());
+        query.derived = (!column.is_keyed()).then_some(column);
+        query
     }
 
     /// Which rows of a [table] hold exactly `value` in a column. Like
@@ -153,6 +157,18 @@ impl Query {
     #[must_use]
     pub fn storage_ranges(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
         let (group, model) = (self.group, self.model);
+        if self.derived.is_some() {
+            let within = |key: &[u8]| keys::index(group, !self.optimistic, model, key);
+            let (_, model_end) = keys::range(within(b""));
+            let range = |(start, end): &Range| {
+                let end = end.as_ref().map(|end| within(end));
+
+                (within(start), end.unwrap_or(model_end.clone()))
+            };
+
+            return self.ranges.iter().map(range).collect();
+        }
+
         let stored = |within: fn(GroupId, ModelId, &[u8]) -> Vec<u8>| {
             let (_, model_end) = keys::range(within(group, model, b""));
             let range = move |(start, end): &Range| {
@@ -182,6 +198,11 @@ impl Query {
         match change {
             Changed::Everything { group } => *group == self.group,
             Changed::Pending { .. } => false,
+            Changed::Indexed {
+                group,
+                model,
+                column,
+            } => *group == self.group && *model == self.model && self.derived == Some(*column),
             Changed::Key {
                 group,
                 model,
@@ -189,8 +210,20 @@ impl Query {
                 committed,
             } => {
                 let ours = *group == self.group && *model == self.model;
+                let level = *committed != self.optimistic;
+                let Some(column) = self.derived else {
+                    return ours && level && self.wants(key);
+                };
 
-                ours && *committed != self.optimistic && self.wants(key)
+                // Whether a row is there, or what it holds in the
+                // column, is what puts it in the index.
+                let placed = match table::Place::parse(key) {
+                    Some(table::Place::Row(_)) => true,
+                    Some(table::Place::Cell(_, _, written)) => written == column,
+                    _ => false,
+                };
+
+                ours && level && placed
             }
         }
     }
@@ -205,6 +238,18 @@ impl Query {
         let mut versions = Vec::new();
         for (stored, value) in scanned {
             match keys::parse(stored) {
+                Some(Record::Index {
+                    group,
+                    model,
+                    key,
+                    committed: level,
+                }) if self.derived.is_some()
+                    && ours(group, model)
+                    && level != self.optimistic
+                    && self.wants(&key) =>
+                {
+                    committed.push((key, value.clone()));
+                }
                 Some(Record::Committed { group, model, key })
                     if ours(group, model) && self.wants(&key) =>
                 {
@@ -247,6 +292,7 @@ impl Query {
             ranges,
             optimistic: model.shows_uncommitted(),
             exact: None,
+            derived: None,
         }
     }
 }

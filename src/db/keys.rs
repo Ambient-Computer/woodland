@@ -57,6 +57,9 @@ const STAGED: u8 = 5;
 const SEALED: u8 = 6;
 const TRIAL: u8 = 7;
 const AHEAD: u8 = 8;
+const INDEX: u8 = 9;
+const INDEXED: u8 = 10;
+const INDEXES: u8 = 11;
 
 const CHAIN: u8 = 1;
 const META: u8 = 2;
@@ -79,6 +82,28 @@ pub(crate) enum Record {
         /// Boxed because a stamp holds its author's whole public key.
         stamp: Box<Stamp>,
     },
+    /// A row's place in an index this device keeps.
+    Index {
+        group: GroupId,
+        model: ModelId,
+        key: Vec<u8>,
+        /// Whether it's the index of what's committed.
+        committed: bool,
+    },
+}
+
+impl Record {
+    /// The row of a table this says exists, if that's what it says.
+    pub(crate) fn row(self) -> Option<Vec<u8>> {
+        let (Self::Committed { key, .. } | Self::Version { key, .. }) = self else {
+            return None;
+        };
+
+        match crate::model::table::Place::parse(&key)? {
+            crate::model::table::Place::Row(row) => Some(row),
+            _ => None,
+        }
+    }
 }
 
 /// The device's secret key. It lives beside everything it signed, so a
@@ -228,6 +253,10 @@ pub(crate) fn parse(key: &[u8]) -> Option<Record> {
     let (group, rest) = take_id(rest)?;
     let group = GroupId::from_bytes(group);
     let (&part, rest) = rest.split_first()?;
+    let (level, rest) = match (part, rest.split_first()) {
+        (INDEX, Some((&level, rest))) => (level, rest),
+        _ => (0, rest),
+    };
     let (model, key) = rest.split_first_chunk::<64>()?;
     let model = ModelId::from_bytes(*model);
     if space != GROUP {
@@ -257,8 +286,44 @@ pub(crate) fn parse(key: &[u8]) -> Option<Record> {
             })
         }
 
+        INDEX => Some(Record::Index {
+            group,
+            model,
+            key: key.to_vec(),
+            committed: level == 1,
+        }),
+
         _ => None,
     }
+}
+
+/// The indexes this device keeps of the group's tables, and how far
+/// along each is.
+pub(crate) fn indexes(id: GroupId) -> Vec<u8> {
+    [group(id), vec![INDEXES]].concat()
+}
+
+/// A row's place in an index of `model`, at one level of read. `key`
+/// is the column, the value the row holds in it, and the row.
+pub(crate) fn index(id: GroupId, committed: bool, model: ModelId, key: &[u8]) -> Vec<u8> {
+    let level = vec![INDEX, u8::from(committed)];
+
+    [group(id), level, model.as_bytes().to_vec(), key.to_vec()].concat()
+}
+
+/// Where it says what place a row has in an index, so the place can
+/// be found again when the row changes.
+pub(crate) fn indexed(
+    id: GroupId,
+    committed: bool,
+    model: ModelId,
+    column: &[u8],
+    row: &[u8],
+) -> Vec<u8> {
+    let level = vec![INDEXED, u8::from(committed)];
+    let model = model.as_bytes().to_vec();
+
+    [group(id), level, model, column.to_vec(), row.to_vec()].concat()
 }
 
 fn take_id(bytes: &[u8]) -> Option<([u8; 32], &[u8])> {

@@ -278,3 +278,36 @@ fn a_device_that_caught_up_from_a_snapshot_counts_on_from_there() {
         assert!(given.contains(&("c".to_owned(), Value::Integer(3))));
     }
 }
+
+/// A number is written when its row is committed, and by no entry. An
+/// index of the column has it all the same, to either kind of read.
+#[test]
+fn an_index_has_what_committing_a_row_wrote() {
+    let (mut cluster, table) = billing();
+    cluster.keep_index(NAS, table, number(table));
+    invoice(&mut cluster, PHONE, table, "first");
+    cluster.settle();
+
+    let one = Query::lookup(cluster.home, table, number(table), &1.into());
+    for query in [one.clone(), one.committed()] {
+        let found = Table::row_keys(&cluster.read(NAS, &query));
+        assert_eq!(found, [b"first".to_vec()]);
+    }
+}
+
+/// A column that's dropped takes its index's rows with it.
+#[test]
+fn an_index_of_a_dropped_column_finds_nothing() {
+    let (mut cluster, table) = billing();
+    cluster.keep_index(NAS, table, memo(table));
+    invoice(&mut cluster, PHONE, table, "first");
+    cluster.settle();
+    let everything = Query::index(cluster.home, table, memo(table), ..);
+    assert_eq!(cluster.read(NAS, &everything).len(), 1);
+
+    cluster.write(PHONE, Transaction::new().drop_column(table, memo(table)));
+    cluster.settle();
+
+    assert_eq!(cluster.read(NAS, &everything), []);
+    assert_eq!(cluster.read(NAS, &everything.committed()), []);
+}

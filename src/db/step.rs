@@ -113,6 +113,11 @@ impl<V: View> Step<V> {
     }
 
     /// What's become of a transaction, for whoever wrote it.
+    /// What's been reported as changed so far.
+    pub(crate) fn changes(&self) -> Vec<Changed> {
+        self.changed.iter().cloned().collect()
+    }
+
     pub(crate) fn tell(&mut self, told: Told) {
         if self.aside.is_none() {
             self.told.push(told);

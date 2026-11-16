@@ -118,6 +118,11 @@ impl From<Vec<u8>> for Value {
 }
 
 impl ColumnId {
+    /// Sorts before every other.
+    pub(crate) const FIRST: Self = Self([0; 8]);
+    /// Sorts after every other.
+    pub(crate) const LAST: Self = Self([0xFF; 8]);
+
     /// A column of whole numbers. The application supplies the nonce, as
     /// with a [`ModelId`].
     #[must_use]
