@@ -435,7 +435,7 @@ impl Chain {
         loop {
             let mut moved = self.promise(identity);
             moved |= self.vote(identity, &valid);
-            moved |= self.put(identity);
+            moved |= self.put(identity, &valid);
             moved |= self.decide();
             if !moved {
                 return advanced;
@@ -539,7 +539,15 @@ impl Chain {
 
     /// Names the checkpoint for this device's attempt, once a quorum has
     /// promised it: the latest any of them voted for, or else its own.
-    fn put(&mut self, identity: &Identity) -> bool {
+    ///
+    /// Its own, too, if a quorum of those who promised had voted for
+    /// nothing: then nothing earlier can have been decided, whatever
+    /// the rest voted for. Without that, one elector voting for a
+    /// checkpoint nobody else will vouch for would have every later
+    /// attempt carry it, and none of them finish. So an attempt
+    /// that would have to carry a checkpoint this device won't vote
+    /// for waits for such a quorum instead.
+    fn put(&mut self, identity: &Identity, valid: impl Fn(&Checkpoint) -> bool) -> bool {
         let me = identity.peer();
         let Some((ballot, mine)) = &self.slot.candidate else {
             return false;
@@ -558,10 +566,20 @@ impl Chain {
             return false;
         }
 
+        let unvoted = promises
+            .iter()
+            .filter(|(_, it)| it.payload().accepted.is_none());
+        let unvoted = unvoted.map(|(peer, _)| **peer).collect();
         let voted = promises
             .iter()
             .filter_map(|(_, it)| it.payload().accepted.as_ref());
         let inherited = voted.max_by_key(|(ballot, _)| *ballot);
+        let free = self.tip().electorate.has_quorum(&unvoted);
+        let inherited = inherited.filter(|_| !free);
+        if inherited.is_some_and(|(_, voted)| !valid(voted)) {
+            return false;
+        }
+
         let proposal = Proposal {
             slot: self.tip().digest(),
             ballot: *ballot,

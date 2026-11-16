@@ -108,7 +108,7 @@ impl Entry {
         keys: &Keyring,
     ) -> Option<Checked> {
         let about = about(identity.peer(), &header);
-        let plain = encoding::encode(&operations);
+        let plain = encoding::encode(&carried(&operations));
         let payload = keys.seal(&about, header.under.height, plain)?;
         header.payload = Hash::of_payload(&payload);
         let hash = Hash::of_header(identity.peer(), &header);
@@ -136,7 +136,7 @@ impl Entry {
         let intact = said.group == group && said.payload == Hash::of_payload(&self.payload);
         let (operations, unread) = match self.read(keys) {
             Read::Does(operations) => (operations, false),
-            Read::Sealed => (Vec::new(), true),
+            Read::Sealed | Read::Foreign => (Vec::new(), true),
             Read::Nonsense => return None,
         };
         let within = |operation: &Operation| operation.model.clock() == said.clock;
@@ -156,11 +156,54 @@ impl Entry {
         let about = about(self.header.author(), header);
 
         match keys.open(&about, header.under.height, &self.payload) {
-            Opened::Plain(plain) => encoding::decode(&plain).map_or(Read::Nonsense, Read::Does),
+            Opened::Plain(plain) => understood(&plain, header.clock),
             Opened::Unreadable => Read::Sealed,
             Opened::Garbled => Read::Nonsense,
         }
     }
+}
+
+/// An operation as it's written down. What it changes is in the
+/// vocabulary of its model's kind, and a device that lacks the kind
+/// can still tell where one operation ends and the next begins.
+#[derive(Serialize, Deserialize)]
+struct Carried {
+    model: ModelId,
+    change: Vec<u8>,
+}
+
+fn carried(operations: &[Operation]) -> Vec<Carried> {
+    let carried = |operation: &Operation| Carried {
+        model: operation.model,
+        change: encoding::encode(&operation.change),
+    };
+
+    operations.iter().map(carried).collect()
+}
+
+/// What `plain` says, to a device that has the kinds it's for.
+fn understood(plain: &[u8], clock: ClockId) -> Read {
+    let Some(carried) = encoding::decode::<Vec<Carried>>(plain) else {
+        return Read::Nonsense;
+    };
+    if carried.iter().any(|it| it.model.clock() != clock) {
+        return Read::Nonsense;
+    }
+    if carried.iter().any(|it| it.model.kind().is_none()) {
+        return Read::Foreign;
+    }
+
+    let operation = |carried: Carried| {
+        let change = encoding::decode(&carried.change)?;
+
+        Some(Operation {
+            model: carried.model,
+            change,
+        })
+    };
+    let operations: Option<Vec<Operation>> = carried.into_iter().map(operation).collect();
+
+    operations.map_or(Read::Nonsense, Read::Does)
 }
 
 /// What a device makes of an entry's payload.
@@ -168,6 +211,8 @@ enum Read {
     Does(Vec<Operation>),
     /// This device lacks the secret to tell.
     Sealed,
+    /// It's for a kind of model this device doesn't have.
+    Foreign,
     /// It isn't a list of operations, whoever reads it.
     Nonsense,
 }
@@ -189,7 +234,7 @@ impl Entry {
         let hash = Hash::of_header(self.header.author(), self.header.payload());
         let (operations, unread) = match self.read(keys) {
             Read::Does(operations) => (operations, false),
-            Read::Sealed => (Vec::new(), true),
+            Read::Sealed | Read::Foreign => (Vec::new(), true),
             Read::Nonsense => (Vec::new(), false),
         };
 
@@ -312,6 +357,53 @@ mod tests {
         let entry = Entry::author(&identity, header, operations, &Keyring::Open);
 
         (group, entry.expect("an open group").entry)
+    }
+
+    /// An entry like [`entry`]'s, saying `plain`.
+    fn saying(clock: ClockId, plain: &[u8]) -> (GroupId, Entry) {
+        let identity = Identity::from_secret_key([1; 32]);
+        let (group, entry) = entry(clock, ModelId::kv(clock, [5; 32]));
+        let mut header = entry.header.payload().clone();
+        header.payload = Hash::of_payload(plain);
+        let header = Signed::sign(&identity, header).signed().clone();
+        let payload = plain.to_vec();
+
+        (group, Entry { header, payload })
+    }
+
+    #[test]
+    fn an_entry_for_a_kind_this_device_lacks_is_kept_unread() {
+        let clock = ClockId::from_bytes([3; 32]);
+        let other = ClockId::from_bytes([4; 32]);
+        let (group, newer) = entry(clock, ModelId::allowances(clock, [5; 32]));
+        let (_, outside) = entry(clock, ModelId::allowances(other, [5; 32]));
+
+        crate::model::predate(true);
+        let kept = newer.clone().check(group, &Keyring::Open);
+        let refused = outside.check(group, &Keyring::Open);
+        crate::model::predate(false);
+
+        assert!(kept.expect("an entry all the same").unread);
+        assert!(refused.is_none(), "it says which clock it's for");
+        assert!(!newer.trusted(&Keyring::Open).unread);
+    }
+
+    #[test]
+    fn an_entry_that_says_nothing_its_kind_could_mean_is_refused() {
+        let clock = ClockId::from_bytes([3; 32]);
+        let model = ModelId::kv(clock, [5; 32]);
+        let sound = carried(&[Operation::set(model, b"key".to_vec(), b"value".to_vec())]);
+        let garbled = vec![Carried {
+            model,
+            change: vec![0xFF; 9],
+        }];
+
+        let (group, entry) = saying(clock, &encoding::encode(&sound));
+        assert!(entry.check(group, &Keyring::Open).is_some());
+        let (group, entry) = saying(clock, &encoding::encode(&garbled));
+        assert!(entry.check(group, &Keyring::Open).is_none());
+        let (group, entry) = saying(clock, b"\xFF\xFF\xFF");
+        assert!(entry.check(group, &Keyring::Open).is_none());
     }
 
     #[test]

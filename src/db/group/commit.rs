@@ -44,6 +44,14 @@ pub(super) struct Covered {
     pub(super) state: Root,
 }
 
+impl Covered {
+    /// Whether this commits nothing beyond `before`, what the
+    /// checkpoint before it did.
+    fn stays(&self, before: Option<&Self>) -> bool {
+        before.is_some_and(|it| it.frontier == self.frontier && it.state == self.state)
+    }
+}
+
 impl Covers {
     /// What's covered of `clock`. Nothing, if it isn't named.
     pub(super) fn frontier(&self, clock: ClockId) -> Frontier {
@@ -136,7 +144,7 @@ impl Group {
         // Vouching for a checkpoint is vouching for every clock in it,
         // and there's no vouching for what can't be read.
         if self.partial()
-            || self.is_blind()
+            || self.wanting().is_some()
             || self.folded != tip.height
             || !self.clocks.iter().all(kept)
         {
@@ -144,10 +152,20 @@ impl Group {
         }
 
         let proven = self.proven();
+        let before = covers_of(tip).unwrap_or_default();
         let mut trial = step.fork();
         for (&id, covered) in &covers.clocks {
             let unheard = Clock::new(self.id, id);
             let clock = self.clocks.get(&id).unwrap_or(&unheard);
+
+            // There's no vouching for what can't be read. What can be
+            // vouched for is that nothing more of it is committed.
+            if clock.is_blind() {
+                if !covered.stays(before.clocks.get(&id)) {
+                    return Ok(false);
+                }
+                continue;
+            }
             let writers = tip.electorate.writers(id).except(&proven);
             let stood = |peer: Peer, height: u64| self.standing(peer, id, height);
             if !clock.history.supports(&covered.frontier, writers, stood) {
@@ -204,7 +222,7 @@ impl Group {
         }
 
         let free = self.chain.attempt().is_none() || self.stalled > patience;
-        if !free || self.folded != tip.height || self.partial() || self.is_blind() {
+        if !free || self.folded != tip.height || self.partial() || self.wanting().is_some() {
             return Ok(());
         }
 
@@ -220,6 +238,11 @@ impl Group {
         // As much as can be covered: an entry written on top of one
         // that isn't held waits for it.
         let frontiers = self.clocks.iter().map(|(&id, clock)| {
+            // A clock this device can't read stays where it is.
+            if clock.is_blind() {
+                return (id, clock.history.committed.clone());
+            }
+
             let writers = tip.electorate.writers(id).except(&proven);
 
             let stood = |peer: Peer, height: u64| self.standing(peer, id, height);
@@ -241,6 +264,7 @@ impl Group {
             return Ok(());
         }
 
+        let before = covers_of(tip).unwrap_or_default();
         let mut trial = step.fork();
         let mut covers = Covers {
             clocks: BTreeMap::new(),
@@ -250,6 +274,12 @@ impl Group {
             let Some(clock) = self.clocks.get(&id) else {
                 continue;
             };
+            if clock.is_blind() {
+                covers
+                    .clocks
+                    .extend(before.clocks.get(&id).map(|it| (id, it.clone())));
+                continue;
+            }
 
             let state = clock.settle(&frontier, &mut trial).await?.state;
             covers.clocks.insert(id, Covered { frontier, state });

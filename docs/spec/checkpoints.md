@@ -42,7 +42,10 @@ A checkpoint is a quorum's signed statement that a stretch of history is final. 
 - A contributor that cannot yet check a checkpoint syncs until it can. Its vote waits; its promise does not.
 - A witness votes on the chain's shape alone: the predecessor, the configuration, and that the frontier does not go back.
 - A witness starts no attempt of its own, since it cannot work out what one would commit. A contributor without weight can: starting an attempt takes a role, and deciding it takes a quorum.
-- An attempt may have to name a checkpoint its own author has not checked, because a promise reported it. Naming is not vouching; the author still votes only after checking.
+- An attempt names its own checkpoint when a quorum of those who promised it had voted for nothing, whatever the rest voted for. Nothing earlier can have been decided.
+- Otherwise it names the latest checkpoint a promise reported, if its author would vote for that, and waits for more promises if not.
+- One peer voting for a checkpoint nobody else will vouch for therefore cannot hold up every later attempt.
+- A contributor that cannot verify a clock votes for a checkpoint only if it commits nothing more in that clock, and proposes only such checkpoints. The other clocks carry on.
 - A checkpoint that fails a contributor's check is never voted for by it. Contributors holding enough weight to block a quorum can therefore stop a bad checkpoint, and a quorum of careless ones cannot be stopped.
 
 ## Progress

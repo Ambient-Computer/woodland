@@ -149,6 +149,12 @@ impl Clock {
         self.lost || self.history.uncommitted.values().any(|entry| entry.unread)
     }
 
+    /// Whether something committed here went unread, so that what
+    /// this device has for the clock's state isn't its state.
+    pub(super) fn is_lost(&self) -> bool {
+        self.lost
+    }
+
     /// Whether nothing was ever written here, as far as this device
     /// knows. Such a clock isn't one yet.
     pub(super) fn is_empty(&self) -> bool {

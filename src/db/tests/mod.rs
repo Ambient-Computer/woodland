@@ -8,6 +8,7 @@ mod checkpoints;
 mod clocks;
 mod compaction;
 mod conflicts;
+mod foreign;
 mod forks;
 mod guards;
 mod interest;
@@ -47,6 +48,9 @@ struct Sim {
     changes: Vec<Vec<Changed>>,
     /// The group most tests are about.
     home: GroupId,
+    /// The devices running a version of the library from before
+    /// allowances were added.
+    old: BTreeSet<usize>,
 }
 
 /// One device's view of what's stored.
@@ -73,6 +77,7 @@ impl Sim {
             links: BTreeSet::new(),
             changes: vec![Vec::new(); 8],
             home: GroupId::from_bytes([0; 32]),
+            old: BTreeSet::new(),
         }
     }
 
@@ -94,6 +99,12 @@ impl Sim {
         sim.home = group;
 
         (sim, group)
+    }
+
+    /// Runs what comes next as the version of the library `device`
+    /// has.
+    fn wake(&self, device: usize) {
+        crate::model::predate(self.old.contains(&device));
     }
 
     fn id(&self, device: usize) -> VerifyingKey {
@@ -127,6 +138,7 @@ impl Sim {
 
         for (here, there) in [(a, b), (b, a)] {
             let there = self.id(there);
+            self.wake(here);
             let outputs = block_on(self.devices[here].connected(there)).expect("connected");
             self.absorb(here, outputs);
         }
@@ -173,6 +185,7 @@ impl Sim {
         };
 
         let from = self.id(from);
+        self.wake(to);
         let outputs = block_on(self.devices[to].receive(from, &message)).expect("received");
         self.absorb(to, outputs);
 
@@ -189,6 +202,7 @@ impl Sim {
     }
 
     fn tick(&mut self, device: usize) {
+        self.wake(device);
         let outputs = block_on(self.devices[device].tick()).expect("ticked");
         self.absorb(device, outputs);
     }
@@ -205,6 +219,7 @@ impl Sim {
     }
 
     fn write_to(&mut self, device: usize, group: GroupId, transaction: Transaction) {
+        self.wake(device);
         let outputs = block_on(self.devices[device].write(group, transaction));
         self.absorb(device, outputs.expect("written"));
     }
@@ -224,6 +239,7 @@ impl Sim {
             .into_iter()
             .map(|it| (self.id(it), Role::contributor(1)))
             .collect();
+        self.wake(device);
         let outputs = block_on(self.devices[device].reconfigure(group, weights));
         self.absorb(device, outputs.expect("asked"));
     }
@@ -239,11 +255,13 @@ impl Sim {
             .into_iter()
             .map(|(it, role)| (self.id(it), role))
             .collect();
+        self.wake(device);
         let outputs = block_on(self.devices[device].reconfigure(group, roles));
         self.absorb(device, outputs.expect("asked"));
     }
 
     fn compact(&mut self, device: usize, group: GroupId) {
+        self.wake(device);
         let outputs = block_on(self.devices[device].compact(group)).expect("compacted");
         self.absorb(device, outputs);
     }
@@ -263,6 +281,7 @@ impl Sim {
     fn restart(&mut self, device: usize) {
         self.isolate(device);
         let store = self.devices[device].store.clone();
+        self.wake(device);
         let reopened = block_on(Database::open(store, [0xEE; 32]));
         self.devices[device] = reopened.expect("reopened");
     }
@@ -288,6 +307,8 @@ impl Sim {
     }
 
     fn read(&self, device: usize, query: &Query) -> Vec<(Vec<u8>, Vec<u8>)> {
+        self.wake(device);
+
         block_on(self.devices[device].read(query)).expect("read")
     }
 

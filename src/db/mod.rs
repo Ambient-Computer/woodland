@@ -151,7 +151,8 @@ impl<S: Store> Database<S> {
             };
 
             let id = group::id_of(&founding);
-            if let Some(group) = Group::load(id, &step).await? {
+            if let Some(mut group) = Group::load(id, &step).await? {
+                group.outgrow(&mut step).await?;
                 groups.insert(id, group);
             }
         }

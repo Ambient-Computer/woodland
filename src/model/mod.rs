@@ -216,6 +216,33 @@ pub(crate) enum Effect {
     Drop,
 }
 
+/// How many kinds of model this version of the library has. Kinds
+/// are only ever added, so a later version has every kind an earlier
+/// one did.
+#[cfg(not(test))]
+pub(crate) fn vocabulary() -> u8 {
+    Kind::Allowances as u8
+}
+
+#[cfg(test)]
+thread_local! {
+    static VOCABULARY: std::cell::Cell<u8> = const { std::cell::Cell::new(Kind::Allowances as u8) };
+}
+
+#[cfg(test)]
+pub(crate) fn vocabulary() -> u8 {
+    VOCABULARY.get()
+}
+
+/// Makes this thread run as a version of the library from before
+/// allowances were added, or as the latest.
+#[cfg(test)]
+pub(crate) fn predate(old: bool) {
+    let latest = if old { Kind::Table } else { Kind::Allowances };
+
+    VOCABULARY.set(latest as u8);
+}
+
 /// The kinds of model there are. A model's kind is part of its ID.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
@@ -508,7 +535,7 @@ impl ModelId {
             Kind::Allowances,
         ]
         .into_iter()
-        .find(|&kind| kind as u8 == self.id[0])
+        .find(|&kind| kind as u8 == self.id[0] && kind as u8 <= vocabulary())
     }
 
     /// The clock the model belongs to. A transaction writes to the

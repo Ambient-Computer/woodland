@@ -6,6 +6,7 @@ mod clock;
 mod commit;
 mod compact;
 mod deferred;
+mod foreign;
 mod forks;
 mod history;
 mod interest;
@@ -77,6 +78,9 @@ pub(crate) struct Group {
     /// The height of the sealed snapshot this device keeps without
     /// being able to read it.
     carrying: Option<u64>,
+    /// How many kinds of model the library had when this was last
+    /// saved.
+    spoke: u8,
 }
 
 /// What's kept of a group besides its chain and its entries.
@@ -92,6 +96,8 @@ struct Meta {
     mending: bool,
     keys: Keyring,
     carrying: Option<u64>,
+    /// How many kinds of model the library had when this was saved.
+    spoke: u8,
 }
 
 /// What came of trying to write.
@@ -156,6 +162,7 @@ impl Group {
             mending: false,
             keys,
             carrying: None,
+            spoke: crate::model::vocabulary(),
         }
     }
 
@@ -202,6 +209,7 @@ impl Group {
         group.mending = meta.mending;
         group.keys = meta.keys;
         group.carrying = meta.carrying;
+        group.spoke = meta.spoke;
         group.recall(step).await?;
         for (clock, kept) in meta.clocks {
             let held = Clock::load(id, clock, kept, group.keys.clone(), step).await?;
@@ -292,6 +300,7 @@ impl Group {
             mending: self.mending,
             keys: self.keys.clone(),
             carrying: self.carrying,
+            spoke: crate::model::vocabulary(),
         };
         step.save(keys::meta(self.id), &meta);
         if self.said {
