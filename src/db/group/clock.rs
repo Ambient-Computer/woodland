@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::actor::{Identity, Peer};
 use crate::chain::{Checkpoint, Writers};
 use crate::clock::Stamp;
-use crate::db::{Changed, ClockId, GroupId, Pending, Waiting, keys};
+use crate::db::{ClockId, GroupId, Pending, Waiting, keys};
 use crate::encoding;
 use crate::model::{ModelId, Operation};
 use crate::seal::Keyring;
@@ -20,13 +20,13 @@ use crate::store::{StoreError, View};
 
 use super::super::entry::{Checked, Entry, Frontier, Hash, Header, Link, Outline, Under, reach};
 use super::super::step::Step;
-use super::deferred;
 use super::history::History;
+use super::job::Job;
 use super::judge::{self, Written};
 use super::root::{Accumulator, Root};
 use super::rules;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct Clock {
     pub(super) group: GroupId,
     pub(super) id: ClockId,
@@ -49,6 +49,9 @@ pub(super) struct Clock {
     /// Whether an entry was committed that this device couldn't read.
     /// Its state is behind from then on, and only a snapshot mends it.
     lost: bool,
+    /// The transaction being committed, if that takes more than a
+    /// step.
+    pub(super) job: Option<Job>,
     /// The uncommitted entries that happen, as storage shows them.
     live: BTreeSet<Stamp>,
     /// Whether verdicts need working out again.
@@ -66,19 +69,22 @@ pub(super) struct Kept {
     base: u64,
     dropped: BTreeSet<ModelId>,
     lost: bool,
+    job: Option<Job>,
 }
 
 /// What committing a checkpoint's entries comes to, in one clock.
 pub(super) struct Settled {
-    pub(super) state: Root,
-    dropped: BTreeSet<ModelId>,
+    pub(super) dropped: BTreeSet<ModelId>,
     /// Whether any of it went unread, and so undone.
     pub(super) lost: bool,
-    /// The covered entries, in timeline order, and whether each happens.
-    verdicts: Vec<(Stamp, bool)>,
-    /// The keys written by changes that were worked out on the way.
-    /// No entry declared them.
-    resolved: Vec<(ModelId, Vec<u8>)>,
+    /// The entries settled, in timeline order, and whether each
+    /// happens.
+    pub(super) verdicts: Vec<(Stamp, bool)>,
+    /// How far along the timeline that got.
+    pub(super) through: Frontier,
+    /// The transaction that comes next, if committing it is a
+    /// [job](Job).
+    pub(super) job: Option<Job>,
 }
 
 impl Clock {
@@ -94,6 +100,7 @@ impl Clock {
             dropped: BTreeSet::new(),
             keys: Keyring::Open,
             lost: false,
+            job: None,
             live: BTreeSet::new(),
             stale: false,
         }
@@ -112,6 +119,7 @@ impl Clock {
         clock.lost = kept.lost;
         clock.shed = kept.shed;
         clock.swept = kept.swept;
+        clock.job = kept.job;
         clock.base = kept.base;
         clock.restoring = kept.restoring;
         clock.dropped = kept.dropped;
@@ -146,6 +154,7 @@ impl Clock {
             restoring: self.restoring,
             dropped: self.dropped.clone(),
             lost: self.lost,
+            job: self.job.clone(),
         }
     }
 
@@ -295,7 +304,7 @@ impl Clock {
     }
 
     /// Reads back what an entry does. Only its outline is kept in memory.
-    async fn operations<V: View>(
+    pub(super) async fn operations<V: View>(
         &self,
         entry: &Outline,
         step: &Step<V>,
@@ -320,9 +329,8 @@ impl Clock {
         let stored = step.get(&keys::state(self.group, self.id)).await?;
         let stored = stored.and_then(|bytes| Accumulator::from_bytes(&bytes));
         let mut state = stored.unwrap_or_default();
-        let mut dropped = self.dropped.clone();
+        let dropped = self.dropped.clone();
         let mut verdicts = Vec::new();
-        let mut resolved = Vec::new();
 
         // Committing what can't be read would be guessing. The state
         // stays where it was, and is behind from here on.
@@ -331,60 +339,59 @@ impl Clock {
             verdicts.extend(covered.map(|entry| (entry.stamp(), false)));
 
             return Ok(Settled {
-                state: state.root(&self.keys),
                 dropped,
                 lost: !verdicts.is_empty(),
                 verdicts,
-                resolved,
+                through: frontier.clone(),
+                job: None,
             });
         }
 
+        let mut through = self.history.committed.clone();
+        let mut job = None;
         for entry in self.history.covered(frontier) {
-            let mut happens = judge::weigh(self.group, entry, &Written::on(&dropped), step).await?;
+            let happens = judge::weigh(self.group, entry, &Written::on(&dropped), step).await?;
             if happens {
                 let operations = self.operations(entry, step).await?;
                 let waits = operations.iter().any(|it| it.waits().is_some());
+                let drops = operations.iter().filter(|it| it.drops());
+                let drops: BTreeSet<ModelId> = drops.map(|it: &Operation| it.model).collect();
+
+                // Whether it can all be done isn't known until it's
+                // been tried, and it's all or nothing. That, or taking
+                // a model's values away, is more than this does.
                 if waits || rules::bind(self.group, &operations, step).await? {
-                    // Whether it can all be done isn't known until
-                    // it's been tried, and it's all or nothing.
-                    let (mut trial, mut sum) = (step.fork(), state.clone());
-                    let tried = deferred::carry_out(
-                        self.group,
-                        &operations,
-                        &dropped,
-                        &mut sum,
-                        &mut trial,
-                    );
-                    happens = tried.await?.is_some();
-                    if happens {
-                        let done = deferred::carry_out(
-                            self.group,
-                            &operations,
-                            &dropped,
-                            &mut state,
-                            step,
-                        );
-                        resolved.extend(done.await?.unwrap_or_default());
-                    }
-                } else {
-                    judge::commit(self.group, &operations, &mut state, step).await?;
+                    job = Some(Job::trying(entry.stamp()));
+                    break;
                 }
 
-                let drops = operations.iter().filter(|it| happens && it.drops());
-                dropped.extend(drops.map(|it: &Operation| it.model));
+                judge::commit(self.group, &operations, &mut state, step).await?;
+                if !drops.is_empty() {
+                    job = Some(Job::emptying(entry.stamp(), drops));
+                    break;
+                }
             }
             verdicts.push((entry.stamp(), happens));
+            through.insert(entry.author, entry.link);
         }
 
         step.put(keys::state(self.group, self.id), state.to_bytes());
 
         Ok(Settled {
-            state: state.root(&self.keys),
             dropped,
             lost: false,
             verdicts,
-            resolved,
+            through,
+            job,
         })
+    }
+
+    /// The name of the clock's committed state, as `step` has it.
+    pub(super) async fn root<V: View>(&self, step: &Step<V>) -> Result<Root, StoreError> {
+        let stored = step.get(&keys::state(self.group, self.id)).await?;
+        let stored = stored.and_then(|bytes| Accumulator::from_bytes(&bytes));
+
+        Ok(stored.unwrap_or_default().root(&self.keys))
     }
 
     /// Takes what [`settle`] did in the same step as done: the entries
@@ -410,15 +417,6 @@ impl Clock {
             judge::hide(self.group, &entry, step);
             judge::notify(self.group, &entry, false, step);
             self.live.remove(&stamp);
-        }
-
-        for (model, key) in settled.resolved {
-            step.changed(Changed::Key {
-                group: self.group,
-                model,
-                key,
-                committed: true,
-            });
         }
 
         self.history.commit(frontier);

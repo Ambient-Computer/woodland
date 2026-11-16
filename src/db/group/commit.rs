@@ -177,8 +177,7 @@ impl Group {
                 return Ok(false);
             }
 
-            let settled = clock.settle(&covered.frontier, &mut trial).await?;
-            if settled.state != covered.state {
+            if clock.foresee(&covered.frontier, &mut trial).await? != covered.state {
                 return Ok(false);
             }
         }
@@ -286,7 +285,7 @@ impl Group {
                 continue;
             }
 
-            let state = clock.settle(&frontier, &mut trial).await?.state;
+            let state = clock.foresee(&frontier, &mut trial).await?;
             covers.clocks.insert(id, Covered { frontier, state });
         }
         if self
@@ -361,11 +360,13 @@ impl Group {
                 continue;
             };
 
-            let (part, taken, all) = clock.history.part(frontier, budget);
-            budget -= taken;
-            whole &= all;
-            let settled = clock.settle(&part, step).await?;
-            if all && !settled.lost && named.is_some_and(|named| named != settled.state) {
+            if !clock.work(frontier, &mut budget, step).await? {
+                whole = false;
+                break;
+            }
+
+            let reached = clock.root(step).await?;
+            if !clock.is_lost() && named.is_some_and(|named| named != reached) {
                 tracing::error!(
                     group = ?self.id,
                     clock = ?id,
@@ -373,8 +374,6 @@ impl Group {
                     "a quorum committed a state this device didn't reach"
                 );
             }
-
-            clock.commit(&part, settled, step);
         }
         self.folding = (!whole).then_some(checkpoint.height);
         if !whole {

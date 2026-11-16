@@ -473,6 +473,7 @@ impl Group {
             keys::uncommitted(self.id),
             keys::logs(self.id),
             keys::staged(self.id),
+            keys::trial(self.id),
             keys::sealed(self.id),
         ];
         ranges.extend(clocks.into_iter().map(|id| keys::state(self.id, id)));

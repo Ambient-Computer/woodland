@@ -39,8 +39,8 @@ pub(super) async fn bind<V: View>(
     Ok(false)
 }
 
-/// Whether every row under one of the `written` keys, as it's now
-/// committed in `step`, meets every rule its table has.
+/// Whether every row under one of the `written` keys, as `step` and
+/// what's laid `over` it have it, meets every rule its table has.
 pub(super) async fn hold<V: View>(
     group: GroupId,
     written: &[(ModelId, Vec<u8>)],

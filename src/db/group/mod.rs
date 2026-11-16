@@ -10,6 +10,7 @@ mod foreign;
 mod forks;
 mod history;
 mod interest;
+mod job;
 mod judge;
 mod restore;
 mod root;

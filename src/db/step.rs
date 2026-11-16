@@ -97,26 +97,36 @@ impl<V: View> Step<V> {
         Ok(found.into_iter().collect())
     }
 
-    /// The first `limit` things with a key in `start..end`, in key order.
+    /// The first `limit` things with a key in `start..end`, in key
+    /// order. Fewer only if that's all there are.
     pub(crate) async fn scan_page(
         &self,
         start: &[u8],
         end: &[u8],
         limit: usize,
     ) -> Result<Vec<Entry>, StoreError> {
-        let stored = self.view.scan(start, Some(end), Order::Ascending, limit);
-        let stored = stored.await?;
+        let mut found = BTreeMap::new();
+        let mut from = start.to_vec();
+        while found.len() < limit {
+            let stored = self.view.scan(&from, Some(end), Order::Ascending, limit);
+            let stored = stored.await?;
 
-        // Past the last key read, what's stored is unknown, so what's
-        // pending there has to wait for the next page.
-        let last = stored.last().filter(|_| stored.len() == limit);
-        let known = last.map_or_else(|| end.to_vec(), |(key, _)| keys::after(key));
-        let mut found: BTreeMap<_, _> = stored.into_iter().collect();
-        for (key, written) in self.pending.range(start.to_vec()..known) {
-            match written {
-                Some(value) => found.insert(key.clone(), value.clone()),
-                None => found.remove(key),
-            };
+            // Past the last key read, what's stored is unknown, so
+            // what's pending there has to wait. What this step deleted
+            // may leave the page short with more beyond it.
+            let last = stored.last().filter(|_| stored.len() == limit);
+            let known = last.map_or_else(|| end.to_vec(), |(key, _)| keys::after(key));
+            found.extend(stored);
+            for (key, written) in self.pending.range(from..known.clone()) {
+                match written {
+                    Some(value) => found.insert(key.clone(), value.clone()),
+                    None => found.remove(key),
+                };
+            }
+            if known.as_slice() >= end {
+                break;
+            }
+            from = known;
         }
 
         Ok(found.into_iter().take(limit).collect())

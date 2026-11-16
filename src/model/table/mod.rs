@@ -170,7 +170,7 @@ mod read;
 mod rows;
 mod value;
 
-pub(crate) use deferred::{Deferred, Each};
+pub(crate) use deferred::{Cursor, Deferred, Each};
 pub use filter::Filter;
 pub(crate) use order::successor;
 use place::Incarnation;

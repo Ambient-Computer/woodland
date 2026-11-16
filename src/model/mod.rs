@@ -175,6 +175,25 @@ pub(crate) trait Reads: Sized {
         start: &[u8],
         end: &[u8],
     ) -> impl Future<Output = Result<Vec<Entry>, StoreError>>;
+
+    /// The start of a [`scan`], from looking at about `limit` keys.
+    ///
+    /// [`scan`]: Self::scan
+    fn page(
+        &self,
+        start: &[u8],
+        end: &[u8],
+        limit: usize,
+    ) -> impl Future<Output = Result<Page, StoreError>>;
+}
+
+/// The start of a scan.
+#[derive(Debug, Default)]
+pub(crate) struct Page {
+    pub(crate) found: Vec<Entry>,
+    /// The last key looked at, if there may be more after it. Nothing
+    /// found is past it.
+    pub(crate) reach: Option<Vec<u8>>,
 }
 
 /// What a change that waited to be committed comes to: requirements

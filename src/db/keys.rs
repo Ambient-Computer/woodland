@@ -53,6 +53,7 @@ const COMMITTED: u8 = 2;
 const UNCOMMITTED: u8 = 3;
 const STAGED: u8 = 5;
 const SEALED: u8 = 6;
+const TRIAL: u8 = 7;
 
 const CHAIN: u8 = 1;
 const META: u8 = 2;
@@ -187,6 +188,16 @@ pub(crate) fn version(id: GroupId, model: ModelId, key: &[u8], stamp: Stamp) -> 
 /// Every value of a snapshot that's still arriving.
 pub(crate) fn staged(id: GroupId) -> Vec<u8> {
     [group(id), vec![STAGED]].concat()
+}
+
+/// What a transaction being tried out would write.
+pub(crate) fn trial(id: GroupId) -> Vec<u8> {
+    [group(id), vec![TRIAL]].concat()
+}
+
+/// What a transaction being tried out would leave under `key`.
+pub(crate) fn trial_value(id: GroupId, model: ModelId, key: &[u8]) -> Vec<u8> {
+    [trial(id), model.as_bytes().to_vec(), key.to_vec()].concat()
 }
 
 /// A snapshot of a sealed group, as a device that can't read it

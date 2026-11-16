@@ -119,6 +119,18 @@ impl Place {
         (vec![ROW], vec![ROW + 1])
     }
 
+    /// The row a key says something about, if it's about a row.
+    pub(crate) fn row_of(key: &[u8]) -> Option<Vec<u8>> {
+        match Self::parse(key)? {
+            Self::Row(row)
+            | Self::Keys(row)
+            | Self::Referred(row)
+            | Self::Retired(row)
+            | Self::Cell(row, ..) => Some(row),
+            _ => None,
+        }
+    }
+
     pub(crate) fn parse(key: &[u8]) -> Option<Self> {
         let (&kind, rest) = key.split_first()?;
         match kind {
@@ -159,12 +171,6 @@ impl Place {
             _ => None,
         }
     }
-}
-
-/// Where everything a read of the whole table needs is: that it
-/// exists, its columns, and its rows.
-pub(crate) fn whole() -> (Vec<u8>, Vec<u8>) {
-    (vec![TABLE], vec![ROW + 1])
 }
 
 /// Where the table's rules are.

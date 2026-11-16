@@ -161,9 +161,9 @@ pub(super) fn hide<V: View>(id: GroupId, entry: &Outline, step: &mut Step<V>) {
     }
 }
 
-/// Makes an entry's writes the committed values of their keys, and
-/// deletes every committed value of a model it drops. `state` is kept
-/// in step: it's the sum of everything committed.
+/// Makes an entry's writes the committed values of their keys. `state`
+/// is kept in step: it's the sum of everything committed. A model it
+/// drops is emptied afterwards, as a [job](super::job).
 pub(super) async fn commit<V: View>(
     id: GroupId,
     operations: &[Operation],
@@ -184,16 +184,6 @@ pub(super) async fn commit<V: View>(
                 value => value,
             };
             self::write(id, model, &write.key, value, state, step).await?;
-        }
-
-        if operation.drops() {
-            let prefix = keys::committed_value(id, model, b"");
-            let (start, end) = keys::range(prefix.clone());
-            for (key, value) in step.scan(&start, &end).await? {
-                state.clear(model, &key[prefix.len()..], &value);
-                step.delete(key);
-            }
-            state.drop(model);
         }
     }
 

@@ -14,6 +14,7 @@
 //! good.
 
 use std::collections::BTreeMap;
+use std::ops::Bound;
 
 use serde::{Deserialize, Serialize};
 
@@ -93,13 +94,22 @@ impl Deferred {
         }
     }
 
-    /// What it comes to, given what's committed before it: steps to
-    /// take in order, each checked against what the ones before it
-    /// left. `None` if it can't be done.
+    /// Some of what it comes to, given what's committed before it:
+    /// steps to take in order, each checked against what the ones
+    /// before it left, and where to carry on from. `None` if it can't
+    /// be done.
+    ///
+    /// It reads about `limit` keys, so that one that takes in a whole
+    /// table is worked out a part at a time. `state` is what the steps
+    /// found so far have left: none of them changes a row that's still
+    /// to be read.
     pub(crate) async fn resolve(
         &self,
         state: &impl Reads,
-    ) -> Result<Option<Vec<Resolved>>, StoreError> {
+        at: &Cursor,
+        limit: usize,
+    ) -> Result<Option<Found>, StoreError> {
+        let once = |steps: Vec<Resolved>| Found { steps, next: None };
         match self {
             Self::Number {
                 row,
@@ -108,35 +118,106 @@ impl Deferred {
             } => {
                 let numbered = number(row, *incarnation, *column, state).await?;
 
-                Ok(numbered.map(|it| vec![it]))
+                Ok(numbered.map(|it| once(vec![it])))
             }
 
-            Self::Each { filter, change } => each(filter, change, state).await,
-            Self::DropColumn { column } => Ok(Some(vec![Resolved {
+            Self::Each { filter, change } => each(filter, change, state, at, limit).await,
+            Self::DropColumn { column } => Ok(Some(once(vec![Resolved {
                 model: state.model(),
                 requires: vec![(Place::Table.key(), Requirement::Present)],
                 writes: vec![(Place::Column(*column).key(), None)],
-            }])),
-            Self::Rule { filter } => rule(filter, state).await,
+            }]))),
+            Self::Rule { filter } => rule(filter, state, at, limit).await,
             Self::Remove {
                 row,
                 incarnation,
                 referrers,
                 cascade,
-            } => remove(row, *incarnation, referrers, *cascade, state).await,
+            } => remove(row, *incarnation, referrers, *cascade, state, at, limit).await,
         }
+    }
+}
+
+/// How far working one out has got.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Cursor {
+    /// Which of the things it goes through, for one that goes through
+    /// several.
+    stage: usize,
+    /// The row to carry on from.
+    from: Option<Vec<u8>>,
+}
+
+/// Some of what a change that waited comes to.
+#[derive(Debug)]
+pub(crate) struct Found {
+    pub(crate) steps: Vec<Resolved>,
+    /// Where the rest is worked out from, if there's more.
+    pub(crate) next: Option<Cursor>,
+}
+
+/// Some of a table's rows, from the row `from` on, each of them whole,
+/// and the row to carry on from if there are more. `None` if there's
+/// no table.
+async fn some_rows(
+    state: &impl Reads,
+    from: Option<&Vec<u8>>,
+    limit: usize,
+) -> Result<Option<(Table, Option<Vec<u8>>)>, StoreError> {
+    let (start, end) = place::schema();
+    let schema = state.scan(&start, &end.unwrap_or_default()).await?;
+    if Table::read(&schema).is_none() {
+        return Ok(None);
+    }
+
+    let mut limit = limit.max(1);
+    loop {
+        let first = from.map_or(Bound::Unbounded, |row| Bound::Included(row.clone()));
+        let (start, end) = place::rows(first, Bound::Unbounded);
+        let page = state.page(&start, &end.unwrap_or_default(), limit).await?;
+
+        // The row the page stops in may have more to it. It waits for
+        // the next page, unless it's where this one began: then it's
+        // too big for a page, and the page has to grow.
+        let cut = page.reach.as_deref().and_then(Place::row_of);
+        if cut.is_some() && cut.as_ref() == from {
+            limit = limit.saturating_mul(2);
+            continue;
+        }
+
+        let whole = |(key, _): &(Vec<u8>, Vec<u8>)| cut.is_none() || Place::row_of(key) != cut;
+        let mut read = schema;
+        read.extend(page.found.into_iter().filter(whole));
+        let next = cut.filter(|_| page.reach.is_some());
+
+        return Ok(Table::read(&read).map(|table| (table, next)));
     }
 }
 
 /// A rule the rows already break can't be put in force. Mending them
 /// first is up to whoever wants it.
-async fn rule(filter: &Filter, state: &impl Reads) -> Result<Option<Vec<Resolved>>, StoreError> {
-    let (start, end) = place::whole();
-    let Some(table) = Table::read(&state.scan(&start, &end).await?) else {
+async fn rule(
+    filter: &Filter,
+    state: &impl Reads,
+    at: &Cursor,
+    limit: usize,
+) -> Result<Option<Found>, StoreError> {
+    let Some((table, next)) = some_rows(state, at.from.as_ref(), limit).await? else {
         return Ok(None);
     };
     if !table.rows().iter().all(|row| filter.picks(row)) {
         return Ok(None);
+    }
+    if let Some(from) = next {
+        let next = Some(Cursor {
+            stage: 0,
+            from: Some(from),
+        });
+
+        return Ok(Some(Found {
+            steps: Vec::new(),
+            next,
+        }));
     }
 
     let kept = (
@@ -144,11 +225,14 @@ async fn rule(filter: &Filter, state: &impl Reads) -> Result<Option<Vec<Resolved
         Some(encoding::encode(filter)),
     );
 
-    Ok(Some(vec![Resolved {
-        model: state.model(),
-        requires: Vec::new(),
-        writes: vec![kept],
-    }]))
+    Ok(Some(Found {
+        steps: vec![Resolved {
+            model: state.model(),
+            requires: Vec::new(),
+            writes: vec![kept],
+        }],
+        next: None,
+    }))
 }
 
 /// Whether a cell names the row under `key`.
@@ -161,8 +245,8 @@ fn names(value: &Value, key: &[u8]) -> bool {
 }
 
 /// Finds every row that names this one in a column it was told to
-/// look in, and deletes them and then the row, or gives up if there
-/// are any.
+/// look in, a column at a time, and deletes them and then the row, or
+/// gives up if there are any.
 ///
 /// Nothing can be placed before this any more, so the rows found are
 /// all there will ever be. A reference placed after it is pruned,
@@ -177,66 +261,92 @@ async fn remove(
     referrers: &[(ModelId, ColumnId)],
     cascade: bool,
     state: &impl Reads,
-) -> Result<Option<Vec<Resolved>>, StoreError> {
-    let (start, end) = place::whole();
-    let own = Table::read(&state.scan(&start, &end).await?);
-    let found = own.as_ref().and_then(|table| table.row(key));
-    let Some(row) = found.filter(|row| row.incarnation() == incarnation) else {
-        return Ok(None);
-    };
-
-    let mut steps = Vec::new();
-    let mut going = std::collections::BTreeSet::new();
-    for &(model, column) in referrers {
-        let Some(other) = state.of(model) else {
+    at: &Cursor,
+    limit: usize,
+) -> Result<Option<Found>, StoreError> {
+    let Some(&(model, column)) = referrers.get(at.stage) else {
+        let bound = || Bound::Included(key.to_vec());
+        let (start, end) = place::schema();
+        let mut read = state.scan(&start, &end.unwrap_or_default()).await?;
+        let (start, end) = place::rows(bound(), bound());
+        read.extend(state.scan(&start, &end.unwrap_or_default()).await?);
+        let own = Table::read(&read);
+        let found = own.as_ref().and_then(|table| table.row(key));
+        let Some(row) = found.filter(|row| row.incarnation() == incarnation) else {
             return Ok(None);
         };
-        let Some(table) = Table::read(&other.scan(&start, &end).await?) else {
-            continue;
-        };
 
-        for referrer in table.rows() {
-            let itself = model == state.model() && referrer.key() == key;
-            if itself || !names(referrer.get(column), key) {
-                continue;
-            }
-            if !cascade {
-                return Ok(None);
-            }
-            if going.insert((model, referrer.key().to_vec())) {
-                let operation = referrer.delete();
-                steps.push(Resolved {
-                    model,
-                    requires: operation.requires(),
-                    writes: operation.writes(),
-                });
-            }
+        let (target, keys) = (row.target(), row.keys());
+        let cells: Vec<_> = row.stored().collect();
+
+        return Ok(Some(Found {
+            steps: vec![Resolved {
+                model: state.model(),
+                requires: vec![rows::target(&target), rows::unchanged(key, keys)],
+                writes: rows::delete_writes(&target, &cells, keys, true),
+            }],
+            next: None,
+        }));
+    };
+
+    let Some(other) = state.of(model) else {
+        return Ok(None);
+    };
+    let onward = Cursor {
+        stage: at.stage + 1,
+        from: None,
+    };
+    let Some((table, next)) = some_rows(&other, at.from.as_ref(), limit).await? else {
+        return Ok(Some(Found {
+            steps: Vec::new(),
+            next: Some(onward),
+        }));
+    };
+
+    // A row found once is gone from what's read after, so one that
+    // names this row in two columns is still deleted once.
+    let mut steps = Vec::new();
+    for referrer in table.rows() {
+        let itself = model == state.model() && referrer.key() == key;
+        if itself || !names(referrer.get(column), key) {
+            continue;
         }
+        if !cascade {
+            return Ok(None);
+        }
+
+        let operation = referrer.delete();
+        steps.push(Resolved {
+            model,
+            requires: operation.requires(),
+            writes: operation.writes(),
+        });
     }
 
-    let (target, keys) = (row.target(), row.keys());
-    let cells: Vec<_> = row.stored().collect();
-    steps.push(Resolved {
-        model: state.model(),
-        requires: vec![rows::target(&target), rows::unchanged(key, keys)],
-        writes: rows::delete_writes(&target, &cells, keys, true),
-    });
+    let same = |from| Cursor {
+        stage: at.stage,
+        from: Some(from),
+    };
 
-    Ok(Some(steps))
+    Ok(Some(Found {
+        steps,
+        next: Some(next.map_or(onward, same)),
+    }))
 }
 
-/// Reads the whole table, and changes each row the filter picks the
-/// way a transaction that had just read it would. So everything a
-/// change to a row requires is required here, row by row: a value two
-/// rows are both given in a unique column, or a row something refers
-/// to, stops all of it.
+/// Reads the table a part at a time, and changes each row the filter
+/// picks the way a transaction that had just read it would. So
+/// everything a change to a row requires is required here, row by
+/// row: a value two rows are both given in a unique column, or a row
+/// something refers to, stops all of it.
 async fn each(
     filter: &Filter,
     change: &Each,
     state: &impl Reads,
-) -> Result<Option<Vec<Resolved>>, StoreError> {
-    let (start, end) = place::whole();
-    let Some(table) = Table::read(&state.scan(&start, &end).await?) else {
+    at: &Cursor,
+    limit: usize,
+) -> Result<Option<Found>, StoreError> {
+    let Some((table, next)) = some_rows(state, at.from.as_ref(), limit).await? else {
         return Ok(None);
     };
 
@@ -253,8 +363,13 @@ async fn each(
             writes: operation.writes(),
         }
     });
+    let steps = changed.collect();
+    let next = next.map(|from| Cursor {
+        stage: 0,
+        from: Some(from),
+    });
 
-    Ok(Some(changed.collect()))
+    Ok(Some(Found { steps, next }))
 }
 
 async fn number(

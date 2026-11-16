@@ -9,7 +9,7 @@ use crate::clock::Stamp;
 
 use super::super::entry::{Checked, Frontier, Hash, Link, Outline, reach};
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(super) struct History {
     /// The last entry held of each author's chain.
     pub(super) heads: Frontier,
