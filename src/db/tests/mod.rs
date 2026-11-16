@@ -15,6 +15,7 @@ mod interest;
 mod joining;
 mod leaving;
 mod membership;
+mod outcomes;
 mod random;
 mod roles;
 mod sealed;
@@ -32,7 +33,7 @@ use crate::model::{ModelId, Query};
 use crate::store::{MemoryStore, Store, Write};
 use crate::testing::block_on;
 
-use super::{Database, Error, Outputs, Transaction};
+use super::{Database, Error, Outcome, Outputs, Transaction, TransactionId};
 use crate::chain::Role;
 use crate::seal::SealingKey;
 
@@ -47,6 +48,10 @@ struct Sim {
     queue: VecDeque<(usize, usize, Vec<u8>)>,
     links: BTreeSet<(usize, usize)>,
     changes: Vec<Vec<Changed>>,
+    /// What each device has been told of its own transactions.
+    told: Vec<Vec<(TransactionId, Outcome)>>,
+    /// The last transaction each device wrote.
+    wrote: Vec<Option<TransactionId>>,
     /// The group most tests are about.
     home: GroupId,
     /// The devices running a version of the library from before
@@ -77,6 +82,8 @@ impl Sim {
             queue: VecDeque::new(),
             links: BTreeSet::new(),
             changes: vec![Vec::new(); 8],
+            told: vec![Vec::new(); 8],
+            wrote: vec![None; 8],
             home: GroupId::from_bytes([0; 32]),
             old: BTreeSet::new(),
         }
@@ -120,6 +127,8 @@ impl Sim {
 
     fn absorb(&mut self, device: usize, outputs: Outputs) {
         self.changes[device].extend(outputs.changed);
+        self.told[device].extend(outputs.outcomes);
+        self.wrote[device] = outputs.wrote.or(self.wrote[device]);
         for (to, message) in outputs.sends {
             let to = self.index(to);
             if self.linked(device, to) {

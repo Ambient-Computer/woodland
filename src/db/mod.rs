@@ -15,6 +15,7 @@ mod group;
 mod id;
 pub(crate) mod keys;
 mod message;
+mod outcome;
 mod pending;
 mod proof;
 mod step;
@@ -38,6 +39,7 @@ pub use changed::Changed;
 use group::{Group, Invitation, Wrote};
 pub use id::{ClockId, GroupId};
 use message::Message;
+pub use outcome::{Outcome, TransactionId};
 pub use pending::{Pending, Waiting};
 use step::Step;
 pub use transaction::Transaction;
@@ -62,6 +64,11 @@ pub struct Outputs {
     pub sends: Vec<(VerifyingKey, Vec<u8>)>,
     /// What may read differently now.
     pub changed: Vec<Changed>,
+    /// The transaction this step wrote, if it was a write.
+    pub wrote: Option<TransactionId>,
+    /// What's become of transactions this device wrote, in the order
+    /// it happened. Told once.
+    pub outcomes: Vec<(TransactionId, Outcome)>,
     /// Whether there's more to do that waits for nothing. A step does
     /// only so much, so that none takes long or writes a great deal
     /// at once. Call [`Database::resume`] until this is false.
@@ -312,12 +319,22 @@ impl<S: Store> Database<S> {
             .write(&self.identity, clock, transaction.operations, &mut step)
             .await;
         match self.guard(written)? {
-            Wrote::Yes => {}
-            Wrote::NotAllowed => return Err(Error::NotAContributor),
-            Wrote::Unreadable => return Err(Error::Unreadable),
-        }
+            Wrote::Yes(seq) => {
+                let wrote = TransactionId {
+                    clock,
+                    author: self.identity.peer().id(),
+                    seq,
+                };
+                let outputs = self.finish(step).await?;
 
-        self.finish(step).await
+                Ok(Outputs {
+                    wrote: Some(wrote),
+                    ..outputs
+                })
+            }
+            Wrote::NotAllowed => Err(Error::NotAContributor),
+            Wrote::Unreadable => Err(Error::Unreadable),
+        }
     }
 
     /// Asks the group to give these peers these roles from the next
@@ -626,10 +643,28 @@ impl<S: Store> Database<S> {
         let applied = self.store.apply(finished.batch).await;
         self.guard(applied)?;
         let sends = finished.sends.into_iter();
+        let me = self.identity.peer();
+        let mine = |told: &step::Told| told.author == me;
+        let named = |told: step::Told| {
+            let id = TransactionId {
+                clock: told.clock,
+                author: told.author.id(),
+                seq: told.seq,
+            };
+
+            (id, told.outcome)
+        };
 
         Ok(Outputs {
             sends: sends.map(|(peer, message)| (peer.id(), message)).collect(),
             changed: finished.changed,
+            wrote: None,
+            outcomes: finished
+                .outcomes
+                .into_iter()
+                .filter(mine)
+                .map(named)
+                .collect(),
             unfinished: self.groups.values().any(Group::is_busy),
         })
     }

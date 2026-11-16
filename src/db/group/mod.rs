@@ -127,7 +127,8 @@ struct Meta {
 /// What came of trying to write.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Wrote {
-    Yes,
+    /// As the entry at this place in its chain.
+    Yes(u64),
     /// This device isn't a contributor to the clock.
     NotAllowed,
     /// It can't read the clock, so it doesn't know what it would be
@@ -385,13 +386,13 @@ impl Group {
         if !may || self.proofs.contains_key(&me) {
             return Ok(Wrote::NotAllowed);
         }
-        if !self.clock(clock).write(identity, &tip, operations, step) {
+        let Some(seq) = self.clock(clock).write(identity, &tip, operations, step) else {
             return Ok(Wrote::Unreadable);
-        }
+        };
 
         self.progress(identity, None, step).await?;
 
-        Ok(Wrote::Yes)
+        Ok(Wrote::Yes(seq))
     }
 
     /// The clock named `id`, which exists from the moment it's needed.

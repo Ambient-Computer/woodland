@@ -38,4 +38,8 @@ A transaction is an atomic group of operations by one [contributor](peers.md), a
 
 - Success is provisional. A transaction the author saw succeed may later be pruned, and the application is told.
 - An application that must not act on provisional success waits for the transaction to commit.
+- Writing a transaction gives the application a name for it. What becomes of it is told under that name, in the outputs of the [step](library.md) that caused it.
+- The application is told when its transaction is first judged, each time its verdict flips, when it is committed and whether it took effect, and if it is discarded because its author was [removed](membership.md).
+- A device that catches up from a [snapshot](compaction.md) is told its transaction was covered, and not whether it took effect.
+- Each is told once. A device that stops before delivering its outputs does not tell it again.
 - Rejection is all or nothing and never silent; there is no partial merge of a guarded transaction.

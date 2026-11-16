@@ -41,7 +41,10 @@ mod testing;
 
 pub use actor::Identity;
 pub use chain::Role;
-pub use db::{Changed, ClockId, Database, Error, GroupId, Outputs, Pending, Transaction, Waiting};
+pub use db::{
+    Changed, ClockId, Database, Error, GroupId, Outcome, Outputs, Pending, Transaction,
+    TransactionId, Waiting,
+};
 pub use model::{
     Allowance, Allowances, ColumnId, Filter, ModelId, Query, Row, Sequence, Table, Value,
 };

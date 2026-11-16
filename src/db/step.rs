@@ -10,7 +10,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::actor::Peer;
-use crate::db::{Changed, keys};
+use crate::db::{Changed, ClockId, Outcome, keys};
 use crate::encoding;
 use crate::store::{Entry, Order, StoreError, View, Write};
 
@@ -24,6 +24,7 @@ pub(crate) struct Step<V> {
     pending: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
     sends: Vec<(Peer, Vec<u8>)>,
     changed: BTreeSet<Changed>,
+    told: Vec<Told>,
     /// A prefix, and where writes to keys that start with it are kept
     /// instead: see [`divert`](Self::divert).
     aside: Option<(Vec<u8>, Vec<u8>)>,
@@ -49,6 +50,7 @@ impl<V: View> Step<V> {
             pending: BTreeMap::new(),
             sends: Vec::new(),
             changed: BTreeSet::new(),
+            told: Vec::new(),
             aside: None,
         }
     }
@@ -107,6 +109,13 @@ impl<V: View> Step<V> {
     pub(crate) fn changed(&mut self, change: Changed) {
         if self.aside.is_none() {
             self.changed.insert(change);
+        }
+    }
+
+    /// What's become of a transaction, for whoever wrote it.
+    pub(crate) fn tell(&mut self, told: Told) {
+        if self.aside.is_none() {
+            self.told.push(told);
         }
     }
 
@@ -265,6 +274,7 @@ impl<V: View> Step<V> {
             batch: self.pending.into_iter().map(write).collect(),
             sends: self.sends,
             changed: self.changed.into_iter().collect(),
+            outcomes: self.told,
         }
     }
 }
@@ -275,6 +285,16 @@ pub(crate) struct Finished {
     pub(crate) batch: Vec<Write>,
     pub(crate) sends: Vec<(Peer, Vec<u8>)>,
     pub(crate) changed: Vec<Changed>,
+    pub(crate) outcomes: Vec<Told>,
+}
+
+/// What's become of a transaction.
+#[derive(Debug)]
+pub(crate) struct Told {
+    pub(crate) clock: ClockId,
+    pub(crate) author: Peer,
+    pub(crate) seq: u64,
+    pub(crate) outcome: Outcome,
 }
 
 /// Everything `view` holds with a key in `start..end`, in key order.

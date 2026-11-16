@@ -12,14 +12,14 @@ use serde::{Deserialize, Serialize};
 use crate::actor::{Identity, Peer};
 use crate::chain::{Checkpoint, Writers};
 use crate::clock::Stamp;
-use crate::db::{ClockId, GroupId, Pending, Waiting, keys};
+use crate::db::{ClockId, GroupId, Outcome, Pending, Waiting, keys};
 use crate::encoding;
 use crate::model::{ModelId, Operation};
 use crate::seal::Keyring;
 use crate::store::{StoreError, View};
 
 use super::super::entry::{Checked, Entry, Frontier, Hash, Header, Link, Outline, Under, reach};
-use super::super::step::Step;
+use super::super::step::{Step, Told};
 use super::history::History;
 use super::job::Job;
 use super::judge::{self, Written};
@@ -184,9 +184,9 @@ impl Clock {
         tip: &Checkpoint,
         mut operations: Vec<Operation>,
         step: &mut Step<V>,
-    ) -> bool {
+    ) -> Option<u64> {
         if self.is_blind() {
-            return false;
+            return None;
         }
 
         let me = identity.peer();
@@ -210,12 +210,10 @@ impl Clock {
             },
             payload: Hash::NONE,
         };
-        let Some(entry) = Entry::author(identity, header, operations, &self.keys) else {
-            return false;
-        };
+        let entry = Entry::author(identity, header, operations, &self.keys)?;
         self.integrate(&entry, step);
 
-        true
+        Some(seq)
     }
 
     pub(super) fn integrate<V: View>(&mut self, entry: &Checked, step: &mut Step<V>) {
@@ -254,6 +252,16 @@ impl Clock {
         }
 
         Ok(pending)
+    }
+
+    /// Lets whoever wrote `entry` know what's become of it.
+    pub(super) fn tell<V: View>(&self, entry: &Outline, outcome: Outcome, step: &mut Step<V>) {
+        step.tell(Told {
+            clock: self.id,
+            author: entry.author,
+            seq: entry.link.seq,
+            outcome,
+        });
     }
 
     /// Reads back what an entry does. Only its outline is kept in memory.
@@ -369,6 +377,12 @@ impl Clock {
             if happened {
                 judge::notify(self.group, &entry, true, step);
             }
+            let outcome = if happened {
+                Outcome::Committed
+            } else {
+                Outcome::Rejected
+            };
+            self.tell(&entry, outcome, step);
             judge::hide(self.group, &entry, step);
             judge::notify(self.group, &entry, false, step);
             self.verdicts.gone(&entry);
@@ -414,6 +428,7 @@ impl Clock {
             step.delete(keys::log(self.group, self.id, author, entry.link.seq));
             judge::hide(self.group, &entry, step);
             judge::notify(self.group, &entry, false, step);
+            self.tell(&entry, Outcome::Discarded, step);
             self.verdicts.gone(&entry);
         }
     }
@@ -490,6 +505,7 @@ impl Clock {
         for stamp in covered {
             if let Some(entry) = self.history.forget(stamp) {
                 judge::hide(self.group, &entry, step);
+                self.tell(&entry, Outcome::Covered, step);
                 self.verdicts.gone(&entry);
             }
         }

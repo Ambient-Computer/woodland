@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 
 use crate::clock::Stamp;
+use crate::db::Outcome;
 use crate::model::Effect;
 use crate::store::{StoreError, View};
 
@@ -32,6 +33,8 @@ pub(super) struct Verdicts {
     touches: BTreeMap<Place, BTreeSet<Stamp>>,
     /// Entries whose verdicts need working out again.
     doubted: BTreeSet<Stamp>,
+    /// Entries nobody has been told a verdict on.
+    fresh: BTreeSet<Stamp>,
     /// Keys that hold something else now, for a reason other than an
     /// entry's verdict changing.
     moved: BTreeSet<Place>,
@@ -61,6 +64,7 @@ impl Verdicts {
     pub(super) fn arrived(&mut self, entry: &Outline) {
         self.index(entry);
         self.doubted.insert(entry.stamp());
+        self.fresh.insert(entry.stamp());
     }
 
     /// An entry is uncommitted no longer: it was committed, or never
@@ -69,6 +73,7 @@ impl Verdicts {
         let stamp = entry.stamp();
         self.live.remove(&stamp);
         self.doubted.remove(&stamp);
+        self.fresh.remove(&stamp);
         for (place, leaves) in entry.declared.iter().filter_map(place) {
             if let Some(stamps) = self.touches.get_mut(&place) {
                 stamps.remove(&stamp);
@@ -164,10 +169,20 @@ impl Clock {
             {
                 self.verdicts.weighed += 1;
             }
+            let outcome = if happens {
+                Outcome::Live
+            } else {
+                Outcome::Pruned
+            };
             if happens == self.verdicts.live.contains(&stamp) {
+                if self.verdicts.fresh.remove(&stamp) {
+                    self.tell(entry, outcome, step);
+                }
                 continue;
             }
 
+            self.verdicts.fresh.remove(&stamp);
+            self.tell(entry, outcome, step);
             if happens {
                 let operations = self.operations(entry, step).await?;
                 judge::show(self.group, stamp, &operations, step);
@@ -218,11 +233,25 @@ impl Clock {
 
     async fn rejudge_all<V: View>(&mut self, step: &mut Step<V>) -> Result<(), StoreError> {
         let live = self.judged(step).await?;
-        for stamp in live.symmetric_difference(&self.verdicts.live) {
+        let fresh = std::mem::take(&mut self.verdicts.fresh);
+        let flipped: BTreeSet<Stamp> = live
+            .symmetric_difference(&self.verdicts.live)
+            .copied()
+            .collect();
+        for stamp in flipped.union(&fresh) {
             let Some(entry) = self.history.uncommitted.get(stamp) else {
                 continue;
             };
 
+            let outcome = if live.contains(stamp) {
+                Outcome::Live
+            } else {
+                Outcome::Pruned
+            };
+            self.tell(entry, outcome, step);
+            if !flipped.contains(stamp) {
+                continue;
+            }
             if live.contains(stamp) {
                 let operations = self.operations(entry, step).await?;
                 judge::show(self.group, *stamp, &operations, step);
