@@ -20,6 +20,7 @@ use crate::clock::Stamp;
 use crate::db::{ClockId, GroupId};
 use crate::encoding;
 use crate::model::{Declaration, ModelId, Operation};
+use crate::seal::Keyring;
 
 /// Names an entry, or a payload, by its content.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -83,46 +84,76 @@ pub(crate) struct Entry {
 #[derive(Clone, Debug)]
 pub(crate) struct Checked {
     pub(crate) entry: Entry,
+    /// What it does. Nothing, if this device can't tell.
     pub(crate) operations: Vec<Operation>,
+    /// Whether this device can't tell what it does: it's sealed under
+    /// a secret that isn't held here, or it does something this
+    /// version doesn't know of.
+    pub(crate) unread: bool,
     hash: Hash,
 }
 
+/// What an entry's payload is sealed about: where the entry sits. A
+/// payload moved to another entry doesn't open.
+fn about(author: Peer, header: &Header) -> Vec<u8> {
+    encoding::encode(&(header.group, header.clock, author, header.seq))
+}
+
 impl Entry {
-    /// Signs a new entry.
+    /// Signs a new entry. `None` if the group is sealed and this
+    /// device lacks the secret to write under.
     pub(crate) fn author(
         identity: &Identity,
         mut header: Header,
         operations: Vec<Operation>,
-    ) -> Checked {
-        let payload = encoding::encode(&operations);
+        keys: &Keyring,
+    ) -> Option<Checked> {
+        let about = about(identity.peer(), &header);
+        let plain = encoding::encode(&operations);
+        let payload = keys.seal(&about, header.under.height, plain)?;
         header.payload = Hash::of_payload(&payload);
         let hash = Hash::of_header(identity.peer(), &header);
         let header = Signed::sign(identity, header).signed().clone();
 
-        Checked {
+        Some(Checked {
             entry: Self { header, payload },
             operations,
+            unread: false,
             hash,
-        }
+        })
     }
 
     /// Checks everything that can be checked without knowing anything
     /// else: the signature, the group, that the payload is the one the
-    /// header was signed over, and that it stays within its clock.
-    pub(crate) fn check(self, group: GroupId) -> Option<Checked> {
+    /// header was signed over, and, if this device can read it, that
+    /// it stays within its clock.
+    ///
+    /// An entry this device can't read is still an entry. It's kept and
+    /// passed on as it is.
+    pub(crate) fn check(self, group: GroupId, keys: &Keyring) -> Option<Checked> {
         let header = verify_all(vec![self.header.clone()]).pop()?;
         let said = header.payload();
         let intact = said.group == group && said.payload == Hash::of_payload(&self.payload);
-        let operations: Vec<Operation> = encoding::decode(&self.payload)?;
+        let operations = self.read(keys);
         let within = |operation: &Operation| operation.model.clock() == said.clock;
-        let intact = intact && operations.iter().all(within);
+        let intact = intact && operations.iter().flatten().all(within);
         let hash = Hash::of_header(header.author(), said);
 
         intact.then_some(Checked {
             entry: self,
-            operations,
+            unread: operations.is_none(),
+            operations: operations.unwrap_or_default(),
             hash,
         })
+    }
+
+    /// What the entry does, if this device can tell.
+    fn read(&self, keys: &Keyring) -> Option<Vec<Operation>> {
+        let header = self.header.payload();
+        let about = about(self.header.author(), header);
+        let plain = keys.open(&about, header.under.height, &self.payload)?;
+
+        encoding::decode(&plain)
     }
 }
 
@@ -139,15 +170,16 @@ impl Entry {
     }
 
     /// Reads back an entry that was checked before it was stored.
-    pub(crate) fn trusted(self) -> Option<Checked> {
-        let operations = encoding::decode(&self.payload)?;
+    pub(crate) fn trusted(self, keys: &Keyring) -> Checked {
+        let operations = self.read(keys);
         let hash = Hash::of_header(self.header.author(), self.header.payload());
 
-        Some(Checked {
+        Checked {
             entry: self,
-            operations,
+            unread: operations.is_none(),
+            operations: operations.unwrap_or_default(),
             hash,
-        })
+        }
     }
 }
 
@@ -200,6 +232,7 @@ impl Checked {
                 .flat_map(|it| it.declares(self.author()))
                 .collect(),
             waits: waits.map(|it| it.model).collect(),
+            unread: self.unread,
         }
     }
 }
@@ -218,6 +251,8 @@ pub(crate) struct Outline {
     /// The models it has changes for that wait to be committed. Those
     /// declare nothing.
     pub(crate) waits: BTreeSet<ModelId>,
+    /// Whether this device can't tell what it does.
+    pub(crate) unread: bool,
 }
 
 impl Outline {
@@ -254,7 +289,9 @@ mod tests {
         };
         let operations = vec![Operation::set(model, b"key".to_vec(), b"value".to_vec())];
 
-        (group, Entry::author(&identity, header, operations).entry)
+        let entry = Entry::author(&identity, header, operations, &Keyring::Open);
+
+        (group, entry.expect("an open group").entry)
     }
 
     #[test]
@@ -263,10 +300,10 @@ mod tests {
         let other = ClockId::from_bytes([4; 32]);
 
         let (group, within) = entry(clock, ModelId::kv(clock, [5; 32]));
-        assert!(within.check(group).is_some());
+        assert!(within.check(group, &Keyring::Open).is_some());
 
         let (group, outside) = entry(clock, ModelId::kv(other, [5; 32]));
-        assert!(outside.check(group).is_none());
+        assert!(outside.check(group, &Keyring::Open).is_none());
     }
 
     #[test]
@@ -274,6 +311,10 @@ mod tests {
         let clock = ClockId::from_bytes([3; 32]);
         let (_, entry) = entry(clock, ModelId::kv(clock, [5; 32]));
 
-        assert!(entry.check(GroupId::from_bytes([9; 32])).is_none());
+        assert!(
+            entry
+                .check(GroupId::from_bytes([9; 32]), &Keyring::Open)
+                .is_none()
+        );
     }
 }

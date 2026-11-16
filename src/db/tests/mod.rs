@@ -16,6 +16,7 @@ mod leaving;
 mod membership;
 mod random;
 mod roles;
+mod sealed;
 mod single;
 mod sync;
 mod tables;

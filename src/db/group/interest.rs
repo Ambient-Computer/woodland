@@ -17,6 +17,7 @@ use crate::store::{StoreError, View};
 
 use super::super::step::Step;
 use super::Group;
+use super::clock::Clock;
 use super::sync::Remote;
 
 /// Why a device can't change which clocks it wants.
@@ -38,6 +39,12 @@ impl Group {
     /// Whether this device holds the state of every clock `remote`
     /// wants, and so can send it a snapshot.
     pub(super) fn serves(&self, remote: &Remote) -> bool {
+        // What this device can't read, it has no state of.
+        let blind = |(id, clock): (&ClockId, &Clock)| remote.wants(*id) && clock.is_blind();
+        if self.clocks.iter().any(blind) {
+            return false;
+        }
+
         match (&self.interest, remote.interest()) {
             (None, _) => true,
             (Some(_), None) => false,

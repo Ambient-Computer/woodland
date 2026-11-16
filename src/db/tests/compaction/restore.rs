@@ -5,6 +5,7 @@ use crate::chain::{Certificate, Gossip};
 use crate::db::entry::Entry;
 use crate::db::message::{Message, Summary};
 use crate::encoding;
+use crate::seal::Keyring;
 
 fn restore(sim: &mut Sim, device: usize, group: GroupId) {
     let outputs = block_on(sim.devices[device].restore(group, group.into())).expect("asked");
@@ -228,7 +229,8 @@ fn only_the_entry_that_comes_next_is_kept() {
     // Another entry the phone's key signed for the same place.
     let mut header = last.header.payload().clone();
     header.lamport += 1;
-    let other = Entry::author(&sim.devices[PHONE].identity, header, Vec::new());
+    let identity = &sim.devices[PHONE].identity;
+    let other = Entry::author(identity, header, Vec::new(), &Keyring::Open).expect("open");
     offer(&mut sim, NAS, PHONE, group, vec![other.entry]);
     assert_eq!(sim.entries_kept(PHONE, group), 0);
 

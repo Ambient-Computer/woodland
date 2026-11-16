@@ -31,11 +31,11 @@ use crate::actor::{Identity, Peer};
 use crate::chain::{Chain, Checkpoint, Electorate, Role};
 use crate::encoding;
 use crate::model::Query;
-use crate::seal::SealingKey;
+use crate::seal::{SealingKey, Secret};
 use crate::store::{Store, StoreError};
 
 pub use changed::Changed;
-use group::{Group, Invitation};
+use group::{Group, Invitation, Wrote};
 pub use id::{ClockId, GroupId};
 use message::Message;
 pub use pending::{Pending, Waiting};
@@ -85,6 +85,10 @@ pub enum Error {
     StillAMember,
     /// This device isn't one of the group's contributors.
     NotAContributor,
+    /// This device can't read what it was asked to write to: it's
+    /// sealed and the device lacks the secret, or it holds something
+    /// written by a version of the library that's newer than this one.
+    Unreadable,
     /// The invitation couldn't be read.
     BadInvitation,
     /// The transaction writes to models of more than one clock.
@@ -105,6 +109,7 @@ impl fmt::Display for Error {
                 formatter.write_str("this device is still a member of that group")
             }
             Self::NotAContributor => formatter.write_str("this device isn't a contributor"),
+            Self::Unreadable => formatter.write_str("this device can't read that"),
             Self::BadInvitation => formatter.write_str("the invitation couldn't be read"),
             Self::ManyClocks => formatter.write_str("a transaction writes to one clock's models"),
         }
@@ -190,7 +195,38 @@ impl<S: Store> Database<S> {
         let me = self.identity.peer();
         let founding = Checkpoint::founding(seed, Electorate::new([(me, 1)]));
 
-        self.hold(Chain::new(founding)).await
+        self.hold(Chain::new(founding), None).await
+    }
+
+    /// Starts a sealed group: one whose contents only its contributors
+    /// and readers can read, whoever else carries it. A group is open
+    /// or sealed for good.
+    ///
+    /// Everyone given a role that reads has to be given it with their
+    /// [sealing key]. Witnesses and devices with no role hold a sealed
+    /// group and pass it on without being able to read it.
+    ///
+    /// [sealing key]: Self::sealing_key
+    ///
+    /// # Errors
+    ///
+    /// If the store fails.
+    pub async fn found_sealed(&mut self, seed: [u8; 32]) -> Result<(GroupId, Outputs), Error> {
+        let me = self.identity.peer();
+        let role = Role::contributor(1).sealed_to(self.sealing_key());
+        let (secret, body) = group::found_sealed(&self.identity, seed);
+        let mut founding = Checkpoint::founding(seed, Electorate::of([(me, role)]));
+        founding.body = body;
+
+        self.hold(Chain::new(founding), Some(secret)).await
+    }
+
+    /// Whether this device can read `group`: it's open, or this device
+    /// holds its secret. A device that can't still holds the group,
+    /// and its reads come back empty.
+    #[must_use]
+    pub fn reads(&self, group: GroupId) -> bool {
+        self.groups.get(&group).is_some_and(Group::reads)
     }
 
     /// What another device needs to [join] a group this one holds:
@@ -222,15 +258,22 @@ impl<S: Store> Database<S> {
         let invitation = encoding::decode::<Invitation>(invitation);
         let chain = invitation.and_then(Invitation::chain);
 
-        self.hold(chain.ok_or(Error::BadInvitation)?).await
+        self.hold(chain.ok_or(Error::BadInvitation)?, None).await
     }
 
-    async fn hold(&mut self, chain: Chain) -> Result<(GroupId, Outputs), Error> {
+    async fn hold(
+        &mut self,
+        chain: Chain,
+        secret: Option<Secret>,
+    ) -> Result<(GroupId, Outputs), Error> {
         let founding = chain.checkpoints().next().ok_or(Error::BadInvitation)?;
         let id = group::id_of(founding);
         let mut step = self.begin()?;
         if !self.groups.contains_key(&id) {
             let mut group = Group::start(chain, &mut step).ok_or(Error::BadInvitation)?;
+            if let Some(secret) = secret {
+                group.hold(0, secret, &mut step);
+            }
             let peers: Vec<Peer> = self.peers.iter().copied().collect();
             for peer in peers {
                 let greeted = group.connected(peer, &mut step).await;
@@ -261,8 +304,10 @@ impl<S: Store> Database<S> {
         let written = held
             .write(&self.identity, clock, transaction.operations, &mut step)
             .await;
-        if !self.guard(written)? {
-            return Err(Error::NotAContributor);
+        match self.guard(written)? {
+            Wrote::Yes => {}
+            Wrote::NotAllowed => return Err(Error::NotAContributor),
+            Wrote::Unreadable => return Err(Error::Unreadable),
         }
 
         self.finish(step).await

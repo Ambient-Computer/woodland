@@ -23,12 +23,15 @@ use super::super::step::Step;
 use super::Group;
 use super::clock::Clock;
 use super::root::Root;
+use super::sealing::Sealing;
 
 /// What a checkpoint makes final: its body. It names every clock that
 /// has anything committed, changed by this checkpoint or not.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub(super) struct Covers {
     pub(super) clocks: BTreeMap<ClockId, Covered>,
+    /// What it says about the group's secret, if the group is sealed.
+    pub(super) sealing: Option<Sealing>,
 }
 
 /// What a checkpoint makes final in one clock.
@@ -50,9 +53,10 @@ impl Covers {
     }
 }
 
-/// What `checkpoint` covers. The first checkpoint covers nothing.
+/// What `checkpoint` covers. The first checkpoint covers nothing, and
+/// says something only in a sealed group.
 pub(super) fn covers_of(checkpoint: &Checkpoint) -> Option<Covers> {
-    if checkpoint.height == 0 {
+    if checkpoint.height == 0 && checkpoint.body.is_empty() {
         return Some(Covers::default());
     }
 
@@ -69,9 +73,10 @@ impl Group {
     /// so it vouches only for the chain's shape.
     pub(super) async fn vet<V: View>(
         &mut self,
-        me: Peer,
+        identity: &Identity,
         step: &Step<V>,
     ) -> Result<(), StoreError> {
+        let me = identity.peer();
         let witness = self.chain.tip().electorate.is_witness(me);
         let proposed: Vec<Checkpoint> = self.chain.proposed().cloned().collect();
         for checkpoint in proposed {
@@ -87,6 +92,7 @@ impl Group {
             } else {
                 self.checks_out(&checkpoint, step).await?
             };
+            let sound = sound && self.sealed_soundly(identity, &checkpoint);
             if sound {
                 self.sound.insert(digest);
             }
@@ -127,8 +133,13 @@ impl Group {
         let kept = |(id, clock): (&ClockId, &Clock)| {
             clock.history.committed.is_empty() || covers.clocks.contains_key(id)
         };
-        // Vouching for a checkpoint is vouching for every clock in it.
-        if self.partial() || self.folded != tip.height || !self.clocks.iter().all(kept) {
+        // Vouching for a checkpoint is vouching for every clock in it,
+        // and there's no vouching for what can't be read.
+        if self.partial()
+            || self.is_blind()
+            || self.folded != tip.height
+            || !self.clocks.iter().all(kept)
+        {
             return Ok(false);
         }
 
@@ -192,7 +203,7 @@ impl Group {
         }
 
         let free = self.chain.attempt().is_none() || self.stalled > patience;
-        if !free || self.folded != tip.height || self.partial() {
+        if !free || self.folded != tip.height || self.partial() || self.is_blind() {
             return Ok(());
         }
 
@@ -222,8 +233,16 @@ impl Group {
             return Ok(());
         }
 
+        let sealing = self.seal_next(identity, &electorate);
+        if self.is_sealed() && sealing.is_none() {
+            return Ok(());
+        }
+
         let mut trial = step.fork();
-        let mut covers = Covers::default();
+        let mut covers = Covers {
+            clocks: BTreeMap::new(),
+            sealing,
+        };
         for (id, frontier) in frontiers {
             let Some(clock) = self.clocks.get(&id) else {
                 continue;
@@ -296,7 +315,7 @@ impl Group {
             };
 
             let settled = clock.settle(&frontier, step).await?;
-            if named.is_some_and(|named| named != settled.state) {
+            if !settled.lost && named.is_some_and(|named| named != settled.state) {
                 tracing::error!(
                     group = ?self.id,
                     clock = ?id,

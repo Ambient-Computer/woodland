@@ -15,6 +15,7 @@ use crate::clock::Stamp;
 use crate::db::{Changed, ClockId, GroupId, Pending, Waiting, keys};
 use crate::encoding;
 use crate::model::{ModelId, Operation};
+use crate::seal::Keyring;
 use crate::store::{StoreError, View};
 
 use super::super::entry::{Checked, Entry, Frontier, Hash, Header, Outline, Under, reach};
@@ -39,6 +40,11 @@ pub(super) struct Clock {
     pub(super) base: u64,
     /// Models dropped by committed entries.
     pub(super) dropped: BTreeSet<ModelId>,
+    /// What this device can read of the group.
+    pub(super) keys: Keyring,
+    /// Whether an entry was committed that this device couldn't read.
+    /// Its state is behind from then on, and only a snapshot mends it.
+    lost: bool,
     /// The uncommitted entries that happen, as storage shows them.
     live: BTreeSet<Stamp>,
     /// Whether verdicts need working out again.
@@ -54,12 +60,15 @@ pub(super) struct Kept {
     restoring: bool,
     base: u64,
     dropped: BTreeSet<ModelId>,
+    lost: bool,
 }
 
 /// What committing a checkpoint's entries comes to, in one clock.
 pub(super) struct Settled {
     pub(super) state: Root,
     dropped: BTreeSet<ModelId>,
+    /// Whether any of it went unread, and so undone.
+    pub(super) lost: bool,
     /// The covered entries, in timeline order, and whether each happens.
     verdicts: Vec<(Stamp, bool)>,
     /// The keys written by changes that were worked out on the way.
@@ -77,6 +86,8 @@ impl Clock {
             restoring: false,
             base: 0,
             dropped: BTreeSet::new(),
+            keys: Keyring::Open,
+            lost: false,
             live: BTreeSet::new(),
             stale: false,
         }
@@ -87,9 +98,12 @@ impl Clock {
         group: GroupId,
         id: ClockId,
         kept: Kept,
+        keys: Keyring,
         step: &Step<V>,
     ) -> Result<Self, StoreError> {
         let mut clock = Self::new(group, id);
+        clock.keys = keys;
+        clock.lost = kept.lost;
         clock.shed = kept.shed;
         clock.base = kept.base;
         clock.restoring = kept.restoring;
@@ -102,9 +116,9 @@ impl Clock {
                 keys::log(group, id, author, head.seq + 1),
             );
             for (_, stored) in step.scan(&start, &end).await? {
-                let entry = encoding::decode::<Entry>(&stored).and_then(Entry::trusted);
+                let entry = encoding::decode::<Entry>(&stored);
                 let entry = entry.ok_or_else(|| StoreError::new("a stored entry is unreadable"))?;
-                clock.history.remember(entry.outline());
+                clock.history.remember(entry.trusted(&clock.keys).outline());
             }
         }
 
@@ -123,7 +137,16 @@ impl Clock {
             base: self.base,
             restoring: self.restoring,
             dropped: self.dropped.clone(),
+            lost: self.lost,
         }
+    }
+
+    /// Whether this device can't say what the clock holds: there's an
+    /// entry in it that it can't read. Nothing shows of what isn't
+    /// committed, nothing more is applied, and nothing is vouched for.
+    /// What's read is what was committed before.
+    pub(super) fn is_blind(&self) -> bool {
+        self.lost || self.history.uncommitted.values().any(|entry| entry.unread)
     }
 
     /// Whether nothing was ever written here, as far as this device
@@ -132,14 +155,19 @@ impl Clock {
         self.history.heads.is_empty() && self.history.committed.is_empty()
     }
 
-    /// Appends an entry to this device's own chain.
+    /// Appends an entry to this device's own chain. Returns whether it
+    /// could: a device that can't read the clock doesn't write to it.
     pub(super) fn write<V: View>(
         &mut self,
         identity: &Identity,
         tip: &Checkpoint,
         mut operations: Vec<Operation>,
         step: &mut Step<V>,
-    ) {
+    ) -> bool {
+        if self.is_blind() {
+            return false;
+        }
+
         let me = identity.peer();
         let seq = reach(&self.history.heads, me) + 1;
         for (index, operation) in operations.iter_mut().enumerate() {
@@ -161,8 +189,12 @@ impl Clock {
             },
             payload: Hash::NONE,
         };
-        let entry = Entry::author(identity, header, operations);
+        let Some(entry) = Entry::author(identity, header, operations, &self.keys) else {
+            return false;
+        };
         self.integrate(&entry, step);
+
+        true
     }
 
     pub(super) fn integrate<V: View>(&mut self, entry: &Checked, step: &mut Step<V>) {
@@ -206,6 +238,10 @@ impl Clock {
     async fn judged<V: View>(&self, step: &Step<V>) -> Result<BTreeSet<Stamp>, StoreError> {
         let mut written = Written::on(&self.dropped);
         let mut live = BTreeSet::new();
+        if self.is_blind() {
+            return Ok(live);
+        }
+
         for (&stamp, entry) in &self.history.uncommitted {
             if judge::weigh(self.group, entry, &written, step).await? {
                 written.apply(&entry.declared);
@@ -252,10 +288,9 @@ impl Clock {
     ) -> Result<Vec<Operation>, StoreError> {
         let key = keys::log(self.group, self.id, entry.author, entry.link.seq);
         let stored = step.load::<Entry>(&key).await?;
-        let stored = stored.and_then(Entry::trusted);
 
         stored
-            .map(|entry| entry.operations)
+            .map(|entry| entry.trusted(&self.keys).operations)
             .ok_or_else(|| StoreError::new("an entry is missing from the store"))
     }
 
@@ -274,6 +309,22 @@ impl Clock {
         let mut dropped = self.dropped.clone();
         let mut verdicts = Vec::new();
         let mut resolved = Vec::new();
+
+        // Committing what can't be read would be guessing. The state
+        // stays where it was, and is behind from here on.
+        if self.is_blind() {
+            let covered = self.history.covered(frontier);
+            verdicts.extend(covered.map(|entry| (entry.stamp(), false)));
+
+            return Ok(Settled {
+                state: state.root(),
+                dropped,
+                lost: !verdicts.is_empty(),
+                verdicts,
+                resolved,
+            });
+        }
+
         for entry in self.history.covered(frontier) {
             let mut happens = judge::weigh(self.group, entry, &Written::on(&dropped), step).await?;
             if happens {
@@ -316,6 +367,7 @@ impl Clock {
         Ok(Settled {
             state: state.root(),
             dropped,
+            lost: false,
             verdicts,
             resolved,
         })
@@ -332,6 +384,7 @@ impl Clock {
         step: &mut Step<V>,
     ) {
         self.dropped = settled.dropped;
+        self.lost |= settled.lost;
         for (stamp, happened) in settled.verdicts {
             let Some(entry) = self.history.forget(stamp) else {
                 continue;
@@ -447,6 +500,7 @@ impl Clock {
 
         self.shed_through(frontier, step).await?;
         self.history.adopt(frontier);
+        self.lost = false;
         self.stale = true;
 
         Ok(())

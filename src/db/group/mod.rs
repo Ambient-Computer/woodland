@@ -12,6 +12,7 @@ mod judge;
 mod restore;
 mod root;
 mod rules;
+mod sealing;
 mod sync;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -22,6 +23,7 @@ use crate::actor::{Identity, Peer};
 use crate::chain::{Certificate, Chain, Checkpoint, Digest, Electorate, Saved};
 use crate::db::{ClockId, GroupId, Pending, keys};
 use crate::model::Operation;
+use crate::seal::Keyring;
 use crate::store::{StoreError, View};
 
 use super::proof::Proof;
@@ -29,6 +31,9 @@ use super::step::Step;
 use clock::{Clock, Kept};
 use compact::Staging;
 pub(crate) use interest::Refused;
+pub(crate) use sealing::found as found_sealed;
+#[cfg(test)]
+pub(crate) use sealing::{Sealing, about as sealed_about};
 use sync::Remote;
 
 #[derive(Debug)]
@@ -65,6 +70,8 @@ pub(crate) struct Group {
     passed: bool,
     /// Whether this device is getting back checkpoints it shed.
     mending: bool,
+    /// What this device can read of the group.
+    keys: Keyring,
 }
 
 /// What's kept of a group besides its chain and its entries.
@@ -78,6 +85,18 @@ struct Meta {
     interest: Option<BTreeSet<ClockId>>,
     passed: bool,
     mending: bool,
+    keys: Keyring,
+}
+
+/// What came of trying to write.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Wrote {
+    Yes,
+    /// This device isn't a contributor to the clock.
+    NotAllowed,
+    /// It can't read the clock, so it doesn't know what it would be
+    /// writing on top of.
+    Unreadable,
 }
 
 /// What one device hands another so it can hold a group.
@@ -110,6 +129,9 @@ pub(crate) fn id_of(founding: &Checkpoint) -> GroupId {
 
 impl Group {
     fn new(id: GroupId, chain: Chain) -> Self {
+        let founding = chain.checkpoints().next();
+        let keys = founding.map(sealing::keyring_of).unwrap_or_default();
+
         Self {
             id,
             chain,
@@ -126,6 +148,7 @@ impl Group {
             interest: None,
             passed: false,
             mending: false,
+            keys,
         }
     }
 
@@ -170,9 +193,10 @@ impl Group {
         group.interest = meta.interest;
         group.passed = meta.passed;
         group.mending = meta.mending;
+        group.keys = meta.keys;
         group.recall(step).await?;
         for (clock, kept) in meta.clocks {
-            let held = Clock::load(id, clock, kept, step).await?;
+            let held = Clock::load(id, clock, kept, group.keys.clone(), step).await?;
             group.clocks.insert(clock, held);
         }
 
@@ -258,6 +282,7 @@ impl Group {
             interest: self.interest.clone(),
             passed: self.passed,
             mending: self.mending,
+            keys: self.keys.clone(),
         };
         step.save(keys::meta(self.id), &meta);
         if self.said {
@@ -265,37 +290,43 @@ impl Group {
         }
     }
 
-    /// Appends an entry to this device's own chain in `clock`. Returns
-    /// whether it may: only a contributor to that clock writes.
+    /// Appends an entry to this device's own chain in `clock`, if it
+    /// may: only a contributor to that clock writes, and only to a
+    /// clock it can read.
     pub(crate) async fn write<V: View>(
         &mut self,
         identity: &Identity,
         clock: ClockId,
         operations: Vec<Operation>,
         step: &mut Step<V>,
-    ) -> Result<bool, StoreError> {
+    ) -> Result<Wrote, StoreError> {
         let tip = self.chain.tip().clone();
         // A device that learns it forked has lost track of what it
         // signed, and anything more it wrote would be dropped unread.
         let me = identity.peer();
         let may = tip.electorate.writers(clock).includes(me) && self.wants(clock);
         if !may || self.proofs.contains_key(&me) {
-            return Ok(false);
+            return Ok(Wrote::NotAllowed);
+        }
+        if !self.clock(clock).write(identity, &tip, operations, step) {
+            return Ok(Wrote::Unreadable);
         }
 
-        self.clock(clock).write(identity, &tip, operations, step);
         self.progress(identity, None, step).await?;
 
-        Ok(true)
+        Ok(Wrote::Yes)
     }
 
     /// The clock named `id`, which exists from the moment it's needed.
     fn clock(&mut self, id: ClockId) -> &mut Clock {
         let group = self.id;
 
-        self.clocks
-            .entry(id)
-            .or_insert_with(|| Clock::new(group, id))
+        let keys = &self.keys;
+        self.clocks.entry(id).or_insert_with(|| {
+            let mut clock = Clock::new(group, id);
+            clock.keys = keys.clone();
+            clock
+        })
     }
 
     /// Asks for `electorate` to decide checkpoints from the next one on.
@@ -307,7 +338,8 @@ impl Group {
         step: &mut Step<V>,
     ) -> Result<bool, StoreError> {
         let allowed = self.chain.tip().electorate.includes(identity.peer());
-        if !allowed || !electorate.is_viable() {
+        let sealable = !self.is_sealed() || electorate.is_sealable();
+        if !allowed || !electorate.is_viable() || !sealable {
             return Ok(false);
         }
 
@@ -361,7 +393,8 @@ impl Group {
         step: &mut Step<V>,
     ) -> Result<(), StoreError> {
         loop {
-            self.vet(identity.peer(), step).await?;
+            self.unlock(identity, step).await?;
+            self.vet(identity, step).await?;
             let moved = self.advance(identity);
             self.said |= moved;
             let folded = self.fold(step).await?;

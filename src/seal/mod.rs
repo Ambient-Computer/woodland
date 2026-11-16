@@ -17,7 +17,11 @@ use x25519_dalek::PublicKey;
 
 use crate::actor::{Identity, Peer};
 
+mod keyring;
 mod secret;
+
+pub(crate) use keyring::Keyring;
+pub(crate) use secret::{Commitment, Grant, Secret};
 #[cfg(test)]
 mod tests;
 

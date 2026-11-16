@@ -1,9 +1,5 @@
 //! A group's secret: what's encrypted under it, and how it's handed
 //! to a peer.
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "sealed groups are built on this next")
-)]
 
 use std::fmt;
 

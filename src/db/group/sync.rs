@@ -141,7 +141,7 @@ impl Group {
             self.stage(piece, step).await?;
         }
 
-        let check = |entry: Entry| entry.check(self.id);
+        let check = |entry: Entry| entry.check(self.id, &self.keys);
         let wanted = |entry: &Checked| self.wants(entry.header().clock);
         let entries = message.entries.into_iter().filter_map(check);
         let mut waiting: Vec<Checked> = entries.filter(wanted).collect();
@@ -281,7 +281,9 @@ impl Group {
         // and then the rest.
         let behind =
             remote.folded < self.shed_below(remote) || (remote.gap && remote.folded < self.folded);
-        let snapshot = if behind && remote.heard {
+        // What a sealed group commits is sent to those it lets read.
+        let reads = !self.is_sealed() || self.chain.tip().electorate.key_of(peer).is_some();
+        let snapshot = if behind && remote.heard && reads {
             self.piece(remote, step).await?
         } else {
             None

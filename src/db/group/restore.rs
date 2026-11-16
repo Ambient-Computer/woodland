@@ -171,7 +171,7 @@ impl Group {
     pub(super) fn take_back<V: View>(&mut self, entries: Vec<Entry>, step: &mut Step<V>) -> bool {
         let mut took = false;
         for entry in entries {
-            let Some(entry) = entry.check(self.id) else {
+            let Some(entry) = entry.check(self.id, &self.keys) else {
                 continue;
             };
             let Some(clock) = self.clocks.get_mut(&entry.header().clock) else {

@@ -178,6 +178,19 @@ impl Electorate {
         keyed.filter_map(|(&peer, role)| Some((peer, role.key.as_ref()?)))
     }
 
+    /// The key `peer` is sent secrets under, if it's given one.
+    pub(crate) fn key_of(&self, peer: Peer) -> Option<&SealingKey> {
+        self.0.get(&peer).and_then(|role| role.key.as_ref())
+    }
+
+    /// Whether everyone who reads has a key to be sent secrets under:
+    /// every contributor and every reader. A sealed group needs that.
+    pub(crate) fn is_sealable(&self) -> bool {
+        let reads = |role: &&Role| !matches!(role.part, Part::Witness);
+
+        self.0.values().filter(reads).all(|role| role.key.is_some())
+    }
+
     /// Who may write to `clock`.
     pub(crate) fn writers(&self, clock: ClockId) -> Writers<'_> {
         Writers {
