@@ -11,12 +11,11 @@
 //! [GROUP][group][PROTOCOL][STATE][clock]        → the sum the clock's state root is the hash of
 //! [GROUP][group][COMMITTED][model][key…]        → the key's committed value
 //! [GROUP][group][UNCOMMITTED][model][key…][stamp] → a version: a value, or none
-//! [GROUP][group][DROPPED][model][stamp]         → the model was dropped, uncommitted
 //! [GROUP][group][STAGED][model][key…]           → a value from a snapshot not yet checked
 //! ```
 //!
 //! A model's ID starts with its clock's, so everything a clock owns is
-//! one range within each of the last four.
+//! one range within each of the last three.
 //!
 //! Identifiers are fixed width and counters are big-endian, so byte order
 //! matches logical order. The application's key bytes are the only part
@@ -34,9 +33,6 @@
 //! - Model data is split by whether it can still change. The
 //!   **committed** range holds one value per key. The **uncommitted**
 //!   range holds what entries no checkpoint covers have written.
-//! - A model that's dropped has to read as empty before the drop is
-//!   committed, without touching what it holds, in case the drop doesn't
-//!   happen. The **dropped** range says so, and a reader checks it.
 //! - A key's uncommitted versions are a sub-range in timeline order,
 //!   because a stamp's bytes sort the way stamps do. Writing a version
 //!   never needs to read the others, and the last one in the range is
@@ -54,7 +50,6 @@ const IDENTITY: u8 = 3;
 const PROTOCOL: u8 = 1;
 const COMMITTED: u8 = 2;
 const UNCOMMITTED: u8 = 3;
-const DROPPED: u8 = 4;
 const STAGED: u8 = 5;
 
 const CHAIN: u8 = 1;
@@ -77,10 +72,6 @@ pub(crate) enum Record {
         key: Vec<u8>,
         /// Boxed because a stamp holds its author's whole public key.
         stamp: Box<Stamp>,
-    },
-    Dropped {
-        group: GroupId,
-        model: ModelId,
     },
 }
 
@@ -191,25 +182,6 @@ pub(crate) fn version(id: GroupId, model: ModelId, key: &[u8], stamp: Stamp) -> 
     [versions(id, model, key), lamport.to_vec(), author.to_vec()].concat()
 }
 
-/// Every model dropped by an entry that isn't committed.
-pub(crate) fn dropped(id: GroupId) -> Vec<u8> {
-    [group(id), vec![DROPPED]].concat()
-}
-
-/// Whether `model` was dropped by an entry that isn't committed: one
-/// key for each that did.
-pub(crate) fn drops(id: GroupId, model: ModelId) -> Vec<u8> {
-    [dropped(id), model.as_bytes().to_vec()].concat()
-}
-
-/// The entry stamped `stamp` dropped `model`.
-pub(crate) fn drop(id: GroupId, model: ModelId, stamp: Stamp) -> Vec<u8> {
-    let lamport = stamp.lamport.to_be_bytes();
-    let author = stamp.author.as_bytes();
-
-    [drops(id, model), lamport.to_vec(), author.to_vec()].concat()
-}
-
 /// Every value of a snapshot that's still arriving.
 pub(crate) fn staged(id: GroupId) -> Vec<u8> {
     [group(id), vec![STAGED]].concat()
@@ -257,7 +229,6 @@ pub(crate) fn parse(key: &[u8]) -> Option<Record> {
             })
         }
 
-        DROPPED => Some(Record::Dropped { group, model }),
         _ => None,
     }
 }
@@ -302,10 +273,6 @@ mod tests {
                 stamp: Box::new(stamp(3, phone())),
             }),
         );
-        assert_eq!(
-            parse(&drop(id(), model, stamp(3, phone()))),
-            Some(Record::Dropped { group: id(), model }),
-        );
         assert_eq!(parse(&log(id(), id().into(), phone(), 9)), None);
         assert_eq!(parse(&founding(id())), None);
     }
@@ -320,14 +287,7 @@ mod tests {
 
         assert!(committed_value(id(), model, b"").starts_with(&committed(id())));
         assert!(versions(id(), model, b"").starts_with(&uncommitted(id())));
-        assert!(drop(id(), model, stamp(1, phone())).starts_with(&drops(id(), model)));
-        assert!(drops(id(), model).starts_with(&dropped(id())));
-        let ranges = [
-            protocol(id()),
-            committed(id()),
-            uncommitted(id()),
-            dropped(id()),
-        ];
+        let ranges = [protocol(id()), committed(id()), uncommitted(id())];
         for range in &ranges {
             assert!(range.starts_with(&group(id())));
             let overlapping = ranges.iter().filter(|other| other.starts_with(range));

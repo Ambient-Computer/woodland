@@ -22,7 +22,7 @@ use super::rows::{self, Rekey, Target};
 use super::value::Type;
 use super::{ColumnId, Filter, Table, Value};
 use crate::encoding;
-use crate::model::{Kind, ModelId, Reads, Resolved};
+use crate::model::{Kind, ModelId, Reads, Requirement, Resolved};
 use crate::store::StoreError;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +40,9 @@ pub(crate) enum Deferred {
     /// Does the same thing to every row a filter picks, of the rows
     /// there are once this is committed.
     Each { filter: Filter, change: Each },
+    /// Removes a column, if the table has it. What's written to the
+    /// column before this in the timeline stands, and nothing after.
+    DropColumn { column: ColumnId },
     /// Puts a rule in force: from here on, every row has to be one
     /// the filter picks.
     Rule { filter: Filter },
@@ -80,6 +83,7 @@ impl Deferred {
                 filter.typed() && typed
             }
 
+            Self::DropColumn { .. } => true,
             Self::Rule { filter } => filter.typed(),
             Self::Remove { referrers, .. } => referrers.iter().all(|(table, column)| {
                 let names = matches!(column.kind(), Some(Type::Text | Type::Bytes));
@@ -108,6 +112,11 @@ impl Deferred {
             }
 
             Self::Each { filter, change } => each(filter, change, state).await,
+            Self::DropColumn { column } => Ok(Some(vec![Resolved {
+                model: state.model(),
+                requires: vec![(Place::Table.key(), Requirement::Present)],
+                writes: vec![(Place::Column(*column).key(), None)],
+            }])),
             Self::Rule { filter } => rule(filter, state).await,
             Self::Remove {
                 row,

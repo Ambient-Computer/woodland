@@ -432,15 +432,27 @@ impl Transaction {
         self
     }
 
-    /// Removes `column` from `table`. Transactions that write to the
-    /// column later in the timeline are dropped whole, on every device.
-    /// What rows already held in it is no longer read.
+    /// Removes `column` from `table`, once the transaction is
+    /// committed. Until then nothing changes, which can take as long
+    /// as the group's next checkpoint.
+    ///
+    /// Transactions that write to the column later in the timeline
+    /// are dropped whole, on every device, when their turn comes to
+    /// be committed. What rows already held in it is no longer read.
     pub fn drop_column(mut self, table: ModelId, column: ColumnId) -> Self {
         self.operations.push(Operation::drop_column(table, column));
         self
     }
 
-    /// Drops a model and everything in it, for good.
+    /// Drops a model and everything in it, for good, once the
+    /// transaction is committed. Until then nothing changes, and it
+    /// shows as [pending].
+    ///
+    /// Transactions that name the model later in the timeline are
+    /// dropped whole, on every device, when their turn comes to be
+    /// committed.
+    ///
+    /// [pending]: crate::Database::pending
     pub fn drop_model(mut self, model: ModelId) -> Self {
         self.operations.push(Operation::drop(model));
         self

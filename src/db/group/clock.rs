@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::actor::{Identity, Peer};
 use crate::chain::{Checkpoint, Writers};
 use crate::clock::Stamp;
-use crate::db::{Changed, ClockId, GroupId, Pending, keys};
+use crate::db::{Changed, ClockId, GroupId, Pending, Waiting, keys};
 use crate::encoding;
 use crate::model::{ModelId, Operation};
 use crate::store::{StoreError, View};
@@ -173,13 +173,16 @@ impl Clock {
             };
 
             for operation in self.operations(entry, step).await? {
-                if let Some(deferred) = operation.waits() {
-                    pending.push(Pending {
-                        model: operation.model,
-                        author: entry.author.id(),
-                        change: deferred.into(),
-                    });
-                }
+                let change = match operation.waits() {
+                    Some(deferred) => deferred.into(),
+                    None if operation.drops() => Waiting::Drop,
+                    None => continue,
+                };
+                pending.push(Pending {
+                    model: operation.model,
+                    author: entry.author.id(),
+                    change,
+                });
             }
         }
 

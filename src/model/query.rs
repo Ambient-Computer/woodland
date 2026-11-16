@@ -172,12 +172,7 @@ impl Query {
             return committed.collect();
         }
 
-        let drops = keys::range(keys::drops(group, model));
-
-        committed
-            .chain(stored(keys::versions))
-            .chain([drops])
-            .collect()
+        committed.chain(stored(keys::versions)).collect()
     }
 
     /// Whether `change` could alter what this query returns. If so, scan
@@ -205,13 +200,6 @@ impl Query {
     /// the results of every scan, in any order.
     #[must_use]
     pub fn results(&self, scanned: &[(Vec<u8>, Vec<u8>)]) -> Vec<(Vec<u8>, Vec<u8>)> {
-        // A dropped model is empty, whatever it still holds in storage.
-        let drops = keys::drops(self.group, self.model);
-        let dropped = |(stored, _): &(Vec<u8>, Vec<u8>)| stored.starts_with(&drops);
-        if self.optimistic && scanned.iter().any(dropped) {
-            return Vec::new();
-        }
-
         let ours = |group, model| group == self.group && model == self.model;
         let mut committed = Vec::new();
         let mut versions = Vec::new();
@@ -347,27 +335,6 @@ mod tests {
 
         assert_eq!(query.storage_ranges().len(), 1);
         assert_eq!(query.results(&scanned), [result("color", "red")]);
-    }
-
-    #[test]
-    fn a_dropped_model_reads_as_empty_before_the_drop_settles() {
-        let stamp = Stamp {
-            lamport: 2,
-            author: phone(),
-        };
-        let dropped = (keys::drop(group(), model(), stamp), Vec::new());
-        let scanned = [
-            committed("color", "red"),
-            version(1, "size", Some("large")),
-            dropped,
-        ];
-        let query = Query::prefix(group(), model(), b"");
-
-        assert_eq!(query.results(&scanned), []);
-        assert_eq!(
-            query.committed().results(&scanned),
-            [result("color", "red")]
-        );
     }
 
     #[test]

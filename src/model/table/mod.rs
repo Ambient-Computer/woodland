@@ -118,6 +118,12 @@
 //! exactly that column: one written after the column was dropped, in
 //! the timeline, is pruned.
 //!
+//! Adding and renaming take nothing away, and show at once. Dropping
+//! waits to be committed (see [`Deferred`]): until then the column is
+//! there for everyone, and from then on for no one. Taking something
+//! away and then giving it back, because the transaction that took it
+//! didn't happen after all, is worse than waiting.
+//!
 //! A row written before a column was dropped keeps what it was given
 //! for it, and readers leave that out. Nothing goes back to rewrite
 //! rows. A dropped column can't be added again, so that never
@@ -221,8 +227,6 @@ pub(crate) enum Operation {
         /// Whether the column is new.
         add: bool,
     },
-    /// Removes a column, if the table has it.
-    DropColumn { column: ColumnId },
     /// Stops enforcing a rule. Putting one in force waits to be
     /// committed (see [`Deferred`]); letting go of one doesn't have to.
     Lift { rule: [u8; 32] },
@@ -246,11 +250,9 @@ impl Operation {
             }
             Self::Delete { keys, .. } => rows::keyed(keys),
             Self::NameColumn { column, .. } => column.takes(&Value::Null),
-            Self::DropColumn { .. }
-            | Self::Lift { .. }
-            | Self::Refer { .. }
-            | Self::Retire { .. }
-            | Self::Restore { .. } => true,
+            Self::Lift { .. } | Self::Refer { .. } | Self::Retire { .. } | Self::Restore { .. } => {
+                true
+            }
         }
     }
 
@@ -280,7 +282,6 @@ impl Operation {
             } => rows::delete_requires(row, keys, *retired),
             Self::Refer { row } | Self::Retire { row, .. } => rows::refer_requires(row),
             Self::Restore { row } => rows::restore_requires(row),
-            Self::DropColumn { .. } => vec![(Place::Table.key(), Requirement::Present)],
             Self::Lift { rule } => vec![(Place::Rule(*rule).key(), Requirement::Present)],
             Self::NameColumn { column, add, .. } => {
                 let table = (Place::Table.key(), Requirement::Present);
@@ -319,7 +320,6 @@ impl Operation {
             Self::Retire { row, token } => rows::retire_writes(row, *token),
             Self::Restore { row } => rows::restore_writes(row),
             Self::NameColumn { column, name, .. } => Self::named(*column, name).into(),
-            Self::DropColumn { column } => vec![(Place::Column(*column).key(), None)],
             Self::Lift { rule } => vec![(Place::Rule(*rule).key(), None)],
         }
     }

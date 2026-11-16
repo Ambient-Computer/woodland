@@ -121,20 +121,57 @@ fn a_dropped_model_is_empty_for_good() {
     let (mut sim, group) = Sim::group(1, 1);
     sim.write_to(PHONE, group, set(notes(group), "todo", "milk"));
     sim.settle();
+    sim.changes[PHONE].clear();
     sim.write_to(PHONE, group, Transaction::new().drop_model(notes(group)));
 
-    assert_eq!(sim.shown(PHONE, group, notes(group), "todo"), None);
+    // Nothing goes until the drop is committed, in either read.
+    for read in [Sim::shown, Sim::committed] {
+        let todo = read(&sim, PHONE, group, notes(group), "todo");
+        assert_eq!(todo.as_deref(), Some("milk"));
+    }
+    let pending = block_on(sim.devices[PHONE].pending(group)).expect("read");
+    assert_eq!(pending.len(), 1);
     assert_eq!(
-        sim.committed(PHONE, group, notes(group), "todo").as_deref(),
-        Some("milk")
+        (pending[0].model, &pending[0].change),
+        (notes(group), &crate::db::Waiting::Drop)
     );
+    let everything = Changed::Everything { group };
+    assert!(!sim.changes[PHONE].contains(&everything));
+
+    // What's written after it shows too, until the drop is final.
+    sim.write_to(PHONE, group, set(notes(group), "todo", "bread"));
+    let shown = sim.shown(PHONE, group, notes(group), "todo");
+    assert_eq!(shown.as_deref(), Some("bread"));
 
     sim.settle();
+    assert!(sim.changes[PHONE].contains(&everything));
+    let pending = block_on(sim.devices[PHONE].pending(group)).expect("read");
+    assert_eq!(pending, []);
     sim.write_to(PHONE, group, set(notes(group), "todo", "eggs"));
     sim.settle();
 
     assert_eq!(sim.shown(PHONE, group, notes(group), "todo"), None);
     assert_eq!(sim.committed(PHONE, group, notes(group), "todo"), None);
+}
+
+#[test]
+fn a_drop_that_doesnt_happen_takes_nothing() {
+    let (mut sim, group) = Sim::group(1, 1);
+    sim.write_to(PHONE, group, set(notes(group), "todo", "milk"));
+    sim.settle();
+
+    let dropping = Transaction::new()
+        .expect(notes(group), "todo", "eggs")
+        .drop_model(notes(group));
+    sim.write_to(PHONE, group, dropping);
+    sim.settle();
+
+    assert_eq!(
+        sim.committed(PHONE, group, notes(group), "todo").as_deref(),
+        Some("milk")
+    );
+    let pending = block_on(sim.devices[PHONE].pending(group)).expect("read");
+    assert_eq!(pending, []);
 }
 
 #[test]

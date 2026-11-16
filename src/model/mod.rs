@@ -283,7 +283,7 @@ impl Operation {
     }
 
     pub(crate) fn drop_column(model: ModelId, column: ColumnId) -> Self {
-        let change = Change::Table(table::Operation::DropColumn { column });
+        let change = Change::Deferred(table::Deferred::DropColumn { column });
 
         Self { model, change }
     }

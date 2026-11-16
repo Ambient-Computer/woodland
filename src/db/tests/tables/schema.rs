@@ -132,6 +132,33 @@ fn writes_to_a_dropped_column_dont_happen() {
     }
 }
 
+/// A column is there for everyone until dropping it is committed, the
+/// device that dropped it included.
+#[test]
+fn a_column_isnt_gone_until_dropping_it_is_committed() {
+    let (mut cluster, table) = table_of_people();
+    insert(&mut cluster, PHONE, table, "ada", 36);
+    cluster.settle();
+    cluster.disconnect_all();
+
+    cluster.write(PHONE, Transaction::new().drop_column(table, age(table)));
+    cluster.settle();
+
+    assert_eq!(column_names(&cluster, PHONE, table), ["age", "name"]);
+    let expected = [("ada".to_owned(), Value::Integer(36))];
+    assert_eq!(ages(&cluster, PHONE, table), expected);
+    let pending = block_on(cluster.devices[PHONE].pending(cluster.home)).expect("read");
+    let dropping = crate::db::Waiting::DropColumn { column: age(table) };
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].change, dropping);
+
+    cluster.connect_all();
+    cluster.settle();
+    for device in [PHONE, LAPTOP, NAS, FRIEND] {
+        assert_eq!(column_names(&cluster, device, table), ["name"]);
+    }
+}
+
 /// What a row held in a dropped column is still inside the row. If the
 /// column could be added again, it would be read again.
 #[test]

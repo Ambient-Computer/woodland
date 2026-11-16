@@ -13,6 +13,7 @@ A migration changes a schema while devices that have not heard of it keep writin
 - Dropping a table or column, or adding a rule existing or concurrent data might break, is a [commit operation](commit-operations.md).
 - It takes effect at one place in the committed timeline. Before it the old schema held; after it the new one does, on every peer.
 - Uncommitted work that falls after it and names what it removed is pruned.
+- Until it commits it removes nothing, in either [read](reads.md) level, on its author's device included.
 - A new rule that committed data already violates fails, and its transaction is pruned. Repairing the data first is the author's job.
 
 ## Old writers

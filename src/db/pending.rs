@@ -6,7 +6,7 @@ use crate::model::table::{Deferred, Each};
 use crate::model::{ColumnId, Filter, ModelId};
 
 /// A change that's been written and hasn't taken effect, because what
-/// it does is worked out when its transaction is committed. Until then
+/// it does is decided when its transaction is committed. Until then
 /// no read shows it.
 ///
 /// It may never take effect: its transaction can still be dropped.
@@ -29,6 +29,10 @@ pub enum Waiting {
     Update { filter: Filter },
     /// Every row a filter picks is deleted.
     DeleteWhere { filter: Filter },
+    /// The model is dropped, with everything in it.
+    Drop,
+    /// A column is removed from a table.
+    DropColumn { column: ColumnId },
     /// Every row has to be one a filter picks, from then on.
     Rule { filter: Filter },
     /// A row is deleted, along with the rows that refer to it or only
@@ -52,6 +56,7 @@ impl From<&Deferred> for Waiting {
                 }
             }
 
+            Deferred::DropColumn { column } => Self::DropColumn { column: *column },
             Deferred::Rule { filter } => Self::Rule {
                 filter: filter.clone(),
             },

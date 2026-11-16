@@ -187,7 +187,9 @@ impl Checked {
 
     pub(crate) fn outline(&self) -> Outline {
         let operations = self.operations.iter();
-        let waits = operations.clone().filter(|it| it.waits().is_some());
+        let waits = operations
+            .clone()
+            .filter(|it| it.waits().is_some() || it.drops());
 
         Outline {
             author: self.author(),

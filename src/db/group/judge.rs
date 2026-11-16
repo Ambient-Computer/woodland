@@ -56,11 +56,9 @@ impl Written {
                     self.holds.insert((declaration.model, key.clone()), *leaves);
                 }
 
-                Effect::Drop => {
-                    self.dropped.insert(declaration.model);
-                }
-
-                Effect::Require { .. } => {}
+                // A drop does nothing until it's committed, and then
+                // it's among the drops this started with.
+                Effect::Drop | Effect::Require { .. } => {}
             }
         }
     }
@@ -134,10 +132,6 @@ where
                 &write.value,
             );
         }
-
-        if operation.drops() {
-            step.put(keys::drop(id, operation.model, stamp), Vec::new());
-        }
     }
 }
 
@@ -149,8 +143,7 @@ pub(super) fn hide<V: View>(id: GroupId, entry: &Outline, step: &mut Step<V>) {
                 step.delete(keys::version(id, declaration.model, key, entry.stamp()));
             }
 
-            Effect::Drop => step.delete(keys::drop(id, declaration.model, entry.stamp())),
-            Effect::Require { .. } => {}
+            Effect::Drop | Effect::Require { .. } => {}
         }
     }
 }
@@ -226,8 +219,8 @@ pub(super) fn notify<V: View>(id: GroupId, entry: &Outline, committed: bool, ste
                 committed,
             }),
 
-            Effect::Drop => step.changed(Changed::Everything { group: id }),
-            Effect::Require { .. } => {}
+            Effect::Drop if committed => step.changed(Changed::Everything { group: id }),
+            Effect::Drop | Effect::Require { .. } => {}
         }
     }
 }
