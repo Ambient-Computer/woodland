@@ -44,6 +44,9 @@ pub(crate) enum Place {
     /// Holds the last number given out in a column that numbers its
     /// rows.
     Sequence(ColumnId),
+    /// Holds a condition every row has to meet, while it's in force.
+    /// What follows is a hash of the condition.
+    Rule([u8; 32]),
 }
 
 const TABLE: u8 = 0;
@@ -53,6 +56,7 @@ const ADDED: u8 = 3;
 const UNIQUE: u8 = 4;
 const INDEX: u8 = 5;
 const SEQUENCE: u8 = 6;
+const RULE: u8 = 7;
 
 /// What follows a row's key, in the keys of its parts.
 const KEYS: u8 = 1;
@@ -83,6 +87,7 @@ impl Place {
                 [&[INDEX][..], column.as_bytes(), value, row].concat()
             }
             Self::Sequence(column) => [&[SEQUENCE][..], column.as_bytes()].concat(),
+            Self::Rule(rule) => [&[RULE][..], rule].concat(),
         }
     }
 
@@ -121,6 +126,7 @@ impl Place {
             COLUMN => Some(Self::Column(ColumnId::from_bytes(rest.try_into().ok()?))),
             ADDED => Some(Self::Added(ColumnId::from_bytes(rest.try_into().ok()?))),
             SEQUENCE => Some(Self::Sequence(ColumnId::from_bytes(rest.try_into().ok()?))),
+            RULE => Some(Self::Rule(rest.try_into().ok()?)),
             ROW => {
                 let (row, part) = unescape(rest)?;
                 match part.split_first() {
@@ -159,6 +165,11 @@ impl Place {
 /// exists, its columns, and its rows.
 pub(crate) fn whole() -> (Vec<u8>, Vec<u8>) {
     (vec![TABLE], vec![ROW + 1])
+}
+
+/// Where the table's rules are.
+pub(crate) fn rules() -> (Vec<u8>, Vec<u8>) {
+    (vec![RULE], vec![RULE + 1])
 }
 
 /// Where the table says it exists and what its columns are: what any
@@ -249,6 +260,8 @@ mod tests {
             Place::Retired(b"ada".to_vec()),
             Place::Cell(b"ada".to_vec(), [9; 16], column),
             Place::Unique(column, b"value".to_vec()),
+            Place::Sequence(column),
+            Place::Rule([4; 32]),
             Place::Index(indexed, order::ordered(&"a\0b".into()), b"row".to_vec()),
         ];
 

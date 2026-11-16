@@ -9,6 +9,7 @@ mod forks;
 mod history;
 mod judge;
 mod root;
+mod rules;
 mod sync;
 
 use std::collections::{BTreeMap, BTreeSet};

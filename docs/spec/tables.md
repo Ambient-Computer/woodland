@@ -35,6 +35,15 @@ A table is a [model](models.md) of rows with typed cells, under a schema that is
 - A row that would go with it, and is itself referenced, stops the delete.
 - References are followed only within one [clock](groups.md).
 
+## Rules
+
+- A rule is a condition on the cells of a row that every row of a table meets.
+- Putting a rule in force is a [commit operation](commit-operations.md). Lifting one is an ordinary [transaction](transactions.md).
+- A transaction that would leave a row breaking a rule in force is pruned when it commits.
+- A rule is judged against the row a transaction leaves, not the steps it took.
+- A rule is not judged optimistically. What a row holds depends on the order of every write to it, which only a [checkpoint](checkpoints.md) fixes.
+- An optimistic [read](reads.md) may therefore show a row that a rule will refuse.
+
 ## Indexes
 
 - An index is derived state, kept locally by each peer that wants it; see [reads](reads.md).

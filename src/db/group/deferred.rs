@@ -16,13 +16,14 @@ use crate::store::{Entry, StoreError, View};
 use super::super::step::Step;
 use super::judge;
 use super::root::Accumulator;
+use super::rules;
 
 /// A model's committed state, as a step sees it.
-struct Committed<'a, V> {
-    group: GroupId,
-    model: ModelId,
-    dropped: &'a BTreeSet<ModelId>,
-    step: &'a Step<V>,
+pub(super) struct Committed<'a, V> {
+    pub(super) group: GroupId,
+    pub(super) model: ModelId,
+    pub(super) dropped: &'a BTreeSet<ModelId>,
+    pub(super) step: &'a Step<V>,
 }
 
 impl<V: View> Reads for Committed<'_, V> {
@@ -73,8 +74,9 @@ impl<V: View> Reads for Committed<'_, V> {
 
 /// Commits a transaction's operations in order, working out the ones
 /// that waited as it gets to them. Returns the keys those wrote, or
-/// `None` if one couldn't be done, and then `step` and `state` are
-/// left partway: try it on a [fork](Step::fork) first.
+/// `None` if one couldn't be done or a row was left breaking a rule,
+/// and then `step` and `state` are left partway: try it on a
+/// [fork](Step::fork) first.
 pub(super) async fn carry_out<V: View>(
     group: GroupId,
     operations: &[Operation],
@@ -83,9 +85,12 @@ pub(super) async fn carry_out<V: View>(
     step: &mut Step<V>,
 ) -> Result<Option<Vec<(ModelId, Vec<u8>)>>, StoreError> {
     let mut touched = Vec::new();
+    let mut written = Vec::new();
     for operation in operations {
         let model = operation.model;
         let Some(deferred) = operation.waits() else {
+            let writes = operation.writes().into_iter();
+            written.extend(writes.map(|write| (write.model, write.key)));
             judge::commit(group, std::slice::from_ref(operation), state, step).await?;
             continue;
         };
@@ -134,6 +139,11 @@ pub(super) async fn carry_out<V: View>(
                 touched.push((model, key));
             }
         }
+    }
+
+    written.extend(touched.iter().cloned());
+    if !rules::hold(group, &written, dropped, step).await? {
+        return Ok(None);
     }
 
     Ok(Some(touched))

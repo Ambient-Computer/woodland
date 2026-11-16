@@ -85,6 +85,12 @@ impl Filter {
         self
     }
 
+    /// What a rule made of this filter is kept under: the same for
+    /// the same tests in the same order, and for nothing else.
+    pub(crate) fn id(&self) -> [u8; 32] {
+        crate::encoding::hash("woodland/rule", self)
+    }
+
     /// Whether every test compares a column with a value it could
     /// hold.
     pub(crate) fn typed(&self) -> bool {

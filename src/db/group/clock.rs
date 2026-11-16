@@ -23,6 +23,7 @@ use super::deferred;
 use super::history::History;
 use super::judge::{self, Written};
 use super::root::{Accumulator, Root};
+use super::rules;
 
 #[derive(Debug)]
 pub(super) struct Clock {
@@ -261,7 +262,8 @@ impl Clock {
             let mut happens = judge::weigh(self.group, entry, &Written::on(&dropped), step).await?;
             if happens {
                 let operations = self.operations(entry, step).await?;
-                if operations.iter().any(|it| it.waits().is_some()) {
+                let waits = operations.iter().any(|it| it.waits().is_some());
+                if waits || rules::bind(self.group, &operations, step).await? {
                     // Whether it can all be done isn't known until
                     // it's been tried, and it's all or nothing.
                     let (mut trial, mut sum) = (step.fork(), state.clone());

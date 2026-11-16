@@ -229,6 +229,38 @@ impl Transaction {
         self
     }
 
+    /// Makes a rule of `filter`: once the transaction is committed,
+    /// every row of `table` has to be one it picks. A transaction that
+    /// would leave a row it doesn't pick is dropped, for good, when
+    /// its turn comes to be committed. Until then such a row can be
+    /// read, like anything else that isn't final.
+    ///
+    /// The whole transaction is dropped, for good, if a row there
+    /// already breaks the rule. Change those rows first, in an earlier
+    /// transaction or with [`update_where`] earlier in this one.
+    ///
+    /// A column with no value fails every test of order, so a rule
+    /// that a number is [at least] something also says it's there.
+    ///
+    /// [`update_where`]: Self::update_where
+    /// [at least]: Filter::at_least
+    pub fn add_rule(mut self, table: ModelId, filter: Filter) -> Self {
+        let rule = Deferred::Rule { filter };
+        self.operations.push(Operation::deferred(table, rule));
+        self
+    }
+
+    /// Stops enforcing a rule made of exactly this `filter`. Unlike
+    /// making one, it doesn't wait.
+    ///
+    /// The whole transaction is dropped if, at its place in the
+    /// timeline, there's no such rule.
+    pub fn lift_rule(mut self, table: ModelId, filter: &Filter) -> Self {
+        self.operations
+            .push(Operation::table(table, Row::lift(filter)));
+        self
+    }
+
     /// Removes `row` of `table` along with every row that refers to
     /// it, once the transaction is committed. Nothing changes until
     /// then, which can take as long as the group's next checkpoint.

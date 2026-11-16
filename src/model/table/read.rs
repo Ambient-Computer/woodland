@@ -89,7 +89,11 @@ impl Table {
                     parts.retired.insert(key, Fingerprint::of(value));
                 }
                 Some(
-                    Place::Added(_) | Place::Unique(..) | Place::Index(..) | Place::Sequence(_),
+                    Place::Added(_)
+                    | Place::Unique(..)
+                    | Place::Index(..)
+                    | Place::Sequence(_)
+                    | Place::Rule(_),
                 )
                 | None => {}
             }
@@ -238,6 +242,11 @@ impl Row {
             incarnation: Some(self.incarnation),
             column,
         }
+    }
+
+    /// The operation that stops enforcing a rule.
+    pub(crate) fn lift(filter: &super::Filter) -> Operation {
+        Operation::Lift { rule: filter.id() }
     }
 
     /// The change that deletes the row once it's committed, whatever

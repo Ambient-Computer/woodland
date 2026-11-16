@@ -140,6 +140,18 @@
 //! name its rows should, by reading them first, through an index or
 //! by key, and not wait.
 //!
+//! # Rules
+//!
+//! A rule is a condition every row has to meet. Putting one in force
+//! waits to be committed, because whether the rows there are meet it
+//! isn't known before. From then on it's kept with the table, and a
+//! transaction that would leave a row breaking it doesn't happen.
+//!
+//! That's decided when the transaction is committed, and not before:
+//! what a row holds is the work of every transaction that wrote one of
+//! its cells, and only the committed order says which. So an
+//! optimistic read can show a row that a rule is about to turn down.
+//!
 //! Deleting a row that's been referred to can wait instead of going
 //! through retirement: committed, it can read every row that refers
 //! to the one it deletes, and take them with it or stop.
@@ -156,7 +168,7 @@ pub(crate) use deferred::{Deferred, Each};
 pub use filter::Filter;
 pub(crate) use order::successor;
 use place::Incarnation;
-pub(crate) use place::{Place, UNSEALED, rows, schema, values};
+pub(crate) use place::{Place, UNSEALED, rows, rules, schema, values};
 pub use read::{Row, Table};
 pub(crate) use rows::{Rekey, Target};
 use serde::{Deserialize, Serialize};
@@ -211,6 +223,9 @@ pub(crate) enum Operation {
     },
     /// Removes a column, if the table has it.
     DropColumn { column: ColumnId },
+    /// Stops enforcing a rule. Putting one in force waits to be
+    /// committed (see [`Deferred`]); letting go of one doesn't have to.
+    Lift { rule: [u8; 32] },
 }
 
 impl Operation {
@@ -232,6 +247,7 @@ impl Operation {
             Self::Delete { keys, .. } => rows::keyed(keys),
             Self::NameColumn { column, .. } => column.takes(&Value::Null),
             Self::DropColumn { .. }
+            | Self::Lift { .. }
             | Self::Refer { .. }
             | Self::Retire { .. }
             | Self::Restore { .. } => true,
@@ -265,6 +281,7 @@ impl Operation {
             Self::Refer { row } | Self::Retire { row, .. } => rows::refer_requires(row),
             Self::Restore { row } => rows::restore_requires(row),
             Self::DropColumn { .. } => vec![(Place::Table.key(), Requirement::Present)],
+            Self::Lift { rule } => vec![(Place::Rule(*rule).key(), Requirement::Present)],
             Self::NameColumn { column, add, .. } => {
                 let table = (Place::Table.key(), Requirement::Present);
                 let column = if *add {
@@ -303,6 +320,7 @@ impl Operation {
             Self::Restore { row } => rows::restore_writes(row),
             Self::NameColumn { column, name, .. } => Self::named(*column, name).into(),
             Self::DropColumn { column } => vec![(Place::Column(*column).key(), None)],
+            Self::Lift { rule } => vec![(Place::Rule(*rule).key(), None)],
         }
     }
 

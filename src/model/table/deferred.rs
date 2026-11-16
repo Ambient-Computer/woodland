@@ -40,6 +40,9 @@ pub(crate) enum Deferred {
     /// Does the same thing to every row a filter picks, of the rows
     /// there are once this is committed.
     Each { filter: Filter, change: Each },
+    /// Puts a rule in force: from here on, every row has to be one
+    /// the filter picks.
+    Rule { filter: Filter },
     /// Deletes a row that may have been referred to, once every
     /// reference there will ever be can be found.
     Remove {
@@ -77,6 +80,7 @@ impl Deferred {
                 filter.typed() && typed
             }
 
+            Self::Rule { filter } => filter.typed(),
             Self::Remove { referrers, .. } => referrers.iter().all(|(table, column)| {
                 let names = matches!(column.kind(), Some(Type::Text | Type::Bytes));
 
@@ -104,6 +108,7 @@ impl Deferred {
             }
 
             Self::Each { filter, change } => each(filter, change, state).await,
+            Self::Rule { filter } => rule(filter, state).await,
             Self::Remove {
                 row,
                 incarnation,
@@ -112,6 +117,29 @@ impl Deferred {
             } => remove(row, *incarnation, referrers, *cascade, state).await,
         }
     }
+}
+
+/// A rule the rows already break can't be put in force. Mending them
+/// first is up to whoever wants it.
+async fn rule(filter: &Filter, state: &impl Reads) -> Result<Option<Vec<Resolved>>, StoreError> {
+    let (start, end) = place::whole();
+    let Some(table) = Table::read(&state.scan(&start, &end).await?) else {
+        return Ok(None);
+    };
+    if !table.rows().iter().all(|row| filter.picks(row)) {
+        return Ok(None);
+    }
+
+    let kept = (
+        Place::Rule(filter.id()).key(),
+        Some(encoding::encode(filter)),
+    );
+
+    Ok(Some(vec![Resolved {
+        model: state.model(),
+        requires: Vec::new(),
+        writes: vec![kept],
+    }]))
 }
 
 /// Whether a cell names the row under `key`.

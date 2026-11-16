@@ -29,6 +29,8 @@ pub enum Waiting {
     Update { filter: Filter },
     /// Every row a filter picks is deleted.
     DeleteWhere { filter: Filter },
+    /// Every row has to be one a filter picks, from then on.
+    Rule { filter: Filter },
     /// A row is deleted, along with the rows that refer to it or only
     /// if there are none.
     Delete { row: Vec<u8>, with_referrers: bool },
@@ -49,6 +51,10 @@ impl From<&Deferred> for Waiting {
                     Each::Delete => Self::DeleteWhere { filter },
                 }
             }
+
+            Deferred::Rule { filter } => Self::Rule {
+                filter: filter.clone(),
+            },
 
             Deferred::Remove { row, cascade, .. } => Self::Delete {
                 row: row.clone(),
