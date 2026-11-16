@@ -87,9 +87,10 @@ impl View for MemoryView {
 mod tests {
     use super::*;
     use crate::store::contract;
+    use crate::testing::block_on;
 
     #[test]
     fn it_does_what_every_store_does() {
-        contract::holds(MemoryStore::new);
+        block_on(contract::holds(|| ready(MemoryStore::new())));
     }
 }

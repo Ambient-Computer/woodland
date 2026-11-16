@@ -34,6 +34,8 @@
 //! store restored from a backup is no different. It has forgotten
 //! everything since the copy was taken.
 
+#[cfg(any(test, all(feature = "browser", target_arch = "wasm32")))]
+mod browser;
 #[cfg(test)]
 mod contract;
 #[cfg(feature = "file")]
@@ -43,6 +45,8 @@ mod memory;
 use std::error::Error;
 use std::fmt;
 
+#[cfg(all(feature = "browser", target_arch = "wasm32"))]
+pub use browser::{BrowserStore, BrowserView};
 #[cfg(feature = "file")]
 pub use file::{FileStore, FileView};
 pub use memory::{MemoryStore, MemoryView};

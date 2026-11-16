@@ -30,6 +30,9 @@ Woodland runs inside other people's programs, on other people's devices. This pa
 - An IndexedDB transaction closes itself when its creator waits on anything but the database. A step waits only on storage, which is what keeps one transaction usable for a whole batch.
 - Several tabs can write to one database. For Woodland that is a hazard and not a feature: two cores on one store are one peer twice.
 - The driver holds a named lock for as long as it has the store, so a second tab is refused and routes through the first.
+- A transaction that has stopped answering cannot be read again, so a view that outlives a batch cannot be a transaction. The driver reads the present and puts back what batches replaced since the view was taken, kept only while such a view exists.
+- Verified by running the driver's tests in Firefox 159 and Chromium 156, November 2026: keys of raw bytes order bytewise, the empty key included; a transaction asked for strict durability is accepted; a held lock refuses a second owner and is free again once released.
+- Not verified: any of this in Safari, in a worker, or across two real tabs. The tests run in one page.
 
 ## Why not the origin-private file system
 

@@ -1,9 +1,17 @@
 use tempfile::TempDir;
 
 use super::*;
-use crate::store::contract::{self, apply, delete, get, put};
+use crate::store::contract::{self, delete, put};
 use crate::testing::block_on;
 use crate::{Database, Query, Transaction};
+
+fn apply(store: &mut FileStore, batch: Vec<Write>) {
+    block_on(store.apply(batch)).expect("applied");
+}
+
+fn get(view: &FileView, key: &[u8]) -> Option<Vec<u8>> {
+    block_on(view.get(key)).expect("read")
+}
 
 fn folder() -> TempDir {
     tempfile::tempdir().expect("a folder")
@@ -18,11 +26,11 @@ fn it_does_what_every_store_does() {
     let folder = folder();
     let made = std::cell::Cell::new(0);
 
-    contract::holds(|| {
+    block_on(contract::holds(|| {
         made.set(made.get() + 1);
 
-        open(&folder, &made.get().to_string())
-    });
+        std::future::ready(open(&folder, &made.get().to_string()))
+    }));
 }
 
 #[test]

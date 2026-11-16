@@ -46,6 +46,8 @@ pub use model::{
     Allowance, Allowances, ColumnId, Filter, ModelId, Query, Row, Sequence, Table, Value,
 };
 pub use seal::SealingKey;
+#[cfg(all(feature = "browser", target_arch = "wasm32"))]
+pub use store::{BrowserStore, BrowserView};
 pub use store::{Entry, MemoryStore, MemoryView, Order, Store, StoreError, View, Write};
 #[cfg(feature = "file")]
 pub use store::{FileStore, FileView};

@@ -56,7 +56,15 @@
               pkgs.nixfmt
               pkgs.prettier
               pkgs.treefmt
+
+              # The browser's store is tested in a browser. The runner
+              # has to be the version of wasm-bindgen in Cargo.lock.
+              pkgs.wasm-bindgen-cli
+              pkgs.geckodriver
+              pkgs.firefox
             ];
+
+            CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER = "wasm-bindgen-test-runner";
           };
         }
       );
