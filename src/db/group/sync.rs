@@ -32,6 +32,9 @@ const PAGE: usize = 64;
 /// What a peer is thought to hold.
 #[derive(Debug, Default)]
 pub(super) struct Remote {
+    /// Whether it has said anything yet. Until it has, there's no
+    /// telling what it holds or wants, and it's sent only the chain.
+    heard: bool,
     height: u64,
     /// The height of the latest checkpoint it has committed.
     folded: u64,
@@ -45,6 +48,8 @@ pub(super) struct Remote {
     proven: BTreeSet<Peer>,
     /// Everyone it's been sent a proof against since the last tick.
     told: BTreeSet<Peer>,
+    /// The clocks it wants anything of. `None` if all.
+    interest: Option<BTreeSet<ClockId>>,
     /// How far it says it has got with a snapshot.
     pub(super) staged: Option<(u64, Option<Vec<u8>>)>,
     /// The snapshot this device is sending it.
@@ -57,6 +62,16 @@ impl Remote {
         if reach(sent, author) <= link.seq {
             sent.insert(author, link);
         }
+    }
+
+    /// The clocks it wants, if not all.
+    pub(super) fn interest(&self) -> Option<&BTreeSet<ClockId>> {
+        self.interest.as_ref()
+    }
+
+    /// Whether it wants anything of `clock`.
+    pub(super) fn wants(&self, clock: ClockId) -> bool {
+        self.interest.as_ref().is_none_or(|it| it.contains(&clock))
     }
 
     /// Stops assuming that what it was sent arrived, and was kept.
@@ -90,6 +105,7 @@ impl Group {
         step: &mut Step<V>,
     ) -> Result<(), StoreError> {
         let remote = self.remotes.entry(from).or_default();
+        remote.heard = true;
         // Like what it holds, how far along it is can go down: it may
         // have let the group go and been invited back.
         remote.height = message.summary.height;
@@ -98,6 +114,7 @@ impl Group {
         remote.staged = message.summary.staged;
         remote.said.clone_from(&message.summary.heads);
         remote.proven.clone_from(&message.summary.proven);
+        remote.interest.clone_from(&message.summary.interest);
 
         self.said |= self.chain.receive(message.chain);
         self.overhear(step);
@@ -118,7 +135,9 @@ impl Group {
         }
 
         let check = |entry: Entry| entry.check(self.id);
-        let mut waiting: Vec<Checked> = message.entries.into_iter().filter_map(check).collect();
+        let wanted = |entry: &Checked| self.wants(entry.header().clock);
+        let entries = message.entries.into_iter().filter_map(check);
+        let mut waiting: Vec<Checked> = entries.filter(wanted).collect();
 
         // Whatever can't be placed may be evidence: of a fork, or that a
         // checkpoint settled on an entry other than the one held. Either
@@ -254,12 +273,12 @@ impl Group {
         // one checkpoint at a time. Either gets committed state instead,
         // and then the rest.
         let behind = remote.folded < self.base || (remote.gap && remote.folded < self.folded);
-        let snapshot = if behind {
+        let snapshot = if behind && remote.heard {
             self.piece(remote, step).await?
         } else {
             None
         };
-        let entries = if behind {
+        let entries = if behind || !remote.heard {
             Vec::new()
         } else {
             self.missing(remote, step).await?
@@ -332,6 +351,7 @@ impl Group {
                 .map(|(&id, clock)| (id, clock.history.heads.clone()))
                 .collect(),
             proven: self.proofs.keys().copied().collect(),
+            interest: self.interest.clone(),
         }
     }
 
@@ -347,6 +367,10 @@ impl Group {
         let nothing = Frontier::new();
         let mut missing = Vec::new();
         for (id, clock) in &self.clocks {
+            if !remote.wants(*id) {
+                continue;
+            }
+
             let said = remote.said.get(id).unwrap_or(&nothing);
             let sent = remote.sent.get(id).unwrap_or(&nothing);
             missing.extend(clock.missing(said, sent, page, step).await?);

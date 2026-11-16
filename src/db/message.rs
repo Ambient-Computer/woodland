@@ -44,6 +44,8 @@ pub(crate) struct Summary {
     pub(crate) heads: BTreeMap<ClockId, Frontier>,
     /// Everyone it holds a fork proof against.
     pub(crate) proven: BTreeSet<Peer>,
+    /// The clocks it wants anything of. `None` if all.
+    pub(crate) interest: Option<BTreeSet<ClockId>>,
 }
 
 /// Part of a snapshot: committed values, in key order.
@@ -56,6 +58,9 @@ pub(crate) struct Piece {
     /// Each key is a model and then the model's own key, so a clock's
     /// values come together.
     pub(crate) values: Vec<(Vec<u8>, Vec<u8>)>,
+    /// The last key this piece gets to, whether or not it's among the
+    /// values: those of clocks the receiver doesn't want are left out.
+    pub(crate) upto: Option<Vec<u8>>,
     /// With the last piece: every model that's been dropped.
     pub(crate) end: Option<BTreeSet<ModelId>>,
 }

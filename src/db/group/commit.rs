@@ -127,7 +127,8 @@ impl Group {
         let kept = |(id, clock): (&ClockId, &Clock)| {
             clock.history.committed.is_empty() || covers.clocks.contains_key(id)
         };
-        if self.folded != tip.height || !self.clocks.iter().all(kept) {
+        // Vouching for a checkpoint is vouching for every clock in it.
+        if self.partial() || self.folded != tip.height || !self.clocks.iter().all(kept) {
             return Ok(false);
         }
 
@@ -188,7 +189,7 @@ impl Group {
         }
 
         let free = self.chain.attempt().is_none() || self.stalled > patience;
-        if !free || self.folded != tip.height {
+        if !free || self.folded != tip.height || self.partial() {
             return Ok(());
         }
 
@@ -254,8 +255,14 @@ impl Group {
         let ids = self.clocks.keys().chain(covers.clocks.keys());
         let ids: BTreeSet<ClockId> = ids.copied().collect();
         let mut plan = Vec::new();
+        let mut passed = false;
         for id in ids {
             let covered = covers.clocks.get(&id);
+            if !self.wants(id) {
+                passed |= covered.is_some_and(|it| !it.frontier.is_empty());
+                continue;
+            }
+
             let Some(clock) = self.clocks.get(&id) else {
                 if covered.is_some_and(|it| !it.frontier.is_empty()) {
                     return Ok(false);
@@ -300,6 +307,7 @@ impl Group {
         }
 
         self.folded = checkpoint.height;
+        self.passed |= passed;
         self.sound.clear();
         self.silence_all(step);
 

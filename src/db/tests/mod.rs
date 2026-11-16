@@ -10,6 +10,7 @@ mod compaction;
 mod conflicts;
 mod forks;
 mod guards;
+mod interest;
 mod joining;
 mod leaving;
 mod membership;

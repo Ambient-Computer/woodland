@@ -252,14 +252,20 @@ fn a_snapshot_carries_on_after_a_restart() {
     fill(&mut sim, group, 700);
     sim.compact(PHONE, group);
     sim.connect(PHONE, LAPTOP);
-    for _ in 0..3 {
+    let (start, end) = keys::range(keys::staged(group));
+    let staged = |sim: &Sim| {
+        let view = sim.devices[LAPTOP].store.view();
+
+        block_on(super::super::step::scan(&view, &start, &end)).expect("scanned")
+    };
+    for _ in 0..8 {
+        if !staged(&sim).is_empty() {
+            break;
+        }
         sim.deliver();
     }
-    let (start, end) = keys::range(keys::staged(group));
-    let view = sim.devices[LAPTOP].store.view();
-    let staged = block_on(super::super::step::scan(&view, &start, &end)).expect("scanned");
     assert!(
-        !staged.is_empty(),
+        !staged(&sim).is_empty(),
         "the test means to stop part of the way through"
     );
     assert_eq!(

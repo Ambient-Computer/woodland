@@ -7,6 +7,7 @@ mod compact;
 mod deferred;
 mod forks;
 mod history;
+mod interest;
 mod judge;
 mod root;
 mod rules;
@@ -26,6 +27,7 @@ use super::proof::Proof;
 use super::step::Step;
 use clock::{Clock, Kept};
 use compact::Staging;
+pub(crate) use interest::Refused;
 use sync::Remote;
 
 #[derive(Debug)]
@@ -55,6 +57,11 @@ pub(crate) struct Group {
     stalled: u64,
     /// Whether the chain has anything peers haven't been told.
     said: bool,
+    /// The clocks this device wants. `None` if all of them.
+    interest: Option<BTreeSet<ClockId>>,
+    /// Whether a checkpoint has been committed here without the state
+    /// of a clock it covers, because the clock wasn't wanted.
+    passed: bool,
 }
 
 /// What's kept of a group besides its chain and its entries.
@@ -65,6 +72,8 @@ struct Meta {
     base: u64,
     staging: Option<Staging>,
     wanted: Option<Electorate>,
+    interest: Option<BTreeSet<ClockId>>,
+    passed: bool,
 }
 
 /// What one device hands another so it can hold a group.
@@ -110,6 +119,8 @@ impl Group {
             sound: BTreeSet::new(),
             stalled: 0,
             said: false,
+            interest: None,
+            passed: false,
         }
     }
 
@@ -151,6 +162,8 @@ impl Group {
         group.base = meta.base;
         group.staging = meta.staging;
         group.wanted = meta.wanted;
+        group.interest = meta.interest;
+        group.passed = meta.passed;
         group.recall(step).await?;
         for (clock, kept) in meta.clocks {
             let held = Clock::load(id, clock, kept, step).await?;
@@ -185,6 +198,13 @@ impl Group {
         self.chain.tip().electorate.has(peer)
     }
 
+    /// Whether anyone it has heard from, itself included, is trying
+    /// for the next checkpoint.
+    #[cfg(test)]
+    pub(crate) fn attempting(&self) -> bool {
+        self.chain.attempt().is_some()
+    }
+
     /// How many checkpoints it holds proposals of, for the next place
     /// in the chain.
     #[cfg(test)]
@@ -215,6 +235,8 @@ impl Group {
             base: self.base,
             staging: self.staging.clone(),
             wanted: self.wanted.clone(),
+            interest: self.interest.clone(),
+            passed: self.passed,
         };
         step.save(keys::meta(self.id), &meta);
         if self.said {
@@ -235,7 +257,8 @@ impl Group {
         // A device that learns it forked has lost track of what it
         // signed, and anything more it wrote would be dropped unread.
         let me = identity.peer();
-        if !tip.electorate.writers(clock).includes(me) || self.proofs.contains_key(&me) {
+        let may = tip.electorate.writers(clock).includes(me) && self.wants(clock);
+        if !may || self.proofs.contains_key(&me) {
             return Ok(false);
         }
 

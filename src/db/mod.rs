@@ -71,6 +71,13 @@ pub enum Error {
     Broken,
     /// This device doesn't hold that group.
     UnknownGroup,
+    /// The device has a say in the group, and has to hold all of it.
+    Votes,
+    /// The device has let checkpoints go by without a clock it now
+    /// wants. It has to [forget] the group and join again.
+    ///
+    /// [forget]: Database::forget
+    PassedOver,
     /// The device has a role in the group, and can't [forget] it.
     ///
     /// [forget]: Database::forget
@@ -89,6 +96,10 @@ impl fmt::Display for Error {
             Self::Store(error) => error.fmt(formatter),
             Self::Broken => formatter.write_str("an earlier step failed, reopen the database"),
             Self::UnknownGroup => formatter.write_str("this device doesn't hold that group"),
+            Self::Votes => formatter.write_str("this device has a say, and holds every clock"),
+            Self::PassedOver => {
+                formatter.write_str("this device has passed over a clock it now wants")
+            }
             Self::StillAMember => {
                 formatter.write_str("this device is still a member of that group")
             }
@@ -293,6 +304,36 @@ impl<S: Store> Database<S> {
         self.guard(shed)?;
 
         self.finish(step).await
+    }
+
+    /// Holds only these clocks of `group`, or with `None`, all of
+    /// them, which is how a group starts out. Nothing of the other
+    /// clocks is kept, asked for, or sent here, and reads of them come
+    /// back empty. Writing to one is refused.
+    ///
+    /// Wanting less is always possible. Wanting more is possible until
+    /// a checkpoint has been committed here without a clock it covers:
+    /// so choose straight after [joining].
+    ///
+    /// [joining]: Self::join
+    ///
+    /// # Errors
+    ///
+    /// If this device doesn't hold `group`, has a say in it, or has
+    /// passed over a clock it's now asking for, or the store fails.
+    pub async fn want(
+        &mut self,
+        group: GroupId,
+        clocks: Option<BTreeSet<ClockId>>,
+    ) -> Result<Outputs, Error> {
+        let mut step = self.begin()?;
+        let held = self.groups.get_mut(&group).ok_or(Error::UnknownGroup)?;
+        let wanted = held.want(&self.identity, clocks, &mut step).await;
+        match self.guard(wanted)? {
+            Ok(()) => self.finish(step).await,
+            Err(group::Refused::Votes) => Err(Error::Votes),
+            Err(group::Refused::Passed) => Err(Error::PassedOver),
+        }
     }
 
     /// Stops holding `group`, and deletes everything kept for it.

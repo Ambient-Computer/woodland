@@ -70,6 +70,12 @@ impl Group {
         remote: &Remote,
         step: &Step<V>,
     ) -> Result<Option<(Piece, Sending)>, StoreError> {
+        // A device that holds only some clocks has the whole state of
+        // nothing but those.
+        if !self.serves(remote) {
+            return Ok(None);
+        }
+
         let height = self.folded;
         let start = match &remote.sending {
             Some(sent) if sent.height == height => {
@@ -94,16 +100,27 @@ impl Group {
         let value = |(key, value): (Vec<u8>, Vec<u8>)| (key[prefix.len()..].to_vec(), value);
         let values: Vec<_> = page.into_iter().map(value).collect();
         let last = values.last().map(|(key, _)| key.clone());
+        let upto = last.or_else(|| start.clone());
         let sending = Sending {
             height,
-            upto: last.or_else(|| start.clone()),
+            upto: upto.clone(),
             done,
         };
+
+        // A value's key starts with its model's ID, and that with its
+        // clock's.
+        let wanted = |(key, _): &(Vec<u8>, Vec<u8>)| {
+            let clock = key.first_chunk::<32>().map(|it| ClockId::from_bytes(*it));
+
+            clock.is_some_and(|clock| remote.wants(clock))
+        };
+        let values: Vec<_> = values.into_iter().filter(wanted).collect();
         let dropped = self.clocks.values().flat_map(|clock| &clock.dropped);
         let piece = Piece {
             height,
             start,
             values,
+            upto,
             end: done.then(|| dropped.copied().collect()),
         };
 
@@ -162,10 +179,15 @@ impl Group {
             }
 
             let model = ModelId::from_bytes(*model);
-            let sum: &mut Accumulator = sums.entry(model.clock()).or_default();
-            sum.hold(model, rest, &value);
-            step.put(keys::staged_value(self.id, &key), value);
+            if self.wants(model.clock()) {
+                let sum: &mut Accumulator = sums.entry(model.clock()).or_default();
+                sum.hold(model, rest, &value);
+                step.put(keys::staged_value(self.id, &key), value);
+            }
             staging.after = Some(key);
+        }
+        if piece.upto > staging.after {
+            staging.after = piece.upto;
         }
 
         let Some(dropped) = piece.end else {
@@ -175,7 +197,7 @@ impl Group {
             return Ok(());
         };
 
-        for &model in &dropped {
+        for &model in dropped.iter().filter(|model| self.wants(model.clock())) {
             sums.entry(model.clock()).or_default().drop(model);
         }
 
@@ -187,7 +209,7 @@ impl Group {
             let named = |(id, covered): (&ClockId, _)| {
                 let covered: &super::commit::Covered = covered;
 
-                sums.get(id).unwrap_or(&nothing).root() == covered.state
+                !self.wants(*id) || sums.get(id).unwrap_or(&nothing).root() == covered.state
             };
 
             covers.clocks.iter().all(named) && sums.keys().all(|id| covers.clocks.contains_key(id))
@@ -242,6 +264,11 @@ impl Group {
 
         let nothing = Accumulator::default();
         for (&id, covered) in &covers.clocks {
+            if !self.wants(id) {
+                self.passed |= !covered.frontier.is_empty();
+                continue;
+            }
+
             let sum = sums.get(&id).unwrap_or(&nothing);
             step.put(keys::state(self.id, id), sum.to_bytes());
             let theirs = dropped.iter().filter(|model| model.clock() == id);
