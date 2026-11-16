@@ -272,7 +272,7 @@ impl<S: Store> Database<S> {
         if !self.groups.contains_key(&id) {
             let mut group = Group::start(chain, &mut step).ok_or(Error::BadInvitation)?;
             if let Some(secret) = secret {
-                group.hold(0, secret, &mut step);
+                group.hold(&self.identity, 0, secret, &mut step);
             }
             let peers: Vec<Peer> = self.peers.iter().copied().collect();
             for peer in peers {

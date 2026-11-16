@@ -326,10 +326,17 @@ mod tests {
         assert!(outside.check(group, &Keyring::Open).is_none());
     }
 
+    fn sealed_with(secret: Secret) -> Keyring {
+        let mut keys = Keyring::sealed();
+        keys.hold(0, secret);
+
+        keys
+    }
+
     fn sealed_under(purpose: &[u8]) -> Keyring {
         let secret = Secret::make(&Identity::from_secret_key([1; 32]), purpose);
 
-        Keyring::Sealed(BTreeMap::from([(0, Some(secret))]))
+        sealed_with(secret)
     }
 
     fn sealed_entry(keys: &Keyring) -> (GroupId, Entry) {
@@ -351,7 +358,7 @@ mod tests {
     fn a_sealed_entry_is_read_with_its_secret_and_kept_without() {
         let keys = sealed_under(b"ours");
         let (group, entry) = sealed_entry(&keys);
-        let without = Keyring::Sealed(BTreeMap::from([(0, None)]));
+        let without = Keyring::sealed();
 
         let read = entry.clone().check(group, &keys).expect("an entry");
         assert!(!read.unread);
@@ -397,8 +404,8 @@ mod tests {
         let header = entry.header.payload().clone();
         let identity = Identity::from_secret_key([1; 32]);
         let secret = Secret::make(&identity, b"old");
-        let keys = Keyring::Sealed(BTreeMap::from([(0, Some(secret))]));
-        let later = Keyring::Sealed(BTreeMap::from([(0, None)]));
+        let keys = sealed_with(secret);
+        let later = Keyring::sealed();
 
         assert!(Entry::author(&identity, header.clone(), Vec::new(), &keys).is_some());
         assert!(Entry::author(&identity, header, Vec::new(), &later).is_none());

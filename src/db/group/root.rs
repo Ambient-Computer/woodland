@@ -23,6 +23,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model::ModelId;
+use crate::seal::Keyring;
 
 const LANES: usize = 1024;
 
@@ -51,8 +52,10 @@ impl Accumulator {
         self.0.iter().flat_map(|lane| lane.to_le_bytes()).collect()
     }
 
-    pub(super) fn root(&self) -> Root {
-        Root(blake3::derive_key("woodland/state/root", &self.to_bytes()))
+    /// The name of the state this is the sum of, to those who hold
+    /// `keys`.
+    pub(super) fn root(&self, keys: &Keyring) -> Root {
+        Root(keys.name(&self.to_bytes()))
     }
 
     /// `key` of `model` holds `value`.
@@ -127,20 +130,20 @@ mod tests {
         other.hold(model(1), b"b", b"2");
         other.hold(model(1), b"a", b"1");
 
-        assert_eq!(one.root(), other.root());
+        assert_eq!(one.root(&Keyring::Open), other.root(&Keyring::Open));
     }
 
     #[test]
     fn clearing_a_value_is_as_if_it_was_never_held() {
         let mut held = Accumulator::default();
         held.hold(model(1), b"a", b"1");
-        let with_one = held.root();
+        let with_one = held.root(&Keyring::Open);
         held.hold(model(1), b"b", b"2");
-        assert_ne!(held.root(), with_one);
+        assert_ne!(held.root(&Keyring::Open), with_one);
 
         held.clear(model(1), b"b", b"2");
 
-        assert_eq!(held.root(), with_one);
+        assert_eq!(held.root(&Keyring::Open), with_one);
     }
 
     #[test]
@@ -149,14 +152,14 @@ mod tests {
             let mut held = Accumulator::default();
             held.hold(model, key, value);
 
-            held.root()
+            held.root(&Keyring::Open)
         };
         let roots = [
             root(model(1), b"a", b"1"),
             root(model(2), b"a", b"1"),
             root(model(1), b"a1", b""),
             root(model(1), b"", b"a1"),
-            Accumulator::default().root(),
+            Accumulator::default().root(&Keyring::Open),
         ];
 
         for (index, root) in roots.iter().enumerate() {
@@ -171,5 +174,28 @@ mod tests {
 
         assert_eq!(Accumulator::from_bytes(&held.to_bytes()), Some(held));
         assert_eq!(Accumulator::from_bytes(b"short"), None);
+    }
+
+    /// A relay that guesses a sealed group's whole state still can't
+    /// tell from a checkpoint whether it guessed right.
+    #[test]
+    fn a_sealed_groups_root_says_nothing_without_its_key() {
+        use crate::actor::Identity;
+        use crate::seal::Secret;
+
+        let identity = Identity::from_secret_key([1; 32]);
+        let keys = |purpose: &[u8]| {
+            let mut keys = Keyring::sealed();
+            keys.hold_blind(Secret::make(&identity, purpose));
+
+            keys
+        };
+        let mut held = Accumulator::default();
+        held.hold(model(1), b"pin", b"1234");
+
+        assert_ne!(held.root(&keys(b"ours")), held.root(&Keyring::Open));
+        assert_ne!(held.root(&keys(b"ours")), held.root(&keys(b"theirs")));
+        assert_ne!(held.root(&keys(b"ours")), held.root(&Keyring::sealed()));
+        assert_eq!(held.root(&keys(b"ours")), held.root(&keys(b"ours")));
     }
 }

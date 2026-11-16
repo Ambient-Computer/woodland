@@ -225,7 +225,8 @@ impl Group {
             let named = |(id, covered): (&ClockId, _)| {
                 let covered: &super::commit::Covered = covered;
 
-                !self.wants(*id) || sums.get(id).unwrap_or(&nothing).root() == covered.state
+                !self.wants(*id)
+                    || sums.get(id).unwrap_or(&nothing).root(&self.keys) == covered.state
             };
 
             covers.clocks.iter().all(named) && sums.keys().all(|id| covers.clocks.contains_key(id))

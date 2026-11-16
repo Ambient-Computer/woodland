@@ -109,6 +109,12 @@ impl Secret {
         decrypt(&key, nonce, about, sealed)
     }
 
+    /// A name for `sum` that says nothing about it to anyone without
+    /// this secret.
+    pub(crate) fn name(&self, sum: &[u8]) -> [u8; 32] {
+        derive("woodland/state/root/sealed", &[&self.0, sum])
+    }
+
     /// Encrypts `older` under this secret, so that whoever is given
     /// this one reads what was written before it.
     pub(crate) fn wrap(&self, about: &[u8], older: &Self) -> Vec<u8> {

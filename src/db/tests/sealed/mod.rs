@@ -288,6 +288,17 @@ fn judged_of(roles: Vec<(usize, Role)>, tamper: impl FnOnce(&mut Option<Sealing>
     })
 }
 
+/// What the NAS, which holds no secret, makes of the same.
+fn witnessed(tamper: impl FnOnce(&mut Option<Sealing>)) -> bool {
+    let (sim, group) = sealed();
+    let electorate = electorate(&sim, with_guest(&sim));
+    let phone = &sim.devices[PHONE];
+    let candidate = phone.groups[&group].candidate(&phone.identity, electorate, tamper);
+    let nas = &sim.devices[NAS];
+
+    nas.groups[&group].sealed_soundly(&nas.identity, &candidate)
+}
+
 /// The same, for a checkpoint that makes the guest a reader.
 fn judged(tamper: impl FnOnce(&mut Option<Sealing>)) -> [bool; 2] {
     judged_of(with_guest(&Sim::new(5)), tamper)
@@ -318,6 +329,21 @@ fn a_checkpoint_hands_the_secret_to_whoever_it_newly_names() {
     );
 }
 
+/// What states are named under never changes, and whoever holds the
+/// secret can tell whether a checkpoint gives it to them.
+#[test]
+fn a_checkpoint_hands_on_what_states_are_named_under() {
+    let renamed = |said: &mut Option<Sealing>| {
+        sealing(said).blinded = another_secret().commitment();
+    };
+    let withheld = |said: &mut Option<Sealing>| sealing(said).blind = vec![7; 80];
+
+    assert_eq!(judged(renamed), [false, false]);
+    assert!(witnessed(|_| {}));
+    assert!(!witnessed(renamed));
+    assert_eq!(judged(withheld), [false, false]);
+}
+
 /// Only the one it's for can tell a copy of the secret is no good.
 /// The laptop can't, and the guest was granted the secret all the same
 /// by being named.
@@ -344,6 +370,8 @@ fn an_open_group_says_nothing_of_secrets() {
         commitment: another_secret().commitment(),
         grants: BTreeMap::new(),
         previous: None,
+        blinded: another_secret().commitment(),
+        blind: Vec::new(),
     };
 
     let plain = held.candidate(&phone.identity, electorate.clone(), |_| {});

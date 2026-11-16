@@ -43,6 +43,13 @@ pub(crate) struct Sealing {
     /// With a new secret, the one before it, encrypted under the new
     /// one. Whoever is given a secret reads everything before it.
     pub(crate) previous: Option<Vec<u8>>,
+    /// Stands for what the group's state is named under. It never
+    /// changes.
+    pub(crate) blinded: Commitment,
+    /// What the group's state is named under, encrypted under the
+    /// secret in force. Whoever reads can check the state they hold
+    /// against a checkpoint, and nobody else learns anything from one.
+    pub(crate) blind: Vec<u8>,
 }
 
 /// A secret passed from one peer to another, outside any checkpoint.
@@ -58,6 +65,11 @@ pub(crate) fn about(group: GroupId, epoch: u64) -> Vec<u8> {
     encoding::encode(&(group, epoch))
 }
 
+/// What the name states go under is wrapped about.
+fn about_blind(epoch: u64) -> Vec<u8> {
+    encoding::encode(&("woodland/blind", epoch))
+}
+
 /// What the secret before the one from `epoch` is wrapped about.
 fn about_previous(group: GroupId, epoch: u64) -> Vec<u8> {
     encoding::encode(&("woodland/previous", group, epoch))
@@ -67,6 +79,7 @@ fn about_previous(group: GroupId, epoch: u64) -> Vec<u8> {
 /// checkpoint that commits to it.
 pub(crate) fn found(identity: &Identity, seed: [u8; 32]) -> (Secret, Vec<u8>) {
     let secret = Secret::make(identity, &[&b"founding"[..], &seed].concat());
+    let blind = Secret::make(identity, &[&b"blind"[..], &seed].concat());
     let covers = Covers {
         clocks: BTreeMap::new(),
         sealing: Some(Sealing {
@@ -74,6 +87,8 @@ pub(crate) fn found(identity: &Identity, seed: [u8; 32]) -> (Secret, Vec<u8>) {
             commitment: secret.commitment(),
             grants: BTreeMap::new(),
             previous: None,
+            blinded: blind.commitment(),
+            blind: secret.wrap(&about_blind(0), &blind),
         }),
     };
 
@@ -86,7 +101,7 @@ pub(super) fn keyring_of(founding: &Checkpoint) -> Keyring {
     let sealed = covers_of(founding).is_some_and(|it| it.sealing.is_some());
 
     if sealed {
-        Keyring::Sealed(BTreeMap::from([(0, None)]))
+        Keyring::sealed()
     } else {
         Keyring::Open
     }
@@ -138,9 +153,17 @@ impl Group {
         sealing_of(self.chain.tip())
     }
 
-    /// Takes on a secret this device made or was handed.
-    pub(crate) fn hold<V: View>(&mut self, epoch: u64, secret: Secret, step: &mut Step<V>) {
+    /// Takes on a secret this device made or was handed, and whatever
+    /// the chain gives to someone who holds it.
+    pub(crate) fn hold<V: View>(
+        &mut self,
+        identity: &Identity,
+        epoch: u64,
+        secret: Secret,
+        step: &mut Step<V>,
+    ) {
         self.keys.hold(epoch, secret);
+        self.take_secrets(identity);
         self.rekey(step);
     }
 
@@ -166,6 +189,7 @@ impl Group {
     ) -> Option<Sealing> {
         let now = self.sealing()?;
         let secret = self.keys.secret(now.epoch)?;
+        let blind = self.keys.blind()?;
         let tip = self.chain.tip();
         let grants = |secret: &Secret, epoch: u64, due: &mut dyn Iterator<Item = Peer>| {
             let about = about(self.id, epoch);
@@ -188,6 +212,8 @@ impl Group {
                     &mut newly_keyed(&tip.electorate, electorate),
                 ),
                 previous: None,
+                blinded: now.blinded,
+                blind: now.blind,
             });
         }
 
@@ -203,6 +229,8 @@ impl Group {
             commitment: next.commitment(),
             grants: grants(&next, epoch, &mut readers.into_iter()),
             previous: Some(next.wrap(&about_previous(self.id, epoch), secret)),
+            blinded: now.blinded,
+            blind: next.wrap(&about_blind(epoch), blind),
         })
     }
 
@@ -250,7 +278,19 @@ impl Group {
             && after.keys().all(|(peer, _)| granted(peer))
             && leads_back();
 
+        // Whoever holds the secret it names can tell whether it gives
+        // them what states are named under.
+        let held = mine.clone().flatten();
+        let held = held.as_ref().or_else(|| self.keys.secret(next.epoch));
+        let names = |secret: &Secret| {
+            let blind = secret.unwrap(&about_blind(next.epoch), &next.blind);
+
+            blind.is_some_and(|it| it.commitment() == next.blinded)
+        };
+
         (kept || replaced)
+            && next.blinded == now.blinded
+            && held.is_none_or(names)
             && after.is_sealable()
             && next.grants.keys().all(listed)
             && mine.as_ref().is_none_or(right)
@@ -310,6 +350,20 @@ impl Group {
             let older = secret.unwrap(&about_previous(self.id, sealing.epoch), wrapped);
             if let Some(older) = older.filter(|it| it.commitment() == before.commitment) {
                 took |= self.keys.hold(before.epoch, older);
+            }
+        }
+
+        // And from any secret, what states are named under.
+        if self.keys.blind().is_none() {
+            let opened = said.values().find_map(|sealing| {
+                let secret = self.keys.secret(sealing.epoch)?;
+                let blind = secret.unwrap(&about_blind(sealing.epoch), &sealing.blind)?;
+
+                (blind.commitment() == sealing.blinded).then_some(blind)
+            });
+            if let Some(blind) = opened {
+                self.keys.hold_blind(blind);
+                took = true;
             }
         }
 
@@ -386,7 +440,7 @@ impl Group {
             return Ok(());
         };
 
-        self.hold(handed.epoch, secret, step);
+        self.hold(identity, handed.epoch, secret, step);
         if self.is_blind() {
             self.relearn(step).await?;
         }

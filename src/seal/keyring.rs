@@ -12,11 +12,17 @@ pub(crate) enum Keyring {
     /// The group is open. Nothing in it is encrypted.
     #[default]
     Open,
-    /// The group is sealed. Every secret this device knows the group
-    /// to have had, by the height of the checkpoint that brought it
-    /// in, and the secret itself where it's held. With none held, the
-    /// device carries the group and reads nothing.
-    Sealed(BTreeMap<u64, Option<Secret>>),
+    /// The group is sealed. With no secret held, the device carries
+    /// the group and reads nothing.
+    Sealed {
+        /// Every secret this device knows the group to have had, by
+        /// the height of the checkpoint that brought it in, and the
+        /// secret itself where it's held.
+        secrets: BTreeMap<u64, Option<Secret>>,
+        /// What the group's state is named under. It's the same for
+        /// the life of the group.
+        blind: Option<Secret>,
+    },
 }
 
 /// What came of opening something.
@@ -32,15 +38,48 @@ pub(crate) enum Opened {
 }
 
 impl Keyring {
+    /// A sealed group's keys, before any are held.
+    pub(crate) fn sealed() -> Self {
+        Self::Sealed {
+            secrets: BTreeMap::from([(0, None)]),
+            blind: None,
+        }
+    }
+
     pub(crate) fn is_sealed(&self) -> bool {
-        matches!(self, Self::Sealed(_))
+        matches!(self, Self::Sealed { .. })
+    }
+
+    /// What the group's state is named under, if it's held.
+    pub(crate) fn blind(&self) -> Option<&Secret> {
+        match self {
+            Self::Open => None,
+            Self::Sealed { blind, .. } => blind.as_ref(),
+        }
+    }
+
+    /// Keeps what the group's state is named under.
+    pub(crate) fn hold_blind(&mut self, secret: Secret) {
+        if let Self::Sealed { blind, .. } = self {
+            *blind = Some(secret);
+        }
+    }
+
+    /// Names a state by `sum`, which stands for everything in it. In a
+    /// sealed group the name says nothing to anyone who can't read the
+    /// group, even if they can guess what the state is.
+    pub(crate) fn name(&self, sum: &[u8]) -> [u8; 32] {
+        match self.blind() {
+            Some(blind) if self.is_sealed() => blind.name(sum),
+            _ => blake3::derive_key("woodland/state/root", sum),
+        }
     }
 
     /// The secret brought in at `epoch`, if it's held.
     pub(crate) fn secret(&self, epoch: u64) -> Option<&Secret> {
         match self {
             Self::Open => None,
-            Self::Sealed(secrets) => secrets.get(&epoch)?.as_ref(),
+            Self::Sealed { secrets, .. } => secrets.get(&epoch)?.as_ref(),
         }
     }
 
@@ -49,7 +88,7 @@ impl Keyring {
     fn in_force(&self, height: u64) -> Option<&Secret> {
         match self {
             Self::Open => None,
-            Self::Sealed(secrets) => secrets.range(..=height).next_back()?.1.as_ref(),
+            Self::Sealed { secrets, .. } => secrets.range(..=height).next_back()?.1.as_ref(),
         }
     }
 
@@ -58,7 +97,7 @@ impl Keyring {
     pub(crate) fn know(&mut self, epoch: u64) -> bool {
         match self {
             Self::Open => false,
-            Self::Sealed(secrets) => {
+            Self::Sealed { secrets, .. } => {
                 let news = !secrets.contains_key(&epoch);
                 secrets.entry(epoch).or_insert(None);
 
@@ -71,7 +110,7 @@ impl Keyring {
     pub(crate) fn hold(&mut self, epoch: u64, secret: Secret) -> bool {
         match self {
             Self::Open => false,
-            Self::Sealed(secrets) => secrets.insert(epoch, Some(secret)).flatten().is_none(),
+            Self::Sealed { secrets, .. } => secrets.insert(epoch, Some(secret)).flatten().is_none(),
         }
     }
 
@@ -81,7 +120,7 @@ impl Keyring {
     pub(crate) fn seal(&self, about: &[u8], height: u64, plain: Vec<u8>) -> Option<Vec<u8>> {
         match self {
             Self::Open => Some(plain),
-            Self::Sealed(_) => Some(self.in_force(height)?.seal(about, &plain)),
+            Self::Sealed { .. } => Some(self.in_force(height)?.seal(about, &plain)),
         }
     }
 

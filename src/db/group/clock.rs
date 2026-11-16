@@ -317,7 +317,7 @@ impl Clock {
             verdicts.extend(covered.map(|entry| (entry.stamp(), false)));
 
             return Ok(Settled {
-                state: state.root(),
+                state: state.root(&self.keys),
                 dropped,
                 lost: !verdicts.is_empty(),
                 verdicts,
@@ -365,7 +365,7 @@ impl Clock {
         step.put(keys::state(self.group, self.id), state.to_bytes());
 
         Ok(Settled {
-            state: state.root(),
+            state: state.root(&self.keys),
             dropped,
             lost: false,
             verdicts,
