@@ -25,6 +25,11 @@ use super::clock::Clock;
 use super::root::Root;
 use super::sealing::Sealing;
 
+/// How many entries a step commits before leaving the rest to the
+/// next. Small under test, so that every test meets a checkpoint
+/// that takes several.
+pub(crate) const STRIDE: usize = if cfg!(test) { 3 } else { 256 };
+
 /// What a checkpoint makes final: its body. It names every clock that
 /// has anything committed, changed by this checkpoint or not.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -342,13 +347,20 @@ impl Group {
             plan.push((id, frontier, covered.map(|it| it.state)));
         }
 
-        for (id, frontier, named) in plan {
-            let Some(clock) = self.clocks.get_mut(&id) else {
+        // A checkpoint can cover any amount of work. A step commits
+        // so much of it, in timeline order, and the next carries on.
+        let mut budget = STRIDE;
+        let mut whole = true;
+        for (id, frontier, named) in &plan {
+            let Some(clock) = self.clocks.get_mut(id) else {
                 continue;
             };
 
-            let settled = clock.settle(&frontier, step).await?;
-            if !settled.lost && named.is_some_and(|named| named != settled.state) {
+            let (part, taken, all) = clock.history.part(frontier, budget);
+            budget -= taken;
+            whole &= all;
+            let settled = clock.settle(&part, step).await?;
+            if all && !settled.lost && named.is_some_and(|named| named != settled.state) {
                 tracing::error!(
                     group = ?self.id,
                     clock = ?id,
@@ -357,8 +369,16 @@ impl Group {
                 );
             }
 
-            clock.commit(&frontier, settled, step);
-            clock.cut(checkpoint.electorate.writers(id), checkpoint.height, step);
+            clock.commit(&part, settled, step);
+        }
+        self.folding = (!whole).then_some(checkpoint.height);
+        if !whole {
+            return Ok(false);
+        }
+
+        for (id, ..) in plan {
+            let writers = checkpoint.electorate.writers(id);
+            self.clock(id).cut(writers, checkpoint.height, step);
         }
 
         self.folded = checkpoint.height;

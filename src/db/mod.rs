@@ -62,6 +62,10 @@ pub struct Outputs {
     pub sends: Vec<(VerifyingKey, Vec<u8>)>,
     /// What may read differently now.
     pub changed: Vec<Changed>,
+    /// Whether there's more to do that waits for nothing. A step does
+    /// only so much, so that none takes long or writes a great deal
+    /// at once. Call [`Database::resume`] until this is false.
+    pub unfinished: bool,
 }
 
 #[derive(Debug)]
@@ -552,6 +556,25 @@ impl<S: Store> Database<S> {
         self.finish(step).await
     }
 
+    /// Carries on with whatever earlier steps left unfinished: see
+    /// [`Outputs::unfinished`].
+    ///
+    /// # Errors
+    ///
+    /// If the store fails.
+    pub async fn resume(&mut self) -> Result<Outputs, Error> {
+        let mut step = self.begin()?;
+        for group in self.groups.values_mut().filter(|group| group.is_busy()) {
+            let resumed = group.resume(&self.identity, &mut step).await;
+            if resumed.is_err() {
+                self.broken = true;
+            }
+            resumed?;
+        }
+
+        self.finish(step).await
+    }
+
     /// Answers `query` from whole steps: all of a step's writes, or none.
     ///
     /// # Errors
@@ -607,6 +630,7 @@ impl<S: Store> Database<S> {
         Ok(Outputs {
             sends: sends.map(|(peer, message)| (peer.id(), message)).collect(),
             changed: finished.changed,
+            unfinished: self.groups.values().any(Group::is_busy),
         })
     }
 }

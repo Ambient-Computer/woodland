@@ -179,6 +179,24 @@ impl History {
         self.uncommitted.values().filter(covered)
     }
 
+    /// As much of what `frontier` covers as `budget` entries allows,
+    /// earliest first, and whether that's all of it. A stretch of the
+    /// timeline from where the committed part ends is itself a
+    /// frontier: an author's entries come in the order it wrote them.
+    pub(super) fn part(&self, frontier: &Frontier, budget: usize) -> (Frontier, usize, bool) {
+        let mut covered = self.covered(frontier);
+        let mut part = self.committed.clone();
+        let mut taken = 0;
+        for outline in covered.by_ref().take(budget) {
+            part.insert(outline.author, outline.link);
+            taken += 1;
+        }
+
+        // Having taken all of it, that's `frontier`: nothing is
+        // committed that isn't held.
+        (part, taken, covered.next().is_none())
+    }
+
     /// Makes `frontier` what's committed. Its entries must have been
     /// forgotten already.
     pub(super) fn commit(&mut self, frontier: &Frontier) {

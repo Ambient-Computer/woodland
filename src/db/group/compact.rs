@@ -72,6 +72,12 @@ impl Group {
             return Ok(());
         }
 
+        // Partway through a checkpoint, what's committed is the state
+        // of no checkpoint, and couldn't stand in for the history.
+        if self.folding.is_some() {
+            return Ok(());
+        }
+
         let folded = self.folded;
         let chosen = |id: &ClockId| only.is_none_or(|only| only == *id);
         for (_, clock) in self.clocks.iter_mut().filter(|(id, _)| chosen(id)) {
@@ -106,8 +112,9 @@ impl Group {
         }
 
         // A device that holds only some clocks has the whole state of
-        // nothing but those.
-        if !self.serves(remote) {
+        // nothing but those. Partway through a checkpoint it has the
+        // state of none.
+        if self.folding.is_some() || !self.serves(remote) {
             return Ok(None);
         }
 
@@ -337,6 +344,7 @@ impl Group {
     pub(super) fn caught_up<V: View>(&mut self, height: u64, step: &mut Step<V>) {
         self.folded = height;
         self.base = height;
+        self.folding = None;
         self.sound.clear();
         self.staging = None;
 

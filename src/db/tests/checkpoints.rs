@@ -203,3 +203,46 @@ fn a_contributor_that_reaches_another_state_doesnt_vote() {
         assert_eq!(sim.committed(device, group, notes(group), "todo"), None);
     }
 }
+
+/// A checkpoint can cover any amount of work, and a step does only so
+/// much. The rest is done by the steps after, whatever happens in
+/// between.
+#[test]
+fn a_big_checkpoint_is_committed_a_few_entries_at_a_time() {
+    let (mut sim, group) = Sim::group(3, 3);
+    sim.isolate(NAS);
+    for index in 0..20 {
+        sim.write(PHONE, set(notes(group), &format!("note {index:02}"), "x"));
+    }
+    sim.settle();
+    let height = sim.devices[PHONE].groups[&group].folded();
+    let note = |sim: &Sim, index: usize| {
+        let key = format!("note {index:02}");
+
+        sim.committed(NAS, group, notes(group), &key)
+    };
+
+    // The NAS hears of all of it at once, and makes a start.
+    sim.connect(NAS, PHONE);
+    while sim.devices[NAS].groups[&group].reached() < height {
+        assert!(sim.deliver(), "it never heard");
+    }
+    assert!(sim.devices[NAS].groups[&group].folded() < height);
+    assert!(note(&sim, 0).is_some() && note(&sim, 19).is_none());
+
+    // Nothing stands in for history until all of it is committed.
+    sim.compact(NAS, group);
+    assert_eq!(sim.entries_kept(NAS, group), 20);
+
+    // It carries on from where it was, from its store alone.
+    sim.restart(NAS);
+    let resumed = block_on(sim.devices[NAS].resume()).expect("resumed");
+    assert!(resumed.unfinished);
+    assert!(note(&sim, 19).is_none());
+    while sim.resume() {}
+
+    assert_eq!(sim.devices[NAS].groups[&group].folded(), height);
+    assert!((0..20).all(|index| note(&sim, index).is_some()));
+    sim.compact(NAS, group);
+    assert_eq!(sim.entries_kept(NAS, group), 0);
+}

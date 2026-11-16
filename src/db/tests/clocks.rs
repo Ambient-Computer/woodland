@@ -136,6 +136,44 @@ fn every_clock_comes_back_after_a_restart() {
     }
 }
 
+/// What a step commits is counted across the group, not clock by
+/// clock.
+#[test]
+fn a_step_commits_only_so_much_however_many_clocks_there_are() {
+    let (mut sim, group) = Sim::group(3, 3);
+    sim.isolate(NAS);
+    for photo in 0..10 {
+        let name = format!("photo {photo}");
+        sim.write_to(PHONE, group, set(captions(group), &name, "untitled"));
+        sim.write_to(PHONE, group, set(notes(group), &name, "seen"));
+    }
+    sim.settle();
+    let height = sim.devices[PHONE].groups[&group].folded();
+    let committed = |sim: &Sim| {
+        let count = |model| {
+            sim.read(NAS, &Query::prefix(group, model, b"").committed())
+                .len()
+        };
+
+        count(captions(group)) + count(notes(group))
+    };
+
+    sim.connect(NAS, PHONE);
+    while sim.devices[NAS].groups[&group].reached() < height {
+        assert!(sim.deliver(), "it never heard");
+    }
+    let first = committed(&sim);
+    assert_eq!(first, crate::db::group::STRIDE);
+
+    // Each step after commits as much again, and no more.
+    assert!(sim.resume());
+    assert_eq!(committed(&sim), first * 2);
+    assert!(sim.resume());
+    assert_eq!(committed(&sim), first * 3);
+    while sim.resume() {}
+    assert_eq!(committed(&sim), 20);
+}
+
 #[test]
 fn a_snapshot_carries_every_clock() {
     let (mut sim, group) = Sim::group(3, 3);

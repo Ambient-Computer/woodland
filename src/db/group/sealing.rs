@@ -487,6 +487,7 @@ impl Group {
         self.folded = 0;
         self.base = 0;
         self.staging = None;
+        self.folding = None;
         self.carrying = None;
         self.sound.clear();
         self.said = true;

@@ -223,7 +223,9 @@ impl Run {
             Action::Tick { device } => self.sim.tick(device),
             Action::Deliver { messages } => {
                 for _ in 0..messages {
-                    sim.deliver();
+                    if !sim.deliver() {
+                        sim.resume();
+                    }
                 }
             }
 
@@ -277,8 +279,11 @@ impl Run {
                     continue;
                 };
 
+                // Partway through a checkpoint, what shows as committed
+                // may be that checkpoint's.
+                let reached = self.sim.devices[device].groups[&self.group].reached();
                 let first = self.claims.entry(key);
-                let (first, _) = first.or_insert_with(|| (held.clone(), folded));
+                let (first, _) = first.or_insert_with(|| (held.clone(), reached));
                 prop_assert_eq!(&*first, &held, "the committed claim on {} changed", key);
             }
         }

@@ -196,10 +196,27 @@ impl Sim {
     /// Delivers everything, and everything that follows from it.
     fn run(&mut self) {
         let mut delivered = 0;
-        while self.deliver() {
+        while self.deliver() || self.resume() {
             delivered += 1;
             assert!(delivered < 100_000, "the devices never stop talking");
         }
+    }
+
+    /// Has the first device with something left to do carry on with
+    /// it. Returns whether there was one.
+    fn resume(&mut self) -> bool {
+        let busy = |device: &Database<MemoryStore>| {
+            device.groups.values().any(super::group::Group::is_busy)
+        };
+        let Some(device) = self.devices.iter().position(busy) else {
+            return false;
+        };
+
+        self.wake(device);
+        let outputs = block_on(self.devices[device].resume()).expect("resumed");
+        self.absorb(device, outputs);
+
+        true
     }
 
     fn tick(&mut self, device: usize) {

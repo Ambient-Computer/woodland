@@ -39,6 +39,9 @@ pub(crate) use sealing::found as found_sealed;
 pub(crate) use sealing::{Sealing, about as sealed_about};
 use sync::Remote;
 
+#[cfg(test)]
+pub(crate) use commit::STRIDE;
+
 #[derive(Debug)]
 pub(crate) struct Group {
     id: GroupId,
@@ -71,6 +74,9 @@ pub(crate) struct Group {
     /// Whether a checkpoint has been committed here without the state
     /// of a clock it covers, because the clock wasn't wanted.
     passed: bool,
+    /// The height of a checkpoint that's partly committed. Until the
+    /// rest is, committed state is the state of no checkpoint.
+    folding: Option<u64>,
     /// Whether this device is getting back checkpoints it shed.
     mending: bool,
     /// What this device can read of the group.
@@ -93,6 +99,7 @@ struct Meta {
     wanted: Option<Electorate>,
     interest: Option<BTreeSet<ClockId>>,
     passed: bool,
+    folding: Option<u64>,
     mending: bool,
     keys: Keyring,
     carrying: Option<u64>,
@@ -159,6 +166,7 @@ impl Group {
             said: false,
             interest: None,
             passed: false,
+            folding: None,
             mending: false,
             keys,
             carrying: None,
@@ -206,6 +214,7 @@ impl Group {
         group.wanted = meta.wanted;
         group.interest = meta.interest;
         group.passed = meta.passed;
+        group.folding = meta.folding;
         group.mending = meta.mending;
         group.keys = meta.keys;
         group.carrying = meta.carrying;
@@ -223,6 +232,13 @@ impl Group {
     #[cfg(test)]
     pub(crate) fn folded(&self) -> u64 {
         self.folded
+    }
+
+    /// The height of the last checkpoint any of which is committed
+    /// here.
+    #[cfg(test)]
+    pub(crate) fn reached(&self) -> u64 {
+        self.folding.unwrap_or(self.folded)
     }
 
     /// Every change waiting to be committed, clock by clock.
@@ -297,6 +313,7 @@ impl Group {
             wanted: self.wanted.clone(),
             interest: self.interest.clone(),
             passed: self.passed,
+            folding: self.folding,
             mending: self.mending,
             keys: self.keys.clone(),
             carrying: self.carrying,
@@ -381,6 +398,23 @@ impl Group {
 
     /// Time has passed. It's when a checkpoint is attempted, and when a
     /// stalled attempt is retried.
+    /// Whether there's more to do that waits for nothing: see
+    /// [`resume`].
+    ///
+    /// [`resume`]: Self::resume
+    pub(crate) fn is_busy(&self) -> bool {
+        self.folding.is_some()
+    }
+
+    /// Carries on with what an earlier step left unfinished.
+    pub(crate) async fn resume<V: View>(
+        &mut self,
+        identity: &Identity,
+        step: &mut Step<V>,
+    ) -> Result<(), StoreError> {
+        self.progress(identity, None, step).await
+    }
+
     pub(crate) async fn tick<V: View>(
         &mut self,
         identity: &Identity,

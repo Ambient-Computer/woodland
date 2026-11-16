@@ -17,6 +17,9 @@ Woodland is a library with a deterministic core. The application owns the proces
 - A step's outputs are released only after its batch is durable. Nothing is ever said to a peer that the device could forget.
 - This ordering is a safety property of [agreement](checkpoints.md), not a data-loss precaution, and no binding may relax it.
 - A step does bounded work. Anything long, such as catching up, settling a large checkpoint, or evaluating a wide [commit operation](commit-operations.md), continues across steps.
+- A step that leaves work which waits for nothing says so in its outputs, and the application steps the core again. The core never steps itself.
+- A [checkpoint](checkpoints.md) committed across several steps is committed in [timeline](log.md) order. Between those steps a committed [read](reads.md) shows part of it, all of which is final.
+- Until the last of it is committed, the device has the state of no checkpoint: it neither [compacts](compaction.md) nor serves a snapshot.
 - A device may stop between any two steps and resume from storage alone.
 
 ## Storage is awaited, not requested
