@@ -78,6 +78,14 @@ fn about_previous(group: GroupId, epoch: u64) -> Vec<u8> {
 /// The secret a sealed group starts with, and the body of the founding
 /// checkpoint that commits to it.
 pub(crate) fn found(identity: &Identity, seed: [u8; 32]) -> (Secret, Vec<u8>) {
+    let (secret, _, covers) = found_with(identity, seed);
+
+    (secret, encoding::encode(&covers))
+}
+
+/// The same, and what the group's states are named under, with the
+/// body still to be added to.
+pub(super) fn found_with(identity: &Identity, seed: [u8; 32]) -> (Secret, Keyring, Covers) {
     let secret = Secret::make(identity, &[&b"founding"[..], &seed].concat());
     let blind = Secret::make(identity, &[&b"blind"[..], &seed].concat());
     let covers = Covers {
@@ -92,8 +100,10 @@ pub(crate) fn found(identity: &Identity, seed: [u8; 32]) -> (Secret, Vec<u8>) {
         }),
         succeeds: None,
     };
+    let mut keys = Keyring::sealed();
+    keys.hold_blind(blind);
 
-    (secret, encoding::encode(&covers))
+    (secret, keys, covers)
 }
 
 /// What a group's founding says a device can read of it, before it's

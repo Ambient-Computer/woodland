@@ -132,7 +132,33 @@ impl Group {
         if self.carries() {
             return self.carried_piece(remote, step).await;
         }
+        let Some((piece, at)) = self.plain_piece(remote, self.is_sealed(), step).await? else {
+            return Ok(None);
+        };
+        let done = piece.end.is_some();
+        let Some(piece) = self.seal_piece(piece) else {
+            return Ok(None);
+        };
+        let sending = Sending {
+            height: piece.height,
+            upto: piece.upto.clone(),
+            at,
+            done,
+        };
 
+        Ok(Some((piece, sending)))
+    }
+
+    /// The next piece of the snapshot `remote` is being sent, as this
+    /// device reads it, and the last key it gets to. `named` is whether
+    /// the receiver knows where it has got to by a name it was told,
+    /// as in a sealed group, and not by the key.
+    pub(super) async fn plain_piece<V: View>(
+        &self,
+        remote: &Remote,
+        named: bool,
+        step: &Step<V>,
+    ) -> Result<Option<(Piece, Option<Vec<u8>>)>, StoreError> {
         // A device that holds only some clocks has the whole state of
         // nothing but those. Partway through a checkpoint it has the
         // state of none.
@@ -171,23 +197,14 @@ impl Group {
         let dropped = self.clocks.values().flat_map(|clock| &clock.dropped);
         let piece = Piece {
             height,
-            start: if self.is_sealed() { told } else { start },
+            start: if named { told } else { start },
             values,
             upto: upto.clone(),
             end: done.then(|| dropped.copied().collect()),
             sealed: None,
         };
-        let Some(piece) = self.seal_piece(piece) else {
-            return Ok(None);
-        };
-        let sending = Sending {
-            height,
-            upto: piece.upto.clone(),
-            at: upto,
-            done,
-        };
 
-        Ok(Some((piece, sending)))
+        Ok(Some((piece, upto)))
     }
 
     /// Takes in a piece of a snapshot. Once the last one is in, and the

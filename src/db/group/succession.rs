@@ -15,14 +15,19 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
+use crate::actor::Identity;
 use crate::chain::Digest;
-use crate::db::GroupId;
+use crate::db::{GroupId, keys};
 use crate::encoding;
+use crate::seal::{Keyring, Secret};
 use crate::store::{StoreError, View};
 
 use super::super::step::Step;
 use super::Group;
-use super::commit::{Covers, covers_of};
+use super::commit::{Covered, Covers, covers_of};
+use super::compact::Sending;
+use super::root::Accumulator;
+use super::sealing::found_with;
 
 /// Whether a device has the state its group starts from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,22 +66,44 @@ impl Group {
     /// What the founding of a group that carries on from this one says:
     /// where this one stopped, and what that checkpoint covered. Each
     /// author's chain carries on from where it had got to, as it does
-    /// for a device that takes a snapshot. `None` if this device
-    /// doesn't hold all of that state, or can't read it.
-    pub(crate) fn bequest(&self) -> Option<Vec<u8>> {
+    /// for a device that takes a snapshot. The successor of a sealed
+    /// group is sealed, under a secret of its own made from `seed`,
+    /// which comes back too. `None` if this device doesn't hold all of
+    /// that state, or can't read it.
+    pub(crate) async fn bequest<V: View>(
+        &self,
+        identity: &Identity,
+        seed: [u8; 32],
+        step: &Step<V>,
+    ) -> Result<Option<(Option<Secret>, Vec<u8>)>, StoreError> {
         let whole = !self.is_partway() && !self.partial() && !self.is_unfounded();
-        let readable = !self.is_sealed() && !self.is_blind();
-        let last = self.chain.at(self.folded).filter(|_| whole && readable)?;
-        let covers = Covers {
-            clocks: covers_of(last)?.clocks,
-            sealing: None,
-            succeeds: Some(Succeeds {
-                group: self.id,
-                checkpoint: last.digest(),
-            }),
+        let readable = self.reads() && !self.is_blind();
+        let last = self.chain.at(self.folded).filter(|_| whole && readable);
+        let Some((last, covered)) = last.and_then(|it| Some((it, covers_of(it)?))) else {
+            return Ok(None);
         };
 
-        Some(encoding::encode(&covers))
+        // A state is named under a secret of the group it's in, so the
+        // same state has another name there.
+        let (secret, keys, mut covers) = if self.is_sealed() {
+            let (secret, keys, covers) = found_with(identity, seed);
+            (Some(secret), keys, covers)
+        } else {
+            (None, Keyring::Open, Covers::default())
+        };
+        for (id, covered) in covered.clocks {
+            let sum = step.get(&keys::state(self.id, id)).await?;
+            let sum = sum.and_then(|bytes| Accumulator::from_bytes(&bytes));
+            let state = sum.unwrap_or_default().root(&keys);
+            let frontier = covered.frontier;
+            covers.clocks.insert(id, Covered { frontier, state });
+        }
+        covers.succeeds = Some(Succeeds {
+            group: self.id,
+            checkpoint: last.digest(),
+        });
+
+        Ok(Some((secret, encoding::encode(&covers))))
     }
 
     /// Whether this device lacks the state the group starts from.
@@ -137,11 +164,21 @@ impl Group {
         // it's the state of the founding.
         let staged = self.staging.as_ref();
         self.heir.staged = staged.map(|it| (old.folded, it.upto.clone()));
-        let Some((mut piece, sending)) = old.piece(&self.heir, step).await? else {
+        let named = self.is_sealed();
+        let Some((mut piece, at)) = old.plain_piece(&self.heir, named, step).await? else {
             return Ok(());
         };
-        self.heir.sending = Some(sending);
         piece.height = 0;
+        let done = piece.end.is_some();
+        let Some(piece) = self.seal_piece(piece) else {
+            return Ok(());
+        };
+        self.heir.sending = Some(Sending {
+            height: old.folded,
+            upto: piece.upto.clone(),
+            at,
+            done,
+        });
 
         self.stage(piece, step).await
     }

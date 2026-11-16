@@ -229,15 +229,57 @@ fn a_write_made_before_the_state_is_in_lands_on_top_of_it() {
     assert_eq!(read("299").as_deref(), Some("value"));
 }
 
-/// What a sealed group has committed is under its secret, and the
-/// successor would have another.
+/// The successor of a sealed group is sealed, under another secret.
+/// Whoever is given a role reads what it started with, and nobody
+/// else does.
 #[test]
-fn a_sealed_group_has_no_successor() {
-    let mut sim = Sim::new(1);
+fn a_sealed_group_is_succeeded_by_a_sealed_one() {
+    let mut sim = Sim::new(3);
     let (old, outputs) = block_on(sim.devices[PHONE].found_sealed([7; 32])).expect("founded");
     sim.absorb(PHONE, outputs);
+    let mut transaction = Transaction::new();
+    for key in 0..300 {
+        transaction = transaction.set(notes(old), format!("{key:03}"), "value");
+    }
+    sim.write_to(PHONE, old, transaction);
     sim.settle();
 
-    let founded = block_on(sim.devices[PHONE].succeed(old, [9; 32]));
+    let new = succeed(&mut sim, PHONE, old);
+    assert!(sim.devices[PHONE].groups[&new].is_sealed());
+    let read = |sim: &Sim, device, key| sim.committed(device, new, notes(old), key);
+    assert_eq!(read(&sim, PHONE, "000").as_deref(), Some("value"));
+    assert_eq!(read(&sim, PHONE, "299").as_deref(), Some("value"));
+
+    sim.connect_all();
+    join(&mut sim, LAPTOP, new, PHONE);
+    join(&mut sim, NAS, new, PHONE);
+    let key = |sim: &Sim, device: usize| sim.devices[device].sealing_key();
+    let roles = [
+        (PHONE, Role::contributor(1).sealed_to(key(&sim, PHONE))),
+        (LAPTOP, Role::reader(key(&sim, LAPTOP))),
+    ];
+    sim.assign(PHONE, new, roles);
+    sim.write_to(PHONE, new, set(notes(old), "000", "changed"));
+    sim.settle();
+
+    assert_eq!(read(&sim, LAPTOP, "000").as_deref(), Some("changed"));
+    assert_eq!(read(&sim, LAPTOP, "299").as_deref(), Some("value"));
+    assert!(!sim.devices[NAS].reads(new));
+    assert_eq!(read(&sim, NAS, "299"), None);
+}
+
+/// A device that can't read a group can't say what its successor
+/// starts from.
+#[test]
+fn a_device_that_cant_read_a_group_cant_found_its_successor() {
+    let mut sim = Sim::new(2);
+    let (old, outputs) = block_on(sim.devices[PHONE].found_sealed([7; 32])).expect("founded");
+    sim.absorb(PHONE, outputs);
+    sim.write_to(PHONE, old, set(notes(old), "todo", "milk"));
+    sim.connect_all();
+    join(&mut sim, LAPTOP, old, PHONE);
+    sim.settle();
+
+    let founded = block_on(sim.devices[LAPTOP].succeed(old, [9; 32]));
     assert!(matches!(founded, Err(Error::Unreadable)));
 }

@@ -1,6 +1,6 @@
 //! Founding a group that carries on from another.
 
-use crate::chain::{Chain, Checkpoint, Electorate};
+use crate::chain::{Chain, Checkpoint, Electorate, Role};
 use crate::store::Store;
 
 use super::step::Step;
@@ -15,6 +15,9 @@ impl<S: Store> Database<S> {
     ///
     /// The new group is another group. Its models keep the IDs they
     /// had, so what was read from `old` is read from it the same way.
+    /// If `old` is sealed then so is the new group, under a secret of
+    /// its own that only this device has: give others a role to hand
+    /// it on.
     /// What wasn't committed in `old` isn't carried over: write it
     /// again. `old` is left as it is, and anyone still there can found
     /// a successor of their own, which will be a different group.
@@ -29,19 +32,25 @@ impl<S: Store> Database<S> {
     /// # Errors
     ///
     /// If this device doesn't hold `old`, holds only some of it, is
-    /// partway through catching up with it, or can't read it; if `old`
-    /// is sealed; or the store fails.
+    /// partway through catching up with it, or can't read it; or the
+    /// store fails.
     pub async fn succeed(
         &mut self,
         old: GroupId,
         seed: [u8; 32],
     ) -> Result<(GroupId, Outputs), Error> {
         let held = self.groups.get(&old).ok_or(Error::UnknownGroup)?;
-        let body = held.bequest().ok_or(Error::Unreadable)?;
+        let step = self.begin()?;
+        let bequest = held.bequest(&self.identity, seed, &step).await;
+        let (secret, body) = self.guard(bequest)?.ok_or(Error::Unreadable)?;
+        let role = match secret {
+            Some(_) => Role::contributor(1).sealed_to(self.sealing_key()),
+            None => Role::contributor(1),
+        };
         let me = self.identity.peer();
-        let mut founding = Checkpoint::founding(seed, Electorate::new([(me, 1)]));
+        let mut founding = Checkpoint::founding(seed, Electorate::of([(me, role)]));
         founding.body = body;
-        let (id, outputs) = self.hold(Chain::new(founding), None).await?;
+        let (id, outputs) = self.hold(Chain::new(founding), secret).await?;
 
         let mut step = self.begin()?;
         if let Some(group) = self.groups.get_mut(&id) {
