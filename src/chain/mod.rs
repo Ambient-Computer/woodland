@@ -63,6 +63,7 @@
 
 mod electorate;
 mod evidence;
+mod restore;
 mod statement;
 
 use std::collections::{BTreeMap, BTreeSet};

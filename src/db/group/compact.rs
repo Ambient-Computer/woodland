@@ -68,6 +68,7 @@ impl Group {
         if only.is_none() {
             self.base = folded;
         }
+        self.mending = false;
 
         // A clock that keeps its history keeps the checkpoints that
         // history is committed by.

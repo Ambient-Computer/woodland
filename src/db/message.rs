@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::chain::Gossip;
+use crate::chain::{Certificate, Gossip};
 use crate::db::{ClockId, GroupId};
 use crate::model::ModelId;
 
@@ -21,6 +21,9 @@ pub(crate) struct Message {
     pub(crate) summary: Summary,
     pub(crate) chain: Gossip,
     pub(crate) entries: Vec<Entry>,
+    /// Checkpoints the receiver shed and asked to have back, latest
+    /// first.
+    pub(crate) links: Vec<Certificate>,
     /// History the receiver shed and asked to have back: entries a
     /// checkpoint covers, latest first in each chain.
     pub(crate) restored: Vec<Entry>,
@@ -51,6 +54,8 @@ pub(crate) struct Summary {
     pub(crate) interest: Option<BTreeSet<ClockId>>,
     /// The entry of each chain it shed and wants back next.
     pub(crate) restoring: BTreeMap<ClockId, Frontier>,
+    /// The height of the checkpoint it shed and wants back next.
+    pub(crate) lacking: Option<u64>,
 }
 
 /// Part of a snapshot: committed values, in key order.

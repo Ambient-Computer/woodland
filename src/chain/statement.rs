@@ -170,6 +170,13 @@ impl Certificate {
         self.checkpoint.height > tip.height && self.voted(tip)
     }
 
+    /// Whether this is the checkpoint `above` names as the one before
+    /// it, decided by the electorate that `below` left in force. Every
+    /// checkpoint between `below` and this one kept that electorate.
+    pub(crate) fn fills(&self, below: &Checkpoint, above: &Checkpoint) -> bool {
+        above.extends(&self.checkpoint) && self.voted(below)
+    }
+
     fn voted(&self, tip: &Checkpoint) -> bool {
         let expected = Vote {
             slot: self.checkpoint.previous,

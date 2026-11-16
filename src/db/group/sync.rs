@@ -52,6 +52,8 @@ pub(super) struct Remote {
     interest: Option<BTreeSet<ClockId>>,
     /// The entry of each chain it shed and wants back next.
     pub(super) restoring: BTreeMap<ClockId, Frontier>,
+    /// The height of the checkpoint it shed and wants back next.
+    pub(super) lacking: Option<u64>,
     /// How far it says it has got with a snapshot.
     pub(super) staged: Option<(u64, Option<Vec<u8>>)>,
     /// The snapshot this device is sending it.
@@ -118,6 +120,7 @@ impl Group {
         remote.proven.clone_from(&message.summary.proven);
         remote.interest.clone_from(&message.summary.interest);
         remote.restoring.clone_from(&message.summary.restoring);
+        remote.lacking = message.summary.lacking;
 
         self.said |= self.chain.receive(message.chain);
         self.overhear(step);
@@ -131,7 +134,7 @@ impl Group {
 
         // A peer that sent entries, or part of a snapshot, is waiting to
         // hear how far they got.
-        let took = self.take_back(message.restored, step);
+        let took = self.mend(message.links) | self.take_back(message.restored, step);
         let sent = !message.entries.is_empty() || message.snapshot.is_some() || took;
         let owed = sent.then_some(from);
         if let Some(piece) = message.snapshot {
@@ -289,6 +292,7 @@ impl Group {
             self.missing(remote, step).await?
         };
         let restored = self.older(remote, step).await?;
+        let links = self.links(remote);
         let (snapshot, sending) = snapshot.unzip();
         let height = self.chain.tip().height;
         let chain = if statements || remote.height < height {
@@ -311,6 +315,7 @@ impl Group {
 
         let news = !entries.is_empty()
             || !restored.is_empty()
+            || !links.is_empty()
             || !proofs.is_empty()
             || snapshot.is_some()
             || statements
@@ -324,6 +329,7 @@ impl Group {
             summary: self.summary(),
             chain,
             entries,
+            links,
             restored,
             proofs,
             snapshot,
@@ -335,7 +341,7 @@ impl Group {
                 remote.sending = sending;
             }
             remote.told.extend(accused);
-            remote.gave_back(&message.restored);
+            remote.gave_back(&message.restored, &message.links);
             for entry in &message.entries {
                 let clock = entry.header.payload().clock;
                 remote.sent(clock, entry.header.author(), entry.link());
@@ -362,6 +368,7 @@ impl Group {
             proven: self.proofs.keys().copied().collect(),
             interest: self.interest.clone(),
             restoring: self.restoring(),
+            lacking: self.lacking(),
         }
     }
 

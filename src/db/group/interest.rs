@@ -48,10 +48,17 @@ impl Group {
     /// The height `remote` has to have committed to be sent entries:
     /// below it, something it wants has been shed here.
     pub(super) fn shed_below(&self, remote: &Remote) -> u64 {
+        // A clock that has all its history back has shed nothing. A
+        // peer still has to commit its way through every checkpoint
+        // from where it is, so none of those can be missing.
         let wanted = self.clocks.iter().filter(|(id, _)| remote.wants(**id));
-        let bases = wanted.map(|(_, clock)| clock.base);
+        let shed = wanted.filter(|(_, clock)| !clock.shed.is_empty());
+        let bases = shed.map(|(_, clock)| clock.base.max(self.base));
 
-        bases.max().unwrap_or(0).max(self.base)
+        bases
+            .max()
+            .unwrap_or(0)
+            .max(self.chain.lacks().unwrap_or(0))
     }
 
     /// Whether some clocks are left out.

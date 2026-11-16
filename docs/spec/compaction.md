@@ -41,6 +41,8 @@ Compaction is how a peer sheds history it no longer needs. It is safe at any tim
 - Restored history is as trustworthy as history never shed. The archive is trusted with nothing.
 - A peer restores one clock at a time, by asking. History is never sent to a peer that did not ask for it.
 - History comes back latest first, so each entry is checked on arrival and a restore that stops partway keeps what it has.
+- Shed checkpoints come back with it, the same way: each is the one the checkpoint after it names, with the votes that decided it.
+- A peer with a clock's history and every checkpoint back serves that clock as if it had shed nothing.
 - History nobody kept is gone. A group that wants its past keeps at least one archive.
 
 ## Scope

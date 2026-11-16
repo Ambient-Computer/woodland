@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 
 use crate::actor::{Identity, Peer};
+use crate::chain::Certificate;
 use crate::db::{ClockId, keys};
 use crate::encoding;
 use crate::store::{StoreError, View};
@@ -23,6 +24,9 @@ use super::sync::Remote;
 
 /// How many entries of history go in one message.
 const PAGE: u64 = 64;
+
+/// How many checkpoints go in one message.
+const LINKS: usize = 16;
 
 /// The entry before `entry` in its author's chain, as a peer that's
 /// just taken `entry` would ask for it. `None` if it's the first.
@@ -112,6 +116,7 @@ impl Group {
         };
 
         held.restoring = !held.shed.is_empty();
+        self.mending = true;
         self.progress(identity, None, step).await?;
         let peers: Vec<Peer> = self.remotes.keys().copied().collect();
         for peer in peers {
@@ -121,9 +126,37 @@ impl Group {
         Ok(true)
     }
 
-    /// Whether every entry of `clock` ever committed is held here.
+    /// Whether every entry of `clock` ever committed is held here,
+    /// with every checkpoint that committed them.
     pub(crate) fn is_whole(&self, clock: ClockId) -> bool {
-        self.clocks.get(&clock).is_some_and(|it| it.shed.is_empty())
+        let entries = self.clocks.get(&clock).is_some_and(|it| it.shed.is_empty());
+
+        entries && self.chain.lacks().is_none()
+    }
+
+    /// The checkpoint this device wants back next.
+    pub(super) fn lacking(&self) -> Option<u64> {
+        self.chain.lacks().filter(|_| self.mending)
+    }
+
+    /// Keeps whichever of `links` are checkpoints this device shed
+    /// and asked for. Returns whether any were.
+    pub(super) fn mend(&mut self, links: Vec<Certificate>) -> bool {
+        let mut mended = false;
+        for link in links {
+            mended |= self.mending && self.chain.fill(link);
+        }
+        self.mending &= self.chain.lacks().is_some();
+        self.said |= mended;
+
+        mended
+    }
+
+    /// The checkpoints `remote` asked for that are held here.
+    pub(super) fn links(&self, remote: &Remote) -> Vec<Certificate> {
+        let older = |height| self.chain.older(height, LINKS);
+
+        remote.lacking.map(older).unwrap_or_default()
     }
 
     /// The entries this device wants back next, in each clock.
@@ -174,7 +207,11 @@ impl Group {
 impl Remote {
     /// Assumes `entries` arrived, so the same history isn't sent again
     /// before the peer says where it has got to.
-    pub(super) fn gave_back(&mut self, entries: &[Entry]) {
+    pub(super) fn gave_back(&mut self, entries: &[Entry], links: &[Certificate]) {
+        if let Some(last) = links.last() {
+            self.lacking = last.checkpoint.height.checked_sub(1).filter(|it| *it > 0);
+        }
+
         for entry in entries {
             let header = entry.header.payload();
             let Some(wants) = self.restoring.get_mut(&header.clock) else {

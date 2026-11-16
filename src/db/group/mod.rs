@@ -63,6 +63,8 @@ pub(crate) struct Group {
     /// Whether a checkpoint has been committed here without the state
     /// of a clock it covers, because the clock wasn't wanted.
     passed: bool,
+    /// Whether this device is getting back checkpoints it shed.
+    mending: bool,
 }
 
 /// What's kept of a group besides its chain and its entries.
@@ -75,6 +77,7 @@ struct Meta {
     wanted: Option<Electorate>,
     interest: Option<BTreeSet<ClockId>>,
     passed: bool,
+    mending: bool,
 }
 
 /// What one device hands another so it can hold a group.
@@ -122,6 +125,7 @@ impl Group {
             said: false,
             interest: None,
             passed: false,
+            mending: false,
         }
     }
 
@@ -165,6 +169,7 @@ impl Group {
         group.wanted = meta.wanted;
         group.interest = meta.interest;
         group.passed = meta.passed;
+        group.mending = meta.mending;
         group.recall(step).await?;
         for (clock, kept) in meta.clocks {
             let held = Clock::load(id, clock, kept, step).await?;
@@ -197,6 +202,20 @@ impl Group {
     /// knows.
     pub(crate) fn has(&self, peer: Peer) -> bool {
         self.chain.tip().electorate.has(peer)
+    }
+
+    /// How many checkpoints it holds, the founding one included.
+    #[cfg(test)]
+    pub(crate) fn checkpoints(&self) -> usize {
+        self.chain.checkpoints().count()
+    }
+
+    /// Every checkpoint it holds at `height` or below, with the votes
+    /// that decided it, latest first.
+    #[cfg(test)]
+    pub(crate) fn links_below(&self, height: u64) -> Vec<Certificate> {
+        self.chain
+            .older(height.min(self.chain.tip().height), usize::MAX)
     }
 
     /// Whether anyone it has heard from, itself included, is trying
@@ -238,6 +257,7 @@ impl Group {
             wanted: self.wanted.clone(),
             interest: self.interest.clone(),
             passed: self.passed,
+            mending: self.mending,
         };
         step.save(keys::meta(self.id), &meta);
         if self.said {

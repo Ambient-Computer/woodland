@@ -353,7 +353,9 @@ impl<S: Store> Database<S> {
     }
 
     /// Whether this device holds every entry of `clock` that was ever
-    /// committed: it shed none, or has them all back.
+    /// committed, and every checkpoint: it shed none, or has them all
+    /// back. Such a device can bring a peer up to date entry by entry,
+    /// however far behind it is.
     #[must_use]
     pub fn is_archive(&self, group: GroupId, clock: ClockId) -> bool {
         self.groups.get(&group).is_some_and(|it| it.is_whole(clock))

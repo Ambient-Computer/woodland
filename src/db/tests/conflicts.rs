@@ -58,6 +58,7 @@ fn send(sim: &mut Sim, from: usize, to: usize, group: GroupId, chain: Gossip, pr
         summary: Summary::default(),
         chain,
         entries: Vec::new(),
+        links: Vec::new(),
         restored: Vec::new(),
         proofs,
         snapshot: None,
