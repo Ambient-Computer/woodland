@@ -451,6 +451,7 @@ impl Group {
         self.folding = None;
         self.installing = None;
         self.sound.clear();
+        self.fore.refuted.clear();
         self.staging = None;
 
         // Catching up can skip the checkpoint that removed someone.

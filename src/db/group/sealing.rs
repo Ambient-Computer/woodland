@@ -474,6 +474,7 @@ impl Group {
             keys::logs(self.id),
             keys::staged(self.id),
             keys::trial(self.id),
+            keys::ahead(self.id),
             keys::sealed(self.id),
         ];
         ranges.extend(clocks.into_iter().map(|id| keys::state(self.id, id)));
@@ -492,6 +493,8 @@ impl Group {
         self.installing = None;
         self.carrying = None;
         self.sound.clear();
+        self.fore.refuted.clear();
+        self.fore.work = None;
         self.said = true;
         step.changed(Changed::Everything { group: self.id });
 

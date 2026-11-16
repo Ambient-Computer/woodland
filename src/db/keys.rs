@@ -13,6 +13,8 @@
 //! [GROUP][group][UNCOMMITTED][model][key…][stamp] → a version: a value, or none
 //! [GROUP][group][STAGED][model][key…]           → a value from a snapshot not yet checked
 //! [GROUP][group][SEALED][cursor]                → a piece of a snapshot this device can't read
+//! [GROUP][group][TRIAL][model][key…]            → what a transaction being tried would leave
+//! [GROUP][group][AHEAD][the rest of a key…]     → what a checkpoint not yet decided would leave
 //! ```
 //!
 //! A model's ID starts with its clock's, so everything a clock owns is
@@ -54,6 +56,7 @@ const UNCOMMITTED: u8 = 3;
 const STAGED: u8 = 5;
 const SEALED: u8 = 6;
 const TRIAL: u8 = 7;
+const AHEAD: u8 = 8;
 
 const CHAIN: u8 = 1;
 const META: u8 = 2;
@@ -198,6 +201,12 @@ pub(crate) fn trial(id: GroupId) -> Vec<u8> {
 /// What a transaction being tried out would leave under `key`.
 pub(crate) fn trial_value(id: GroupId, model: ModelId, key: &[u8]) -> Vec<u8> {
     [trial(id), model.as_bytes().to_vec(), key.to_vec()].concat()
+}
+
+/// Everything working out a checkpoint that isn't decided would write,
+/// under the rest of the key it would write it to.
+pub(crate) fn ahead(id: GroupId) -> Vec<u8> {
+    [group(id), vec![AHEAD]].concat()
 }
 
 /// A snapshot of a sealed group, as a device that can't read it

@@ -301,6 +301,17 @@ impl Sim {
             .len()
     }
 
+    /// How much a device has stored of a checkpoint it worked out
+    /// before it was decided.
+    fn kept_aside(&self, device: usize, group: GroupId) -> usize {
+        let (start, end) = keys::range(keys::ahead(group));
+        let view = self.devices[device].store.view();
+
+        block_on(super::step::scan(&view, &start, &end))
+            .expect("scanned")
+            .len()
+    }
+
     /// Stops a device and starts it again from its store. Its
     /// connections are gone, and so is whatever was on its way to it.
     fn restart(&mut self, device: usize) {

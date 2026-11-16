@@ -87,26 +87,34 @@ impl Group {
     pub(super) async fn vet<V: View>(
         &mut self,
         identity: &Identity,
-        step: &Step<V>,
+        step: &mut Step<V>,
     ) -> Result<(), StoreError> {
         let me = identity.peer();
         let witness = self.chain.tip().electorate.is_witness(me);
         let proposed: Vec<Checkpoint> = self.chain.proposed().cloned().collect();
+        self.fore.vetting = false;
         for checkpoint in proposed {
             let digest = checkpoint.digest();
             // Nothing could follow a checkpoint whose electorate has
             // nobody to vote, or nobody to work out what to vote for.
-            if self.sound.contains(&digest) || !checkpoint.electorate.is_viable() {
+            let judged = self.sound.contains(&digest) || self.fore.refuted.contains(&digest);
+            if judged || !checkpoint.electorate.is_viable() {
                 continue;
             }
 
-            let sound = if witness {
-                self.keeps_going(&checkpoint)
+            let found = if witness {
+                Some(self.keeps_going(&checkpoint))
             } else {
                 self.checks_out(&checkpoint, step).await?
             };
-            let sound = sound && self.sealed_soundly(identity, &checkpoint);
-            if sound {
+            // One at a time: starting on another would be starting
+            // this one again.
+            let Some(sound) = found else {
+                self.fore.vetting = true;
+                break;
+            };
+
+            if sound && self.sealed_soundly(identity, &checkpoint) {
                 self.sound.insert(digest);
             }
         }
@@ -132,14 +140,16 @@ impl Group {
         before.clocks.iter().all(kept)
     }
 
+    /// Whether this device, committing what `checkpoint` covers, comes
+    /// to the state it names. `None` while that's being worked out.
     async fn checks_out<V: View>(
-        &self,
+        &mut self,
         checkpoint: &Checkpoint,
-        step: &Step<V>,
-    ) -> Result<bool, StoreError> {
+        step: &mut Step<V>,
+    ) -> Result<Option<bool>, StoreError> {
         let tip = self.chain.tip();
         let Some(covers) = covers_of(checkpoint) else {
-            return Ok(false);
+            return Ok(Some(false));
         };
 
         // A clock with anything committed stays named from then on.
@@ -153,12 +163,13 @@ impl Group {
             || self.folded != tip.height
             || !self.clocks.iter().all(kept)
         {
-            return Ok(false);
+            return Ok(Some(false));
         }
 
         let proven = self.proven();
         let before = covers_of(tip).unwrap_or_default();
-        let mut trial = step.fork();
+        let mut frontiers = Vec::new();
+        let mut named = Vec::new();
         for (&id, covered) in &covers.clocks {
             let unheard = Clock::new(self.id, id);
             let clock = self.clocks.get(&id).unwrap_or(&unheard);
@@ -167,22 +178,30 @@ impl Group {
             // vouched for is that nothing more of it is committed.
             if clock.is_blind() {
                 if !covered.stays(before.clocks.get(&id)) {
-                    return Ok(false);
+                    return Ok(Some(false));
                 }
                 continue;
             }
             let writers = tip.electorate.writers(id).except(&proven);
             let stood = |peer: Peer, height: u64| self.standing(peer, id, height);
             if !clock.history.supports(&covered.frontier, writers, stood) {
-                return Ok(false);
+                return Ok(Some(false));
             }
 
-            if clock.foresee(&covered.frontier, &mut trial).await? != covered.state {
-                return Ok(false);
-            }
+            frontiers.push((id, covered.frontier.clone()));
+            named.push(covered.state);
         }
 
-        Ok(true)
+        let Some(reached) = self.ahead(&frontiers, step).await? else {
+            return Ok(None);
+        };
+        // Nothing this device comes to hold changes what it worked
+        // out, so there's no asking again.
+        if reached != named {
+            self.fore.refuted.insert(checkpoint.digest());
+        }
+
+        Ok(Some(reached == named))
     }
 
     /// Moves the chain along as far as what's held allows.
@@ -200,8 +219,11 @@ impl Group {
     pub(super) async fn propose<V: View>(
         &mut self,
         identity: &Identity,
-        step: &Step<V>,
+        step: &mut Step<V>,
     ) -> Result<(), StoreError> {
+        // What it set out to propose, if it's still working out what
+        // that comes to. Anything that stops it now, stops that.
+        let begun = self.fore.proposing.take();
         let tip = self.chain.tip();
         let me = identity.peer();
         let Some(rank) = tip.electorate.members().position(|peer| peer == me) else {
@@ -226,7 +248,9 @@ impl Group {
         }
 
         let free = self.chain.attempt().is_none() || self.stalled > patience;
-        if !free || self.folded != tip.height || self.partial() || self.wanting().is_some() {
+        let held_up = self.folded != tip.height || self.partial() || self.wanting().is_some();
+        // Checking someone else's attempt comes before making another.
+        if !free || held_up || self.fore.vetting {
             return Ok(());
         }
 
@@ -254,6 +278,21 @@ impl Group {
             (id, clock.history.closed(writers, &proven, stood))
         });
         let frontiers: Vec<(ClockId, Frontier)> = frontiers.collect();
+        // More may have come in since it set out. What it set out with
+        // is still as good, and is nearly worked out.
+        let within = |(begun, now): (&(ClockId, Frontier), &(ClockId, Frontier))| {
+            let reaches = |(&author, link): (&Peer, &Link)| reach(&now.1, author) >= link.seq;
+
+            begun.0 == now.0 && begun.1.iter().all(reaches)
+        };
+        let frontiers = match begun {
+            Some(begun)
+                if begun.len() == frontiers.len() && begun.iter().zip(&frontiers).all(within) =>
+            {
+                begun
+            }
+            _ => frontiers,
+        };
         let news = |(id, frontier): &(ClockId, Frontier)| {
             let committed = self.clocks.get(id).map(|clock| &clock.history.committed);
 
@@ -269,23 +308,23 @@ impl Group {
         }
 
         let before = covers_of(tip).unwrap_or_default();
-        let mut trial = step.fork();
+        let blind = |id: &ClockId| self.clocks.get(id).is_none_or(Clock::is_blind);
+        let read = frontiers.iter().filter(|(id, _)| !blind(id));
+        let read: Vec<(ClockId, Frontier)> = read.cloned().collect();
+        let kept = frontiers
+            .iter()
+            .filter(|(id, _)| self.clocks.get(id).is_some_and(Clock::is_blind));
+        let kept = kept.filter_map(|(id, _)| Some((*id, before.clocks.get(id)?.clone())));
         let mut covers = Covers {
-            clocks: BTreeMap::new(),
+            clocks: kept.collect(),
             sealing,
         };
-        for (id, frontier) in frontiers {
-            let Some(clock) = self.clocks.get(&id) else {
-                continue;
-            };
-            if clock.is_blind() {
-                covers
-                    .clocks
-                    .extend(before.clocks.get(&id).map(|it| (id, it.clone())));
-                continue;
-            }
+        let Some(states) = self.ahead(&read, step).await? else {
+            self.fore.proposing = Some(frontiers);
+            return Ok(());
+        };
 
-            let state = clock.foresee(&frontier, &mut trial).await?;
+        for ((id, frontier), state) in read.into_iter().zip(states) {
             covers.clocks.insert(id, Covered { frontier, state });
         }
         if self

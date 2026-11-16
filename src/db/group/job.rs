@@ -28,7 +28,7 @@ use super::super::step::Step;
 use super::clock::{Clock, Settled};
 use super::deferred::{self, Committed, Tried};
 use super::judge;
-use super::root::{Accumulator, Root};
+use super::root::Accumulator;
 use super::rules;
 
 /// About how many keys one part of a job looks at.
@@ -125,21 +125,6 @@ impl Clock {
                 return Ok(all);
             }
         }
-    }
-
-    /// The name of the state that committing what `frontier` covers
-    /// comes to, however long that takes. `trial` is left with all of
-    /// it done: pass a [fork](Step::fork).
-    pub(super) async fn foresee<V: View>(
-        &self,
-        frontier: &Frontier,
-        trial: &mut Step<V>,
-    ) -> Result<Root, StoreError> {
-        let mut ahead = self.clone();
-        let mut unbounded = usize::MAX;
-        ahead.work(frontier, &mut unbounded, trial).await?;
-
-        ahead.root(trial).await
     }
 
     /// Does as much of the job as `budget` goes to. Returns whether

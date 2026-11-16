@@ -1,6 +1,7 @@
 //! One group, as one device holds it: its checkpoint chain, everyone's
 //! entries, and which of them have happened.
 
+mod ahead;
 mod carry;
 mod clock;
 mod commit;
@@ -31,6 +32,7 @@ use crate::store::{StoreError, View};
 
 use super::proof::Proof;
 use super::step::Step;
+use ahead::Foresight;
 use clock::{Clock, Kept};
 use compact::{Installing, Staging};
 pub(crate) use interest::Refused;
@@ -68,6 +70,8 @@ pub(crate) struct Group {
     /// Proposed checkpoints this device has checked against its own
     /// copy, and would vote for.
     sound: BTreeSet<Digest>,
+    /// What it's working out ahead of a decision.
+    fore: Foresight,
     /// How many ticks the current attempt at a checkpoint has gone on.
     stalled: u64,
     /// Whether the chain has anything peers haven't been told.
@@ -107,6 +111,7 @@ struct Meta {
     passed: bool,
     folding: Option<u64>,
     installing: Option<Installing>,
+    littered: bool,
     mending: bool,
     keys: Keyring,
     carrying: Option<u64>,
@@ -169,6 +174,7 @@ impl Group {
             remotes: BTreeMap::new(),
             wanted: None,
             sound: BTreeSet::new(),
+            fore: Foresight::default(),
             stalled: 0,
             said: false,
             interest: None,
@@ -223,6 +229,7 @@ impl Group {
         group.interest = meta.interest;
         group.passed = meta.passed;
         group.folding = meta.folding;
+        group.fore.littered = meta.littered;
         group.installing = meta.installing;
         group.mending = meta.mending;
         group.keys = meta.keys;
@@ -325,6 +332,7 @@ impl Group {
             interest: self.interest.clone(),
             passed: self.passed,
             folding: self.folding,
+            littered: self.fore.littered,
             installing: self.installing.clone(),
             mending: self.mending,
             keys: self.keys.clone(),
@@ -415,7 +423,7 @@ impl Group {
     ///
     /// [`resume`]: Self::resume
     pub(crate) fn is_busy(&self) -> bool {
-        self.is_partway() || self.clocks.values().any(Clock::is_unswept)
+        self.is_partway() || self.is_ahead() || self.clocks.values().any(Clock::is_unswept)
     }
 
     /// Whether committed state is partway between two checkpoints, and
@@ -449,7 +457,7 @@ impl Group {
             remote.doubt();
         }
 
-        self.propose(identity, step).await?;
+        self.fore.due = true;
         self.progress(identity, None, step).await
     }
 
@@ -464,6 +472,9 @@ impl Group {
     ) -> Result<(), StoreError> {
         self.install(step).await?;
         self.sweep(step).await?;
+        if std::mem::take(&mut self.fore.due) || self.fore.proposing.is_some() {
+            self.propose(identity, step).await?;
+        }
         loop {
             self.unlock(identity, step).await?;
             self.vet(identity, step).await?;
@@ -474,6 +485,7 @@ impl Group {
                 break;
             }
         }
+        self.look_back(step).await?;
 
         self.clocks.retain(|_, clock| !clock.is_empty());
         for clock in self.clocks.values_mut() {

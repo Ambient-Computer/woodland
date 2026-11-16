@@ -1,4 +1,5 @@
 use super::*;
+use crate::db::group::STRIDE;
 
 #[test]
 fn nothing_commits_without_a_quorum() {
@@ -245,4 +246,91 @@ fn a_big_checkpoint_is_committed_a_few_entries_at_a_time() {
     assert!((0..20).all(|index| note(&sim, index).is_some()));
     sim.compact(NAS, group);
     assert_eq!(sim.entries_kept(NAS, group), 0);
+}
+
+/// A device with a say commits what a checkpoint covers for itself
+/// before it vouches for it, to one side, and that's as much work as
+/// committing it.
+#[test]
+fn what_a_checkpoint_comes_to_is_worked_out_a_few_entries_at_a_time() {
+    let (mut sim, group) = Sim::group(3, 3);
+    for index in 0..20 {
+        sim.write(PHONE, set(notes(group), &format!("note {index:02}"), "x"));
+    }
+    sim.run();
+    sim.isolate(NAS);
+    let height = sim.devices[PHONE].groups[&group].folded();
+
+    // Proposing it waits for that, and nothing shows meanwhile.
+    sim.tick(PHONE);
+    let mut steps = 0;
+    while !sim.devices[PHONE].groups[&group].attempting() {
+        assert!(sim.kept_aside(PHONE, group) > 0);
+        assert_eq!(sim.committed(PHONE, group, notes(group), "note 00"), None);
+        assert!(sim.resume(), "it gave up");
+        steps += 1;
+    }
+    assert!(steps >= 20 / STRIDE);
+
+    // So does voting for it.
+    while sim.devices[LAPTOP].groups[&group].proposals() == 0 {
+        assert!(sim.deliver(), "it never heard");
+    }
+    assert!(sim.devices[LAPTOP].groups[&group].is_busy());
+    assert_eq!(sim.devices[PHONE].groups[&group].folded(), height);
+
+    // A device that stops in the middle starts again.
+    while sim.kept_aside(LAPTOP, group) < 2 * STRIDE {
+        sim.wake(LAPTOP);
+        let outputs = block_on(sim.devices[LAPTOP].resume()).expect("resumed");
+        sim.absorb(LAPTOP, outputs);
+    }
+    sim.restart(LAPTOP);
+    while sim.resume() {}
+    assert_eq!(sim.kept_aside(LAPTOP, group), 0);
+    sim.connect_all();
+    sim.settle();
+
+    for device in [PHONE, LAPTOP, NAS] {
+        assert!(sim.devices[device].groups[&group].folded() > height);
+        assert!(
+            sim.committed(device, group, notes(group), "note 19")
+                .is_some()
+        );
+        // Nothing of the working out is left behind.
+        assert_eq!(sim.kept_aside(device, group), 0);
+    }
+}
+
+/// What a device has worked out is what one checkpoint comes to. Asked
+/// about another, it starts again, with nothing left of the first.
+#[test]
+fn working_out_one_checkpoint_says_nothing_of_another() {
+    let (mut sim, group) = Sim::group(3, 3);
+    sim.disconnect_all();
+    for index in 0..10 {
+        sim.write(PHONE, set(notes(group), &format!("note {index:02}"), "x"));
+    }
+    let mut step = crate::db::step::Step::new(sim.devices[PHONE].store.view());
+    let phone = sim.devices[PHONE].groups.get_mut(&group).expect("held");
+    let mut ask = |all: bool, times: usize| {
+        let mut found = None;
+        for _ in 0..times {
+            found = block_on(phone.foresee(all, &mut step)).expect("read");
+            if found.is_some() {
+                break;
+            }
+        }
+
+        found
+    };
+
+    let as_it_is = ask(false, 1).expect("nothing to work out");
+    assert_eq!(ask(true, 1), None);
+    assert_eq!(ask(false, 100).as_ref(), Some(&as_it_is));
+
+    let with_it_all = ask(true, 100).expect("worked out");
+    assert_ne!(with_it_all, as_it_is);
+    assert_eq!(ask(false, 100), Some(as_it_is));
+    assert_eq!(ask(true, 100), Some(with_it_all));
 }
