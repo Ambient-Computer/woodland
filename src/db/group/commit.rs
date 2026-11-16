@@ -173,12 +173,20 @@ impl Group {
             return Ok(());
         };
 
-        // A witness has no state to commit to, so it starts no attempt.
+        let patience = 2 + u64::try_from(rank).unwrap_or(u64::MAX - 2);
+
+        // A witness has no state to commit to, so it starts no attempt
+        // of its own. It can carry on with a checkpoint someone else
+        // proposed, if that attempt has gone nowhere.
         if tip.electorate.is_witness(me) {
+            if self.stalled > patience && self.chain.finish(identity) {
+                self.said = true;
+                self.stalled = 0;
+            }
+
             return Ok(());
         }
 
-        let patience = 2 + u64::try_from(rank).unwrap_or(u64::MAX - 2);
         let free = self.chain.attempt().is_none() || self.stalled > patience;
         if !free || self.folded != tip.height {
             return Ok(());

@@ -185,6 +185,13 @@ impl Group {
         self.chain.tip().electorate.has(peer)
     }
 
+    /// How many checkpoints it holds proposals of, for the next place
+    /// in the chain.
+    #[cfg(test)]
+    pub(crate) fn proposals(&self) -> usize {
+        self.chain.proposed().count()
+    }
+
     /// The latest checkpoint this device knows to be final.
     #[cfg(test)]
     pub(crate) fn tip(&self) -> &Checkpoint {

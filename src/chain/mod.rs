@@ -319,6 +319,39 @@ impl Chain {
             return false;
         }
 
+        let checkpoint = self.tip().extend(electorate, body);
+        self.begin(identity, checkpoint);
+
+        true
+    }
+
+    /// Starts an attempt to carry a checkpoint someone else proposed:
+    /// the one from the highest attempt held. It's for when that
+    /// attempt can't finish, because signers have since promised a
+    /// later one that never named anything.
+    ///
+    /// Anyone with a role can, a witness included: it adds nothing of
+    /// its own, and those who check contents still check before they
+    /// vote. Returns whether there was a checkpoint to carry.
+    pub(crate) fn finish(&mut self, identity: &Identity) -> bool {
+        if !self.tip().electorate.has(identity.peer()) {
+            return false;
+        }
+
+        let proposals = self.slot.proposals.values().map(Verified::payload);
+        let Some(latest) = proposals.max_by_key(|proposal| proposal.ballot) else {
+            return false;
+        };
+        let checkpoint = latest.checkpoint.clone();
+        self.begin(identity, checkpoint);
+
+        true
+    }
+
+    /// Outranks every attempt held, with `checkpoint` to name if the
+    /// promises it gathers report nothing voted for.
+    fn begin(&mut self, identity: &Identity, checkpoint: Checkpoint) {
+        let me = identity.peer();
         let ballot = Ballot {
             round: self.slot.highest_round() + 1,
             proposer: me,
@@ -327,12 +360,10 @@ impl Chain {
             slot: self.tip().digest(),
             ballot,
         };
-        self.slot.candidate = Some((ballot, self.tip().extend(electorate, body)));
+        self.slot.candidate = Some((ballot, checkpoint));
         self.slot
             .prepares
             .insert(me, Signed::sign(identity, prepare));
-
-        true
     }
 
     /// What to send a peer whose tip is at `height` or above.

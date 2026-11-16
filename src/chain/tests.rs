@@ -342,6 +342,9 @@ enum Step {
         electorate: usize,
         body: u8,
     },
+    /// A replica takes over the latest attempt it knows to have named
+    /// a checkpoint.
+    Finish { replica: usize },
     /// A replica tells another everything it holds, right away.
     Tell { from: usize, to: usize },
     /// A replica sends everything it holds. It may arrive much later.
@@ -362,6 +365,7 @@ fn step() -> impl Strategy<Value = Step> {
                 body,
             }
         }),
+        1 => (0..4usize).prop_map(|replica| Step::Finish { replica }),
         8 => (0..4usize, 1..4usize).prop_map(|(from, offset)| Step::Tell {
             from,
             to: (from + offset) % 4
@@ -411,6 +415,12 @@ impl Simulation {
                 body,
             } => {
                 self.replicas[replica].propose(electorate(index), &[body]);
+            }
+            Step::Finish { replica } => {
+                let replica = &mut self.replicas[replica];
+                let identity = identity_of(replica.peer);
+                replica.chain.finish(&identity);
+                replica.chain.advance(&identity, |_| true);
             }
             Step::Tell { from, to } => {
                 let gossip = self.replicas[from].chain.gossip(0);
@@ -500,4 +510,83 @@ proptest! {
         prop_assert!(simulation.agrees());
         prop_assert!(simulation.replicas.iter().all(|it| it.height() == height + 1));
     }
+}
+
+/// The phone writes, two witnesses decide with it, and the friend
+/// writes with no say.
+fn witnessed() -> Vec<Replica> {
+    let electorate = Electorate::of([
+        (phone(), Role::contributor(1)),
+        (laptop(), Role::witness(1)),
+        (nas(), Role::witness(1)),
+        (friend(), Role::contributor(0)),
+    ]);
+    let founding = Checkpoint::founding([7; 32], electorate);
+    let replica = |peer| Replica::founded(peer, founding.clone());
+
+    [phone(), laptop(), nas(), friend()].map(replica).into()
+}
+
+/// The phone names a checkpoint, and both witnesses promise a later
+/// attempt before they hear of it. That attempt's author vanishes
+/// without naming anything, and so does the phone.
+fn stranded() -> Vec<Replica> {
+    let mut cast = witnessed();
+    let electorate = cast[PHONE].chain.tip().electorate.clone();
+    cast[PHONE].propose(electorate.clone(), b"a");
+    let prepare = cast[PHONE].chain.gossip(0);
+    cast[NAS].deliver(prepare);
+    let promise = cast[NAS].chain.gossip(0);
+    cast[PHONE].deliver(promise);
+    assert_eq!(cast[PHONE].chain.proposed().count(), 1);
+
+    let named = cast[PHONE].chain.gossip(0);
+    cast[FRIEND].deliver(named.clone());
+    cast[FRIEND].propose(electorate, b"b");
+    let rival = cast[FRIEND].chain.gossip(0);
+    cast[LAPTOP].deliver(rival.clone());
+    cast[NAS].deliver(rival);
+    converse(&mut cast, LAPTOP, NAS);
+    assert_eq!(cast[LAPTOP].height(), 0);
+    assert_eq!(cast[NAS].height(), 0);
+
+    cast
+}
+
+#[test]
+fn a_witness_finishes_an_attempt_whose_author_is_gone() {
+    let mut cast = stranded();
+
+    let identity = identity_of(laptop());
+    assert!(cast[LAPTOP].chain.finish(&identity));
+    cast[LAPTOP].chain.advance(&identity, |_| true);
+    converse(&mut cast, LAPTOP, NAS);
+
+    for witness in [LAPTOP, NAS] {
+        assert_eq!(cast[witness].height(), 1);
+        assert_eq!(cast[witness].body(), b"a");
+    }
+
+    // The phone comes back to find what it proposed decided.
+    converse(&mut cast, PHONE, NAS);
+    assert_eq!(cast[PHONE].body(), b"a");
+}
+
+#[test]
+fn theres_nothing_to_finish_before_anything_is_named() {
+    let mut cast = witnessed();
+    let electorate = cast[PHONE].chain.tip().electorate.clone();
+    cast[PHONE].propose(electorate, b"a");
+    let prepare = cast[PHONE].chain.gossip(0);
+    cast[LAPTOP].deliver(prepare);
+
+    assert!(!cast[LAPTOP].chain.finish(&identity_of(laptop())));
+}
+
+#[test]
+fn only_a_member_finishes_an_attempt() {
+    let mut cast = stranded();
+    let outsider = Identity::from_secret_key([99; 32]);
+
+    assert!(!cast[LAPTOP].chain.finish(&outsider));
 }

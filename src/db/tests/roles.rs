@@ -202,3 +202,71 @@ fn a_group_is_never_left_with_nobody_to_carry_it_on() {
         assert!(asked.is_err());
     }
 }
+
+/// The phone proposes a checkpoint and goes. Both witnesses have by
+/// then promised a later attempt, whose author went without naming
+/// anything. Neither witness can start an attempt of its own, so one
+/// carries on with what the phone proposed.
+#[test]
+fn witnesses_finish_what_a_contributor_started_and_left() {
+    let (mut sim, group) = Sim::group(4, 3);
+    let roles = [
+        (PHONE, Role::contributor(1)),
+        (LAPTOP, Role::witness(1)),
+        (NAS, Role::witness(1)),
+        (FRIEND, Role::contributor(0)),
+    ];
+    sim.assign(PHONE, group, roles);
+    sim.settle();
+    sim.disconnect_all();
+    let height = |sim: &Sim, device: usize| sim.devices[device].groups[&group].tip().height;
+    let before = height(&sim, PHONE);
+
+    // The phone gets as far as naming a checkpoint, with the NAS's
+    // promise, and the NAS never hears what it named.
+    sim.write_to(PHONE, group, set(notes(group), "a", "1"));
+    sim.connect(PHONE, NAS);
+    for _ in 0..64 {
+        if sim.devices[PHONE].groups[&group].proposals() > 0 {
+            break;
+        }
+        if !sim.deliver() {
+            sim.tick(PHONE);
+        }
+    }
+    assert_eq!(sim.devices[PHONE].groups[&group].proposals(), 1);
+    sim.queue.clear();
+    sim.disconnect_all();
+    assert_eq!(sim.devices[NAS].groups[&group].proposals(), 0);
+
+    // The friend hears, loses patience, and outbids the phone. The
+    // witnesses promise the friend, who then goes too.
+    sim.connect(PHONE, FRIEND);
+    sim.run();
+    sim.disconnect_all();
+    for _ in 0..16 {
+        sim.tick(FRIEND);
+    }
+    sim.connect(FRIEND, LAPTOP);
+    sim.run();
+    sim.disconnect_all();
+    sim.connect(LAPTOP, NAS);
+    sim.run();
+    assert_eq!(height(&sim, LAPTOP), before);
+    assert_eq!(height(&sim, NAS), before);
+
+    for _ in 0..16 {
+        sim.tick(LAPTOP);
+        sim.tick(NAS);
+        sim.run();
+    }
+    assert_eq!(height(&sim, LAPTOP), before + 1);
+    assert_eq!(height(&sim, NAS), before + 1);
+
+    sim.connect_all();
+    sim.settle();
+    for device in [PHONE, FRIEND] {
+        let committed = sim.committed(device, group, notes(group), "a");
+        assert_eq!(committed.as_deref(), Some("1"), "device {device}");
+    }
+}
