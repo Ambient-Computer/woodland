@@ -4,7 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::chain::{Certificate, Gossip};
+use crate::actor::{Signable, Signed};
+use crate::chain::{Certificate, Electorate, Gossip};
 use crate::db::{ClockId, GroupId};
 use crate::model::ModelId;
 
@@ -31,8 +32,25 @@ pub(crate) struct Message {
     /// Fork proofs the other side hasn't said it holds.
     pub(crate) proofs: Vec<Proof>,
     pub(crate) snapshot: Option<Piece>,
+    /// Requests to change who's in the group that the other side
+    /// hasn't been told of.
+    pub(crate) requests: Vec<Signed<Request>>,
     /// A secret the peer said it lacks and is due.
     pub(crate) secret: Option<Handed>,
+}
+
+/// A member's request that the group be made up differently. It's
+/// made of the group as it is: once that changes, it's spent.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Request {
+    pub(crate) group: GroupId,
+    /// The height of the latest checkpoint when it was made.
+    pub(crate) since: u64,
+    pub(crate) electorate: Electorate,
+}
+
+impl Signable for Request {
+    const CONTEXT: &'static [u8] = b"woodland/request";
 }
 
 /// How much a peer holds, so the other side can work out what it lacks.

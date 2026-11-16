@@ -198,6 +198,7 @@ fn offer(sim: &mut Sim, from: usize, to: usize, group: GroupId, restored: Vec<En
         restored,
         proofs: Vec::new(),
         snapshot: None,
+        requests: Vec::new(),
         secret: None,
     };
     let from = sim.id(from);
@@ -335,6 +336,7 @@ fn a_checkpoint_comes_back_only_into_the_gap_it_fills() {
             restored: Vec::new(),
             proofs: Vec::new(),
             snapshot: None,
+            requests: Vec::new(),
             secret: None,
         };
         let from = sim.id(NAS);

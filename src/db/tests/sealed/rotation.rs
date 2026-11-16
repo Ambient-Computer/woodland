@@ -235,6 +235,7 @@ fn a_secret_handed_over_has_to_be_the_one_the_chain_names() {
         restored: Vec::new(),
         proofs: Vec::new(),
         snapshot: None,
+        requests: Vec::new(),
         secret: Some(Handed {
             epoch: 0,
             grant: grant(&sim),

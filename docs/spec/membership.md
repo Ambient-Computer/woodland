@@ -16,6 +16,8 @@ A configuration says which [peers](peers.md) hold a role in a [group](groups.md)
 ## Changing it
 
 - A change is proposed by a member that holds weight, and takes effect when a checkpoint carries it.
+- The proposal is signed and [travels](sync.md). Any member that holds weight may start the attempt that carries it; its author need not be reachable.
+- A proposal is made of the configuration in force. Once that changes, it is spent.
 - A checkpoint that changes the configuration is voted for only in an attempt started by a member that holds weight. A writer confined to a [clock](peers.md) cannot vote itself out of it.
 - The checkpoint that carries a change is signed by a quorum of the configuration it replaces.
 - Checkpoints after it are signed by a quorum of the new configuration.

@@ -62,6 +62,7 @@ fn send(sim: &mut Sim, from: usize, to: usize, group: GroupId, chain: Gossip, pr
         restored: Vec::new(),
         proofs,
         snapshot: None,
+        requests: Vec::new(),
         secret: None,
     };
     let from = sim.id(from);

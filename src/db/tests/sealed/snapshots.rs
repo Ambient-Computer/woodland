@@ -128,6 +128,7 @@ fn offer(sim: &mut Sim, from: usize, to: usize, group: GroupId, piece: Piece) {
         restored: Vec::new(),
         proofs: Vec::new(),
         snapshot: Some(piece),
+        requests: Vec::new(),
         secret: None,
     };
     let from = sim.id(from);

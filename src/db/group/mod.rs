@@ -13,6 +13,7 @@ mod history;
 mod interest;
 mod job;
 mod judge;
+mod requests;
 mod restore;
 mod root;
 mod rules;
@@ -24,13 +25,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::actor::{Identity, Peer};
+use crate::actor::{Identity, Peer, Signed, verify_all};
 use crate::chain::{Certificate, Chain, Checkpoint, Digest, Electorate, Saved};
 use crate::db::{ClockId, GroupId, Pending, keys};
 use crate::model::Operation;
 use crate::seal::Keyring;
 use crate::store::{StoreError, View};
 
+use super::message::Request;
 use super::proof::Proof;
 use super::step::Step;
 use ahead::Foresight;
@@ -68,6 +70,9 @@ pub(crate) struct Group {
     remotes: BTreeMap<Peer, Remote>,
     /// The electorate this device has been asked to bring about.
     wanted: Option<Electorate>,
+    /// What members have asked the group to be made up of, this
+    /// device included.
+    requests: BTreeMap<Peer, Signed<Request>>,
     /// Proposed checkpoints this device has checked against its own
     /// copy, and would vote for.
     sound: BTreeSet<Digest>,
@@ -117,6 +122,7 @@ struct Meta {
     base: u64,
     staging: Option<Staging>,
     wanted: Option<Electorate>,
+    requests: Vec<Signed<Request>>,
     interest: Option<BTreeSet<ClockId>>,
     passed: bool,
     folding: Option<u64>,
@@ -184,6 +190,7 @@ impl Group {
             proofs: BTreeMap::new(),
             remotes: BTreeMap::new(),
             wanted: None,
+            requests: BTreeMap::new(),
             sound: BTreeSet::new(),
             fore: Foresight::default(),
             #[cfg(test)]
@@ -241,6 +248,10 @@ impl Group {
         group.base = meta.base;
         group.staging = meta.staging;
         group.wanted = meta.wanted;
+        let requests = verify_all(meta.requests).into_iter();
+        group.requests = requests
+            .map(|it| (it.author(), it.signed().clone()))
+            .collect();
         group.interest = meta.interest;
         group.passed = meta.passed;
         group.folding = meta.folding;
@@ -361,6 +372,7 @@ impl Group {
             base: self.base,
             staging: self.staging.clone(),
             wanted: self.wanted.clone(),
+            requests: self.requests.values().cloned().collect(),
             interest: self.interest.clone(),
             passed: self.passed,
             folding: self.folding,
@@ -435,7 +447,9 @@ impl Group {
             return Ok(false);
         }
 
+        self.request(identity, electorate.clone());
         self.wanted = Some(electorate);
+        self.said = true;
         self.progress(identity, None, step).await?;
 
         Ok(true)

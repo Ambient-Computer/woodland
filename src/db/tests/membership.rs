@@ -186,3 +186,69 @@ fn work_on_top_of_a_cut_entry_counts_even_once_its_author_is_back() {
         assert_eq!(sim.shown(device, group, model, "guest"), None);
     }
 }
+
+/// A member that asks for a change needn't be the one to propose it,
+/// or be there when it's proposed.
+#[test]
+fn a_request_is_carried_out_by_whoever_proposes_next() {
+    let (mut sim, group) = Sim::group(3, 3);
+    sim.reconfigure(PHONE, group, [PHONE, LAPTOP]);
+    sim.run();
+    sim.isolate(PHONE);
+    // Whoever heard it holds it for as long as it stands.
+    sim.restart(LAPTOP);
+    sim.restart(NAS);
+    sim.connect(LAPTOP, NAS);
+    sim.settle();
+
+    let written = block_on(sim.devices[NAS].write(group, set(notes(group), "todo", "milk")));
+    assert!(matches!(written, Err(Error::NotAContributor)));
+
+    // It was made of the group as it was, and is spent.
+    sim.restart(LAPTOP);
+    sim.connect_all();
+    sim.reconfigure(LAPTOP, group, [PHONE, LAPTOP, NAS]);
+    sim.settle();
+    sim.settle();
+
+    sim.write_to(NAS, group, set(notes(group), "todo", "milk"));
+    sim.settle();
+    assert!(sim.committed(PHONE, group, notes(group), "todo").is_some());
+}
+
+/// Only a member with a say can ask for a change.
+#[test]
+fn a_request_from_a_member_with_no_say_is_ignored() {
+    use super::super::message::{Message, Request, Summary};
+    use crate::actor::{Identity, Peer, Signed};
+    use crate::chain::{Electorate, Gossip};
+
+    let (mut sim, group) = Sim::group(3, 2);
+    let everyone = [PHONE, LAPTOP, NAS].map(|it| (Peer::from(sim.id(it)), Role::contributor(1)));
+    let request = Request {
+        group,
+        since: sim.devices[LAPTOP].groups[&group].tip().height,
+        electorate: Electorate::of(everyone),
+    };
+    let identity = Identity::from_secret_key(secret(NAS));
+    let message = Message {
+        group,
+        summary: Summary::default(),
+        chain: Gossip::default(),
+        entries: Vec::new(),
+        links: Vec::new(),
+        restored: Vec::new(),
+        proofs: Vec::new(),
+        snapshot: None,
+        requests: vec![Signed::sign(&identity, request).signed().clone()],
+        secret: None,
+    };
+    let from = sim.id(NAS);
+    let received = block_on(sim.devices[LAPTOP].receive(from, &crate::encoding::encode(&message)));
+    sim.absorb(LAPTOP, received.expect("received"));
+    sim.settle();
+    sim.settle();
+
+    let written = block_on(sim.devices[NAS].write(group, set(notes(group), "todo", "milk")));
+    assert!(matches!(written, Err(Error::NotAContributor)));
+}

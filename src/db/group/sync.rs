@@ -12,13 +12,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::actor::{Identity, Peer};
+use crate::actor::{Identity, Peer, Signed};
 use crate::chain::{Electorate, Gossip};
 use crate::db::ClockId;
 use crate::store::{StoreError, View};
 
 use super::super::entry::{Checked, Entry, Frontier, Link, reach};
-use super::super::message::{Message, Piece, Summary};
+use super::super::message::{Message, Piece, Request, Summary};
 use super::super::step::Step;
 use super::Group;
 use super::clock::Clock;
@@ -49,6 +49,8 @@ pub(super) struct Remote {
     proven: BTreeSet<Peer>,
     /// Everyone it's been sent a proof against since the last tick.
     told: BTreeSet<Peer>,
+    /// Everyone whose request it has, or was sent since the last tick.
+    asked: BTreeSet<Peer>,
     /// The clocks it wants anything of. `None` if all.
     interest: Option<BTreeSet<ClockId>>,
     /// The entry of each chain it shed and wants back next.
@@ -98,10 +100,16 @@ impl Remote {
         self.interest.as_ref().is_none_or(|it| it.contains(&clock))
     }
 
+    /// It has `author`'s request: it's where this device got it.
+    pub(super) fn asked(&mut self, author: Peer) {
+        self.asked.insert(author);
+    }
+
     /// Stops assuming that what it was sent arrived, and was kept.
     pub(super) fn doubt(&mut self) {
         self.sent.clear();
         self.told.clear();
+        self.asked.clear();
     }
 }
 
@@ -148,6 +156,7 @@ impl Group {
 
         self.said |= self.chain.receive(message.chain);
         self.overhear(step);
+        self.hear_requests(from, message.requests);
 
         // What the chain now says of secrets comes before anything
         // sealed under them.
@@ -376,12 +385,19 @@ impl Group {
         let proofs = accused.iter().filter_map(|author| self.proofs.get(author));
         let proofs: Vec<_> = proofs.cloned().collect();
 
+        let untold = |(author, _): &(&Peer, &Signed<Request>)| !remote.asked.contains(author);
+        let requests = self.requests.iter().filter(untold);
+        let requests =
+            requests.filter(|(author, request)| self.stands(**author, request.payload()));
+        let requests: Vec<_> = requests.map(|(_, request)| request.clone()).collect();
+
         let secret = remote.owed.clone();
         let news = !entries.is_empty()
             || secret.is_some()
             || !restored.is_empty()
             || !links.is_empty()
             || !proofs.is_empty()
+            || !requests.is_empty()
             || snapshot.is_some()
             || statements
             || remote.height < height;
@@ -398,6 +414,7 @@ impl Group {
             restored,
             proofs,
             snapshot,
+            requests,
             secret,
         };
         step.send(peer, &message);
@@ -410,6 +427,8 @@ impl Group {
                 remote.sending = sending;
             }
             remote.told.extend(accused);
+            let authors = message.requests.iter().map(Signed::author);
+            remote.asked.extend(authors);
             let asked = if unasked { &[][..] } else { &message.links[..] };
             remote.gave_back(&message.restored, asked);
             for entry in &message.entries {

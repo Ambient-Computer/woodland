@@ -265,7 +265,7 @@ impl Group {
 
         // Whoever is proven to have forked goes, if this device has a
         // say in who stays and someone would be left to carry on.
-        let electorate = self.wanted.clone();
+        let electorate = self.asked_for();
         let electorate = electorate.unwrap_or_else(|| tip.electorate.clone());
         let proven = self.proven();
         let honest = electorate.without(&proven);
@@ -443,6 +443,7 @@ impl Group {
         // Once that changes, however it changes, the request is spent.
         if checkpoint.electorate != before {
             self.wanted = None;
+            self.requests.clear();
         }
 
         Ok(true)
