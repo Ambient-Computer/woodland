@@ -7,7 +7,8 @@ A peer is a device, identified by a signing key. What a peer may do is decided p
 - A peer's key is its identity everywhere: in transport, in signatures, and in [membership](membership.md).
 - A key belongs to one device and is never shared or moved.
 - A person with several devices is several peers; grouping them is what a group is for.
-- A removed key is never readmitted. A device that returns does so under a new key.
+- A key that is [removed](membership.md) and later given a role again is the same peer.
+- Only a device that lost its [stored state](storage.md) returns under a new key.
 - A key and the state it has signed for live and die together; see [storage](storage.md).
 
 ## Roles
