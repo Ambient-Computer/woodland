@@ -44,6 +44,9 @@ pub(super) struct Staging {
     pub(super) sums: BTreeMap<ClockId, Vec<u8>>,
 }
 
+/// How many entries that were shed a step deletes.
+pub(crate) const SWEEP: usize = if cfg!(test) { 4 } else { 256 };
+
 /// How many values a step moves into place.
 const MOVE: usize = if cfg!(test) { 5 } else { 256 };
 
@@ -74,29 +77,25 @@ impl Group {
     /// Sheds every entry a checkpoint covers, in `only` one clock or in
     /// all of them, and every checkpoint that isn't needed to prove a
     /// later one or to commit what's left.
-    pub(crate) async fn compact<V: View>(
-        &mut self,
-        only: Option<ClockId>,
-        step: &mut Step<V>,
-    ) -> Result<(), StoreError> {
+    pub(crate) fn compact(&mut self, only: Option<ClockId>) {
         // A device that can't read the group has no state to stand in
         // for history. It sheds what it's handed newer sealed state
         // for, and nothing else.
         if self.carries() {
-            return Ok(());
+            return;
         }
 
         // Partway through a checkpoint, what's committed is the state
         // of no checkpoint, and couldn't stand in for the history.
-        if self.is_busy() {
-            return Ok(());
+        if self.is_partway() {
+            return;
         }
 
         let folded = self.folded;
         let chosen = |id: &ClockId| only.is_none_or(|only| only == *id);
         for (_, clock) in self.clocks.iter_mut().filter(|(id, _)| chosen(id)) {
             let committed = clock.history.committed.clone();
-            clock.shed_through(&committed, step).await?;
+            clock.shed_through(&committed);
             clock.base = folded;
             clock.restoring = false;
         }
@@ -110,6 +109,14 @@ impl Group {
         let bases = self.clocks.values().map(|clock| clock.base.max(self.base));
         self.chain.compact(bases.min().unwrap_or(self.base));
         self.said = true;
+    }
+
+    /// Deletes some more of the history that's been shed.
+    pub(super) async fn sweep<V: View>(&mut self, step: &mut Step<V>) -> Result<(), StoreError> {
+        let mut budget = SWEEP;
+        for clock in self.clocks.values_mut() {
+            budget -= clock.sweep(budget, step).await?;
+        }
 
         Ok(())
     }
@@ -128,7 +135,7 @@ impl Group {
         // A device that holds only some clocks has the whole state of
         // nothing but those. Partway through a checkpoint it has the
         // state of none.
-        if self.is_busy() || !self.serves(remote) {
+        if self.is_partway() || !self.serves(remote) {
             return Ok(None);
         }
 
@@ -391,9 +398,7 @@ impl Group {
             let theirs = installing.dropped.iter();
             let theirs = theirs.filter(|model| model.clock() == id);
             let theirs = theirs.copied().collect();
-            self.clock(id)
-                .adopt(&covered.frontier, theirs, step)
-                .await?;
+            self.clock(id).adopt(&covered.frontier, theirs, step);
         }
 
         // Whoever sent it is waiting to hear, and has more to send.

@@ -278,9 +278,16 @@ impl Sim {
         self.absorb(device, outputs.expect("asked"));
     }
 
+    /// Sheds what's committed, and sees the deleting through: unless
+    /// the device was in the middle of something, which it's left in.
     fn compact(&mut self, device: usize, group: GroupId) {
         self.wake(device);
-        let outputs = block_on(self.devices[device].compact(group)).expect("compacted");
+        let busy = self.devices[device].groups[&group].is_busy();
+        let mut outputs = block_on(self.devices[device].compact(group)).expect("compacted");
+        while !busy && outputs.unfinished {
+            self.absorb(device, outputs);
+            outputs = block_on(self.devices[device].resume()).expect("resumed");
+        }
         self.absorb(device, outputs);
     }
 

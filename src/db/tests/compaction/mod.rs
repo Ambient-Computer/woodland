@@ -299,3 +299,49 @@ fn an_archive_serves_history_to_a_peer_that_wants_it() {
     assert_eq!(sim.entries_kept(NAS, group), 30);
     assert_eq!(all_notes(&sim, NAS, group, true).len(), 30);
 }
+
+/// What's shed is as good as gone at once, and deleted so much a step.
+#[test]
+fn shed_history_is_deleted_a_few_entries_at_a_time() {
+    let (mut sim, group) = Sim::group(3, 2);
+    sim.isolate(NAS);
+    fill(&mut sim, group, 20);
+    let elsewhere = ModelId::kv(ClockId::new(group, [7; 32]), [1; 32]);
+    for index in 0..20 {
+        sim.write_to(PHONE, group, set(elsewhere, &format!("{index}"), "x"));
+    }
+    sim.settle();
+    let before = all_notes(&sim, PHONE, group, true);
+
+    // So many a step, however many clocks they're in.
+    let outputs = block_on(sim.devices[PHONE].compact(group)).expect("compacted");
+    assert!(outputs.unfinished);
+    sim.absorb(PHONE, outputs);
+    let left = sim.entries_kept(PHONE, group);
+    assert_eq!(left, 40 - crate::db::group::SWEEP);
+    assert_eq!(all_notes(&sim, PHONE, group, true), before);
+
+    // It carries on from its store alone, the same amount each step.
+    sim.restart(PHONE);
+    assert!(sim.resume());
+    let fewer = sim.entries_kept(PHONE, group);
+    assert!(fewer < left);
+    assert!(sim.resume());
+    let remaining = sim.entries_kept(PHONE, group);
+    assert_eq!(remaining, fewer - (left - fewer));
+    assert!(remaining > 0);
+
+    // A peer that's behind is sent the state, not what's left of the
+    // history.
+    sim.connect(NAS, PHONE);
+    while sim.deliver() || sim.devices[NAS].groups[&group].is_busy() {
+        let outputs = block_on(sim.devices[NAS].resume()).expect("resumed");
+        sim.absorb(NAS, outputs);
+    }
+    assert_eq!(all_notes(&sim, NAS, group, true), before);
+    assert_eq!(sim.entries_kept(NAS, group), 0);
+    while sim.resume() {}
+
+    assert_eq!(sim.entries_kept(PHONE, group), 0);
+    assert_eq!(all_notes(&sim, PHONE, group, true), before);
+}

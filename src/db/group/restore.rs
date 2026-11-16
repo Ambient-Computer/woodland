@@ -59,7 +59,13 @@ impl Clock {
             keys::log(self.group, self.id, author, link.seq),
             &entry.entry,
         );
-        match before(&entry.entry) {
+        // It's kept from here back, whatever was deleted before.
+        let back = before(&entry.entry);
+        let kept = back.as_ref().map_or(0, |link| link.seq);
+        if self.swept.get(&author).is_some_and(|swept| *swept > kept) {
+            self.swept.insert(author, kept);
+        }
+        match back {
             Some(link) => self.shed.insert(author, link),
             None => self.shed.remove(&author),
         };

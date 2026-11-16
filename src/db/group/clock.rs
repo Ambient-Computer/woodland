@@ -5,7 +5,7 @@
 //! entry in one is never ordered against, judged against, or made to
 //! wait for an entry in another.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -18,7 +18,7 @@ use crate::model::{ModelId, Operation};
 use crate::seal::Keyring;
 use crate::store::{StoreError, View};
 
-use super::super::entry::{Checked, Entry, Frontier, Hash, Header, Outline, Under, reach};
+use super::super::entry::{Checked, Entry, Frontier, Hash, Header, Link, Outline, Under, reach};
 use super::super::step::Step;
 use super::deferred;
 use super::history::History;
@@ -33,6 +33,10 @@ pub(super) struct Clock {
     pub(super) history: History,
     /// The last entry of each author's chain that's been shed.
     pub(super) shed: Frontier,
+    /// How far along each author's chain what's shed has been deleted.
+    /// Shedding is a decision, made at once. Deleting follows, so much
+    /// a step.
+    pub(super) swept: BTreeMap<Peer, u64>,
     /// Whether this device is getting back what it shed.
     pub(super) restoring: bool,
     /// The height of the checkpoint whose entries were last shed. A
@@ -57,6 +61,7 @@ pub(super) struct Kept {
     heads: Frontier,
     committed: Frontier,
     shed: Frontier,
+    swept: BTreeMap<Peer, u64>,
     restoring: bool,
     base: u64,
     dropped: BTreeSet<ModelId>,
@@ -83,6 +88,7 @@ impl Clock {
             id,
             history: History::default(),
             shed: Frontier::new(),
+            swept: BTreeMap::new(),
             restoring: false,
             base: 0,
             dropped: BTreeSet::new(),
@@ -105,6 +111,7 @@ impl Clock {
         clock.keys = keys;
         clock.lost = kept.lost;
         clock.shed = kept.shed;
+        clock.swept = kept.swept;
         clock.base = kept.base;
         clock.restoring = kept.restoring;
         clock.dropped = kept.dropped;
@@ -134,6 +141,7 @@ impl Clock {
             heads: self.history.heads.clone(),
             committed: self.history.committed.clone(),
             shed: self.shed.clone(),
+            swept: self.swept.clone(),
             base: self.base,
             restoring: self.restoring,
             dropped: self.dropped.clone(),
@@ -458,35 +466,65 @@ impl Clock {
         self.stale = true;
     }
 
-    /// Sheds every entry `frontier` covers.
-    pub(super) async fn shed_through<V: View>(
-        &mut self,
-        frontier: &Frontier,
-        step: &mut Step<V>,
-    ) -> Result<(), StoreError> {
+    /// Sheds every entry `frontier` covers. They're as good as gone
+    /// from here on, and are deleted by [`sweep`].
+    ///
+    /// [`sweep`]: Self::sweep
+    pub(super) fn shed_through(&mut self, frontier: &Frontier) {
         for (&author, link) in frontier {
-            let from = reach(&self.shed, author) + 1;
-            let start = keys::log(self.group, self.id, author, from);
-            let end = keys::log(self.group, self.id, author, link.seq + 1);
-            for (key, _) in step.scan(&start, &end).await? {
-                step.delete(key);
-            }
-            if from <= link.seq {
+            if reach(&self.shed, author) < link.seq {
                 self.shed.insert(author, *link);
             }
         }
+    }
 
-        Ok(())
+    /// Whether anything shed is still stored.
+    pub(super) fn is_unswept(&self) -> bool {
+        let swept = |(author, link): (&Peer, &Link)| {
+            self.swept.get(author).copied().unwrap_or(0) >= link.seq
+        };
+
+        !self.shed.iter().all(swept)
+    }
+
+    /// Deletes up to `budget` entries that were shed. Returns how many.
+    pub(super) async fn sweep<V: View>(
+        &mut self,
+        mut budget: usize,
+        step: &mut Step<V>,
+    ) -> Result<usize, StoreError> {
+        let mut deleted = 0;
+        for (&author, link) in &self.shed {
+            let swept = self.swept.get(&author).copied().unwrap_or(0);
+            if swept >= link.seq || budget == 0 {
+                continue;
+            }
+
+            let start = keys::log(self.group, self.id, author, swept + 1);
+            let end = keys::log(self.group, self.id, author, link.seq + 1);
+            let page = step.scan_page(&start, &end, budget).await?;
+            let last = page.last().filter(|_| page.len() == budget);
+            let last = last.and_then(|(key, _)| key.last_chunk::<8>());
+            let reached = last.map_or(link.seq, |seq| u64::from_be_bytes(*seq));
+            budget -= page.len();
+            deleted += page.len();
+            for (key, _) in page {
+                step.delete(key);
+            }
+            self.swept.insert(author, reached);
+        }
+
+        Ok(deleted)
     }
 
     /// Takes on committed state that came from a snapshot. Whatever is
     /// held that `frontier` covers is already in it.
-    pub(super) async fn adopt<V: View>(
+    pub(super) fn adopt<V: View>(
         &mut self,
         frontier: &Frontier,
         dropped: BTreeSet<ModelId>,
         step: &mut Step<V>,
-    ) -> Result<(), StoreError> {
+    ) {
         // Whatever is held in place of an entry the checkpoint names
         // was never going to count, and neither was anything written
         // on top of it.
@@ -504,12 +542,10 @@ impl Clock {
             }
         }
 
-        self.shed_through(frontier, step).await?;
+        self.shed_through(frontier);
         self.history.adopt(frontier);
         self.lost = false;
         self.stale = true;
-
-        Ok(())
     }
 
     /// The first `page` entries of each chain that a peer lacks, if it

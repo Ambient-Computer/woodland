@@ -21,6 +21,7 @@ Woodland is a library with a deterministic core. The application owns the proces
 - A [checkpoint](checkpoints.md) committed across several steps is committed in [timeline](log.md) order. Between those steps a committed [read](reads.md) shows part of it, all of which is final.
 - A snapshot, once whole and verified, is put in place across several steps in key order. Between those steps a committed read shows each value as of the snapshot's checkpoint or as of the one the device was at.
 - Until the last of either is done, the device has the state of no checkpoint: it neither [compacts](compaction.md) nor serves a snapshot, and commits nothing further.
+- [Shedding](compaction.md) history is a decision, made in one step: from then on the device answers as one that no longer has it. Deleting it follows across steps, and nothing waits for that.
 - A device partway through putting a snapshot in place can stop [wanting](sync.md) a clock, but cannot start wanting one the snapshot has passed over.
 - A device may stop between any two steps and resume from storage alone.
 

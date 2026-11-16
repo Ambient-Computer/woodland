@@ -41,6 +41,8 @@ use sync::Remote;
 
 #[cfg(test)]
 pub(crate) use commit::STRIDE;
+#[cfg(test)]
+pub(crate) use compact::SWEEP;
 
 #[derive(Debug)]
 pub(crate) struct Group {
@@ -400,7 +402,7 @@ impl Group {
         only: Option<ClockId>,
         step: &mut Step<V>,
     ) -> Result<(), StoreError> {
-        self.compact(only, step).await?;
+        self.compact(only);
 
         self.progress(identity, None, step).await
     }
@@ -412,6 +414,12 @@ impl Group {
     ///
     /// [`resume`]: Self::resume
     pub(crate) fn is_busy(&self) -> bool {
+        self.is_partway() || self.clocks.values().any(Clock::is_unswept)
+    }
+
+    /// Whether committed state is partway between two checkpoints, and
+    /// so the state of neither.
+    fn is_partway(&self) -> bool {
         self.folding.is_some() || self.installing.is_some()
     }
 
@@ -454,6 +462,7 @@ impl Group {
         step: &mut Step<V>,
     ) -> Result<(), StoreError> {
         self.install(step).await?;
+        self.sweep(step).await?;
         loop {
             self.unlock(identity, step).await?;
             self.vet(identity, step).await?;

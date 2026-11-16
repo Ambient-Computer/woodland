@@ -178,9 +178,7 @@ impl Group {
 
         for (&id, covered) in &covers.clocks {
             let clock = self.clock(id);
-            clock
-                .adopt(&covered.frontier, BTreeSet::default(), step)
-                .await?;
+            clock.adopt(&covered.frontier, BTreeSet::default(), step);
         }
         self.carrying = Some(staging.height);
         self.caught_up(staging.height, step);
