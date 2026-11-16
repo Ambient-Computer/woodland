@@ -293,6 +293,30 @@ fn a_secret_is_replaced_on_request_for_the_same_readers() {
         read_note(&sim, PHONE, group, "more").as_deref(),
         Some("words")
     );
+
+    // And with nothing to commit, nothing is.
+    let folded = sim.devices[PHONE].groups[&group].folded();
+    sim.settle();
+    assert_eq!(sim.devices[PHONE].groups[&group].folded(), folded);
+}
+
+/// A request made where nothing can be decided waits, across a
+/// restart, until something can.
+#[test]
+fn a_request_to_replace_the_secret_waits_for_a_quorum() {
+    let (mut sim, group) = sealed();
+    let epoch = |sim: &Sim| sim.devices[PHONE].groups[&group].epoch();
+    let before = epoch(&sim);
+    sim.isolate(LAPTOP);
+    let outputs = block_on(sim.devices[LAPTOP].replace_secret(group)).expect("asked");
+    sim.absorb(LAPTOP, outputs);
+    sim.restart(LAPTOP);
+    sim.settle();
+    assert_eq!(epoch(&sim), before);
+
+    sim.connect_all();
+    sim.settle();
+    assert!(epoch(&sim) > before);
 }
 
 /// Only a device that reads the group and has a say can ask.
@@ -309,4 +333,98 @@ fn a_device_without_the_secret_or_a_say_cant_have_it_replaced() {
     assert!(matches!(asked, Err(Error::Unreadable)));
     sim.settle();
     open.settle();
+}
+
+/// The laptop's key may have got out. It makes another, the group
+/// names it, and the secret is replaced along with it.
+#[test]
+fn a_device_replaces_the_key_it_is_sent_secrets_under() {
+    let (mut sim, group) = sealed();
+    sim.write_to(PHONE, group, set(notes(group), "plan", NEEDLE));
+    sim.settle();
+    let epoch = |sim: &Sim| sim.devices[PHONE].groups[&group].epoch();
+    let (before, old) = (epoch(&sim), key(&sim, LAPTOP));
+
+    let replaced = block_on(sim.devices[LAPTOP].replace_sealing_key([5; 32]));
+    let (new, outputs) = replaced.expect("replaced");
+    sim.absorb(LAPTOP, outputs);
+    assert_ne!(new, old);
+    assert_eq!(key(&sim, LAPTOP), new);
+
+    // Nothing has changed yet: it's still sent to under the old key.
+    sim.write_to(LAPTOP, group, set(notes(group), "more", "words"));
+    sim.settle();
+    assert_eq!(epoch(&sim), before);
+
+    let roles = roles(&sim);
+    sim.assign(PHONE, group, roles);
+    sim.settle();
+    assert!(epoch(&sim) > before);
+    sim.write_to(PHONE, group, set(notes(group), "later", LATER));
+    sim.settle();
+    for key in ["plan", "more", "later"] {
+        assert!(read_note(&sim, LAPTOP, group, key).is_some(), "{key}");
+    }
+
+    // The key is kept with everything else.
+    sim.restart(LAPTOP);
+    assert_eq!(key(&sim, LAPTOP), new);
+    sim.connect_all();
+    sim.write_to(LAPTOP, group, set(notes(group), "last", "word"));
+    sim.settle();
+    assert_eq!(
+        read_note(&sim, PHONE, group, "last").as_deref(),
+        Some("word")
+    );
+}
+
+/// A secret sent under a key that has since been replaced is still
+/// this device's to open.
+#[test]
+fn a_secret_sent_under_a_replaced_key_still_opens() {
+    let (mut sim, group) = founded();
+    sim.write_to(PHONE, group, set(notes(group), "plan", NEEDLE));
+    let roles = roles(&sim);
+    sim.assign(PHONE, group, roles);
+    let mut keys = vec![key(&sim, LAPTOP)];
+    for fresh in [[5; 32], [6; 32]] {
+        let replaced = block_on(sim.devices[LAPTOP].replace_sealing_key(fresh));
+        let (key, outputs) = replaced.expect("replaced");
+        sim.absorb(LAPTOP, outputs);
+        assert!(!keys.contains(&key));
+        keys.push(key);
+    }
+    sim.restart(LAPTOP);
+
+    sim.connect_all();
+    sim.settle();
+    assert!(sim.devices[LAPTOP].reads(group));
+    assert_eq!(
+        read_note(&sim, LAPTOP, group, "plan").as_deref(),
+        Some(NEEDLE)
+    );
+}
+
+/// Nor is it only the first key that's kept.
+#[test]
+fn a_secret_sent_under_any_key_it_has_had_still_opens() {
+    let (mut sim, group) = founded();
+    let replace = |sim: &mut Sim, fresh: [u8; 32]| {
+        let replaced = block_on(sim.devices[LAPTOP].replace_sealing_key(fresh));
+        let (_, outputs) = replaced.expect("replaced");
+        sim.absorb(LAPTOP, outputs);
+    };
+    replace(&mut sim, [5; 32]);
+    sim.write_to(PHONE, group, set(notes(group), "plan", NEEDLE));
+    let roles = roles(&sim);
+    sim.assign(PHONE, group, roles);
+    replace(&mut sim, [6; 32]);
+
+    sim.connect_all();
+    sim.settle();
+    assert!(sim.devices[LAPTOP].reads(group));
+    assert_eq!(
+        read_note(&sim, LAPTOP, group, "plan").as_deref(),
+        Some(NEEDLE)
+    );
 }

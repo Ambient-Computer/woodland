@@ -153,14 +153,17 @@ impl Secret {
 impl Grant {
     /// The secret, if this was made for `identity` and about `about`.
     pub(crate) fn open(&self, identity: &Identity, about: &[u8]) -> Option<Secret> {
-        let mine = identity.sealing();
-        let public = PublicKey::from(&mine).to_bytes();
-        let shared = mine.diffie_hellman(&PublicKey::from(self.ephemeral));
-        let key = derive(
-            "woodland/grant/key",
-            &[shared.as_bytes(), &self.ephemeral, &public],
-        );
-        let secret = decrypt(&key, &[0; 24], about, &self.sealed)?;
+        let opened = |mine: StaticSecret| {
+            let public = PublicKey::from(&mine).to_bytes();
+            let shared = mine.diffie_hellman(&PublicKey::from(self.ephemeral));
+            let key = derive(
+                "woodland/grant/key",
+                &[shared.as_bytes(), &self.ephemeral, &public],
+            );
+
+            decrypt(&key, &[0; 24], about, &self.sealed)
+        };
+        let secret = identity.sealings().find_map(opened)?;
 
         Some(Secret(secret.try_into().ok()?))
     }

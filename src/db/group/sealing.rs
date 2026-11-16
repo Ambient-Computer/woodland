@@ -275,7 +275,6 @@ impl Group {
         };
 
         self.renewing = Some(now.epoch);
-        self.persist(step);
         self.progress(identity, None, step).await?;
 
         Ok(true)

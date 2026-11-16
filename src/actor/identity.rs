@@ -12,6 +12,9 @@ use super::Peer;
 /// [`Database`]: crate::Database
 pub struct Identity {
     keypair: SigningKey,
+    /// What each sealing key since the first was made from, oldest
+    /// first.
+    renewals: Vec<[u8; 32]>,
 }
 
 impl Identity {
@@ -20,6 +23,7 @@ impl Identity {
     pub fn from_secret_key(secret: [u8; 32]) -> Self {
         Self {
             keypair: SigningKey::from_bytes(&secret),
+            renewals: Vec::new(),
         }
     }
 
@@ -41,9 +45,41 @@ impl Identity {
     /// It's worked out from the signing key and can't be worked back,
     /// so the two are separate keys with one thing to keep safe.
     pub(crate) fn sealing(&self) -> x25519_dalek::StaticSecret {
-        let seed = self.keypair.to_bytes();
+        self.sealing_from(self.renewals.last())
+    }
 
-        blake3::derive_key("woodland/sealing key", &seed).into()
+    /// The first sealing key, or the one made from `fresh`. A later
+    /// one takes both the signing key and something the signing key
+    /// doesn't give away, so whoever has only an old sealing key, or
+    /// only what's stored, can't work it out.
+    fn sealing_from(&self, fresh: Option<&[u8; 32]>) -> x25519_dalek::StaticSecret {
+        let seed = self.keypair.to_bytes();
+        match fresh {
+            None => blake3::derive_key("woodland/sealing key", &seed).into(),
+            Some(fresh) => {
+                let seed = [seed, *fresh].concat();
+
+                blake3::derive_key("woodland/sealing key/renewed", &seed).into()
+            }
+        }
+    }
+
+    /// Every sealing key this device has had, latest first. Something
+    /// sent under an old one may only now arrive.
+    pub(crate) fn sealings(&self) -> impl Iterator<Item = x25519_dalek::StaticSecret> + '_ {
+        let renewed = self.renewals.iter().rev().map(Some);
+
+        renewed.chain([None]).map(|fresh| self.sealing_from(fresh))
+    }
+
+    /// What its sealing keys since the first were made from.
+    pub(crate) fn renewals(&self) -> &[[u8; 32]] {
+        &self.renewals
+    }
+
+    /// Replaces the sealing key with one made from `fresh`.
+    pub(crate) fn renew(&mut self, fresh: [u8; 32]) {
+        self.renewals.push(fresh);
     }
 }
 

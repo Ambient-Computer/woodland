@@ -49,6 +49,7 @@ use crate::model::ModelId;
 const FOUNDING: u8 = 1;
 const GROUP: u8 = 2;
 const IDENTITY: u8 = 3;
+const SEALING: u8 = 4;
 
 const PROTOCOL: u8 = 1;
 const COMMITTED: u8 = 2;
@@ -110,6 +111,11 @@ impl Record {
 /// store that's lost takes the key with it.
 pub(crate) fn identity() -> Vec<u8> {
     vec![IDENTITY]
+}
+
+/// What the device's sealing keys since its first were made from.
+pub(crate) fn sealing() -> Vec<u8> {
+    vec![SEALING]
 }
 
 /// Where every group's first checkpoint lives. Scanning it lists the

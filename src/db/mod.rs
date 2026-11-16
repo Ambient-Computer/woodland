@@ -18,6 +18,7 @@ mod message;
 mod outcome;
 mod pending;
 mod proof;
+mod sealed;
 mod step;
 mod succession;
 #[cfg(test)]
@@ -33,7 +34,7 @@ use crate::actor::{Identity, Peer};
 use crate::chain::{Chain, Checkpoint, Electorate, Role};
 use crate::encoding;
 use crate::model::{ColumnId, ModelId, Query};
-use crate::seal::{SealingKey, Secret};
+use crate::seal::Secret;
 use crate::store::{Store, StoreError};
 
 pub use changed::Changed;
@@ -154,7 +155,11 @@ impl<S: Store> Database<S> {
             step.save(keys::identity(), &secret);
         }
 
-        let identity = Identity::from_secret_key(stored.unwrap_or(secret));
+        let mut identity = Identity::from_secret_key(stored.unwrap_or(secret));
+        let renewals = step.load::<Vec<[u8; 32]>>(&keys::sealing()).await?;
+        for fresh in renewals.unwrap_or_default() {
+            identity.renew(fresh);
+        }
         let mut groups = BTreeMap::new();
         let (start, end) = keys::range(keys::foundings());
         for (_, founding) in step.scan(&start, &end).await? {
@@ -185,14 +190,6 @@ impl<S: Store> Database<S> {
         self.identity.public_key()
     }
 
-    /// The key this device is sent a sealed group's secrets under.
-    /// Whoever gives this device a role in one needs it: see
-    /// [`Role::sealed_to`] and [`Role::reader`].
-    #[must_use]
-    pub fn sealing_key(&self) -> SealingKey {
-        SealingKey::of(&self.identity)
-    }
-
     /// The groups this device holds.
     pub fn groups(&self) -> impl Iterator<Item = GroupId> + '_ {
         self.groups.keys().copied()
@@ -209,37 +206,6 @@ impl<S: Store> Database<S> {
         let founding = Checkpoint::founding(seed, Electorate::new([(me, 1)]));
 
         self.hold(Chain::new(founding), None).await
-    }
-
-    /// Starts a sealed group: one whose contents only its contributors
-    /// and readers can read, whoever else carries it. A group is open
-    /// or sealed for good.
-    ///
-    /// Everyone given a role that reads has to be given it with their
-    /// [sealing key]. Witnesses and devices with no role hold a sealed
-    /// group and pass it on without being able to read it.
-    ///
-    /// [sealing key]: Self::sealing_key
-    ///
-    /// # Errors
-    ///
-    /// If the store fails.
-    pub async fn found_sealed(&mut self, seed: [u8; 32]) -> Result<(GroupId, Outputs), Error> {
-        let me = self.identity.peer();
-        let role = Role::contributor(1).sealed_to(self.sealing_key());
-        let (secret, body) = group::found_sealed(&self.identity, seed);
-        let mut founding = Checkpoint::founding(seed, Electorate::of([(me, role)]));
-        founding.body = body;
-
-        self.hold(Chain::new(founding), Some(secret)).await
-    }
-
-    /// Whether this device can read `group`: it's open, or this device
-    /// holds its secret. A device that can't still holds the group,
-    /// and its reads come back empty.
-    #[must_use]
-    pub fn reads(&self, group: GroupId) -> bool {
-        self.groups.get(&group).is_some_and(Group::reads)
     }
 
     /// What another device needs to [join] a group this one holds:
@@ -360,27 +326,6 @@ impl<S: Store> Database<S> {
             .await;
         if !self.guard(asked)? {
             return Err(Error::NotAContributor);
-        }
-
-        self.finish(step).await
-    }
-
-    /// Asks a sealed group to replace its secret with the next
-    /// checkpoint, for the same readers. It's for a secret that may
-    /// have got out: whoever holds the old one reads everything
-    /// written under it, and nothing written after.
-    ///
-    /// # Errors
-    ///
-    /// If this device doesn't hold `group`; if it has no say in it, or
-    /// lacks the secret, which goes for every device if the group is
-    /// open; or the store fails.
-    pub async fn replace_secret(&mut self, group: GroupId) -> Result<Outputs, Error> {
-        let mut step = self.begin()?;
-        let held = self.groups.get_mut(&group).ok_or(Error::UnknownGroup)?;
-        let asked = held.renew(&self.identity, &mut step).await;
-        if !self.guard(asked)? {
-            return Err(Error::Unreadable);
         }
 
         self.finish(step).await

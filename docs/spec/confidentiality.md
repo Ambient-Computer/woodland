@@ -48,6 +48,7 @@ A sealed [group](groups.md) encrypts what its contributors write, so that peers 
 
 - A peer encrypts with a key separate from its signing key, vouched for by its signing key and named in the configuration.
 - A sealed group's configuration names a key for every contributor and reader. Nobody votes for one that does not.
+- A peer keeps the keys it has replaced, and still opens what was sent under them.
 - Replacing a peer's encryption key is a configuration change, and the only way a compromised device recovers without a new identity.
 - A listed peer that did not receive a secret, by fault or malice, is given it by any peer that holds it. The configuration is the grant; delivery is only delivery.
 
