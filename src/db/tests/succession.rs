@@ -139,10 +139,11 @@ fn a_large_state_is_brought_over_a_part_at_a_time() {
     assert_eq!(read.as_deref(), Some("changed"));
 }
 
-/// The founding names one checkpoint. If the old group commits another
-/// before its state is brought over, there's nothing to bring.
+/// The founding names one checkpoint, and bringing its state over
+/// takes a while. The old group commits nothing more on this device
+/// until that's done, through a restart, and then carries on.
 #[test]
-fn a_successor_of_a_group_that_moved_on_is_left_empty() {
+fn the_old_group_waits_while_its_state_is_brought_over() {
     let (mut sim, old) = Sim::group(1, 1);
     let mut transaction = Transaction::new();
     for key in 0..300 {
@@ -155,15 +156,24 @@ fn a_successor_of_a_group_that_moved_on_is_left_empty() {
     let (new, outputs) = block_on(sim.devices[PHONE].succeed(old, [9; 32])).expect("founded");
     sim.absorb(PHONE, outputs);
     sim.write_to(PHONE, old, set(notes(old), "000", "changed"));
-    for _ in 0..8 {
+    for _ in 0..4 {
         sim.tick(PHONE);
+    }
+    sim.restart(PHONE);
+    for _ in 0..4 {
+        sim.tick(PHONE);
+    }
+    let waiting = sim.committed(PHONE, old, notes(old), "000");
+    assert_eq!(waiting.as_deref(), Some("value"));
+    assert_eq!(sim.committed(PHONE, new, notes(old), "299"), None);
+    sim.settle();
+
+    for key in ["000", "001", "299"] {
+        let brought = sim.committed(PHONE, new, notes(old), key);
+        assert_eq!(brought.as_deref(), Some("value"), "key {key}");
     }
     let changed = sim.committed(PHONE, old, notes(old), "000");
     assert_eq!(changed.as_deref(), Some("changed"));
-    sim.settle();
-
-    assert_eq!(sim.committed(PHONE, new, notes(old), "001"), None);
-    assert_eq!(sim.committed(PHONE, new, notes(old), "000"), None);
     assert!(!sim.devices[PHONE].groups[&new].is_busy());
 }
 

@@ -358,8 +358,9 @@ impl Group {
     /// Commits what the next decided checkpoint covers, once all of it
     /// is held. Returns whether it did.
     pub(super) async fn fold<V: View>(&mut self, step: &mut Step<V>) -> Result<bool, StoreError> {
-        // Committed state is in pieces until a snapshot is in place.
-        if self.installing.is_some() {
+        // Committed state is in pieces until a snapshot is in place,
+        // and stays as it is while a successor copies it.
+        if self.installing.is_some() || self.pinned.is_some() {
             return Ok(false);
         }
 

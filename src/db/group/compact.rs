@@ -244,7 +244,7 @@ impl Group {
         // A group that carries on from another starts from state, which
         // is the one snapshot of a checkpoint this device is already at.
         let news = piece.height > self.folded || self.is_unfounded();
-        if !news || self.installing.is_some() {
+        if !news || self.installing.is_some() || self.pinned.is_some() {
             return Ok(());
         }
         let piece = match self.open_piece(piece) {

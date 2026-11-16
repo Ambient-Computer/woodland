@@ -177,14 +177,16 @@ impl<S: Store> Database<S> {
         }
 
         store.apply(step.finish().batch).await?;
-
-        Ok(Self {
+        let mut database = Self {
             store,
             identity,
             groups,
             peers: BTreeSet::new(),
             broken: false,
-        })
+        };
+        database.pin();
+
+        Ok(database)
     }
 
     /// The key peers know this device by.
@@ -760,6 +762,7 @@ impl<S: Store> Database<S> {
         let finished = step.finish();
         let applied = self.store.apply(finished.batch).await;
         self.guard(applied)?;
+        self.pin();
         let sends = finished.sends.into_iter();
         let me = self.identity.peer();
         let mine = |told: &step::Told| told.author == me;

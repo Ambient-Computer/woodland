@@ -84,6 +84,10 @@ pub(crate) struct Group {
     origin: Origin,
     /// Where it has got to, as a peer being sent a snapshot.
     heir: Remote,
+    /// The group on this device that's still bringing its first state
+    /// over from this one. Until it has, nothing more is committed
+    /// here: the state it names has to stay where it is.
+    pinned: Option<GroupId>,
     /// The heights of the decided checkpoints that are in storage.
     stored: BTreeSet<u64>,
     /// Proposed checkpoints this device has checked against its own
@@ -222,6 +226,7 @@ impl Group {
             indexes: BTreeMap::new(),
             origin: Origin::Whole,
             heir: Remote::default(),
+            pinned: None,
             stored: BTreeSet::new(),
             sound: BTreeSet::new(),
             fore: Foresight::default(),

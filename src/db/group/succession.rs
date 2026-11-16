@@ -132,6 +132,12 @@ impl Group {
         self.origin == Origin::Inherited
     }
 
+    /// Holds this group's committed state where it is while `heir`
+    /// copies it, or lets it go on.
+    pub(crate) fn pin(&mut self, heir: Option<GroupId>) {
+        self.pinned = heir;
+    }
+
     /// Has the group take its first state from the one it carries on
     /// from, which this device holds.
     pub(crate) fn inherit<V: View>(&mut self, step: &mut Step<V>) {

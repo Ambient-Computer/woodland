@@ -1,5 +1,7 @@
 //! Founding a group that carries on from another.
 
+use std::collections::BTreeMap;
+
 use crate::chain::{Chain, Checkpoint, Electorate, Role};
 use crate::store::Store;
 
@@ -57,6 +59,7 @@ impl<S: Store> Database<S> {
             group.inherit(&mut step);
         }
         let begun = self.finish(step).await?;
+        self.pin();
 
         Ok((
             id,
@@ -99,5 +102,17 @@ impl<S: Store> Database<S> {
         }
 
         Ok(())
+    }
+
+    /// Has each group that another is still copying its first state
+    /// from stay as it is, and lets every other group go on. The copy
+    /// takes several steps, and is of one checkpoint's state.
+    pub(super) fn pin(&mut self) {
+        let heirs = self.groups.iter().filter(|(_, it)| it.is_inheriting());
+        let copied = heirs.filter_map(|(&heir, it)| Some((it.succeeds()?.group, heir)));
+        let copied: BTreeMap<GroupId, GroupId> = copied.collect();
+        for (id, group) in &mut self.groups {
+            group.pin(copied.get(id).copied());
+        }
     }
 }
