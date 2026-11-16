@@ -31,7 +31,7 @@ use crate::store::{StoreError, View};
 use super::proof::Proof;
 use super::step::Step;
 use clock::{Clock, Kept};
-use compact::Staging;
+use compact::{Installing, Staging};
 pub(crate) use interest::Refused;
 pub(crate) use sealing::Handed;
 pub(crate) use sealing::found as found_sealed;
@@ -77,6 +77,9 @@ pub(crate) struct Group {
     /// The height of a checkpoint that's partly committed. Until the
     /// rest is, committed state is the state of no checkpoint.
     folding: Option<u64>,
+    /// A whole snapshot that's partly in place. Until the rest is,
+    /// committed state is some of each.
+    installing: Option<Installing>,
     /// Whether this device is getting back checkpoints it shed.
     mending: bool,
     /// What this device can read of the group.
@@ -100,6 +103,7 @@ struct Meta {
     interest: Option<BTreeSet<ClockId>>,
     passed: bool,
     folding: Option<u64>,
+    installing: Option<Installing>,
     mending: bool,
     keys: Keyring,
     carrying: Option<u64>,
@@ -167,6 +171,7 @@ impl Group {
             interest: None,
             passed: false,
             folding: None,
+            installing: None,
             mending: false,
             keys,
             carrying: None,
@@ -215,6 +220,7 @@ impl Group {
         group.interest = meta.interest;
         group.passed = meta.passed;
         group.folding = meta.folding;
+        group.installing = meta.installing;
         group.mending = meta.mending;
         group.keys = meta.keys;
         group.carrying = meta.carrying;
@@ -238,7 +244,9 @@ impl Group {
     /// here.
     #[cfg(test)]
     pub(crate) fn reached(&self) -> u64 {
-        self.folding.unwrap_or(self.folded)
+        let installing = self.installing.as_ref().map(|it| it.height);
+
+        self.folding.or(installing).unwrap_or(self.folded)
     }
 
     /// Every change waiting to be committed, clock by clock.
@@ -314,6 +322,7 @@ impl Group {
             interest: self.interest.clone(),
             passed: self.passed,
             folding: self.folding,
+            installing: self.installing.clone(),
             mending: self.mending,
             keys: self.keys.clone(),
             carrying: self.carrying,
@@ -403,7 +412,7 @@ impl Group {
     ///
     /// [`resume`]: Self::resume
     pub(crate) fn is_busy(&self) -> bool {
-        self.folding.is_some()
+        self.folding.is_some() || self.installing.is_some()
     }
 
     /// Carries on with what an earlier step left unfinished.
@@ -444,6 +453,7 @@ impl Group {
         owed: Option<Peer>,
         step: &mut Step<V>,
     ) -> Result<(), StoreError> {
+        self.install(step).await?;
         loop {
             self.unlock(identity, step).await?;
             self.vet(identity, step).await?;

@@ -1,6 +1,7 @@
 use super::*;
 
 mod clocks;
+mod install;
 mod restore;
 
 /// Fills a group's notes, so its state takes several pieces to send.

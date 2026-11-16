@@ -91,7 +91,7 @@ impl Group {
             (Some(_), None) => true,
             (Some(old), Some(new)) => !new.is_subset(old),
         };
-        if wider && self.passed {
+        if wider && (self.passed || self.passing()) {
             return Ok(Err(Refused::Passed));
         }
 
@@ -104,11 +104,10 @@ impl Group {
 
         // Peers hear with the next summary, and send less.
         step.changed(Changed::Everything { group: self.id });
-        self.staging = None;
-        let (start, end) = keys::range(keys::staged(self.id));
-        for (key, _) in step.scan(&start, &end).await? {
-            step.delete(key);
+        if self.installing.is_none() {
+            self.unstage(step).await?;
         }
+        self.retract(step).await?;
         self.progress(identity, None, step).await?;
         let peers: Vec<_> = self.remotes.keys().copied().collect();
         for peer in peers {

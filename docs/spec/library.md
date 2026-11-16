@@ -19,7 +19,9 @@ Woodland is a library with a deterministic core. The application owns the proces
 - A step does bounded work. Anything long, such as catching up, settling a large checkpoint, or evaluating a wide [commit operation](commit-operations.md), continues across steps.
 - A step that leaves work which waits for nothing says so in its outputs, and the application steps the core again. The core never steps itself.
 - A [checkpoint](checkpoints.md) committed across several steps is committed in [timeline](log.md) order. Between those steps a committed [read](reads.md) shows part of it, all of which is final.
-- Until the last of it is committed, the device has the state of no checkpoint: it neither [compacts](compaction.md) nor serves a snapshot.
+- A snapshot, once whole and verified, is put in place across several steps in key order. Between those steps a committed read shows each value as of the snapshot's checkpoint or as of the one the device was at.
+- Until the last of either is done, the device has the state of no checkpoint: it neither [compacts](compaction.md) nor serves a snapshot, and commits nothing further.
+- A device partway through putting a snapshot in place can stop [wanting](sync.md) a clock, but cannot start wanting one the snapshot has passed over.
 - A device may stop between any two steps and resume from storage alone.
 
 ## Storage is awaited, not requested

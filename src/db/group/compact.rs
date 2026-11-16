@@ -44,6 +44,20 @@ pub(super) struct Staging {
     pub(super) sums: BTreeMap<ClockId, Vec<u8>>,
 }
 
+/// How many values a step moves into place.
+const MOVE: usize = if cfg!(test) { 5 } else { 256 };
+
+/// A whole, verified snapshot, on its way to being this device's
+/// committed state.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) struct Installing {
+    pub(super) height: u64,
+    dropped: BTreeSet<ModelId>,
+    sums: BTreeMap<ClockId, Vec<u8>>,
+    /// Up to this key, committed state is the snapshot's.
+    after: Option<Vec<u8>>,
+}
+
 /// A snapshot on its way out to one peer.
 #[derive(Debug)]
 pub(super) struct Sending {
@@ -74,7 +88,7 @@ impl Group {
 
         // Partway through a checkpoint, what's committed is the state
         // of no checkpoint, and couldn't stand in for the history.
-        if self.folding.is_some() {
+        if self.is_busy() {
             return Ok(());
         }
 
@@ -114,7 +128,7 @@ impl Group {
         // A device that holds only some clocks has the whole state of
         // nothing but those. Partway through a checkpoint it has the
         // state of none.
-        if self.folding.is_some() || !self.serves(remote) {
+        if self.is_busy() || !self.serves(remote) {
             return Ok(None);
         }
 
@@ -176,7 +190,7 @@ impl Group {
         piece: Piece,
         step: &mut Step<V>,
     ) -> Result<(), StoreError> {
-        if piece.height <= self.folded {
+        if piece.height <= self.folded || self.installing.is_some() {
             return Ok(());
         }
         let piece = match self.open_piece(piece) {
@@ -248,8 +262,19 @@ impl Group {
             return self.unstage(step).await;
         };
 
-        self.install(staging.height, &covers, &dropped, &sums, step)
-            .await
+        // It's all here and it's right. Moving it into place is work
+        // for this step and the ones after.
+        drop(covers);
+        let bytes = |(&clock, sum): (&ClockId, &Accumulator)| (clock, sum.to_bytes());
+        self.installing = Some(Installing {
+            height: staging.height,
+            dropped,
+            sums: sums.iter().map(bytes).collect(),
+            after: None,
+        });
+        self.staging = Some(staging);
+
+        Ok(())
     }
 
     /// Where a snapshot on its way in stands once `piece` is taken, if
@@ -294,47 +319,121 @@ impl Group {
         Ok(())
     }
 
-    /// Makes a verified snapshot this device's committed state. Whatever
-    /// it holds that the snapshot's checkpoint covers is already in
-    /// there; whatever it doesn't is judged again on top.
-    async fn install<V: View>(
-        &mut self,
-        height: u64,
-        covers: &Covers,
-        dropped: &BTreeSet<ModelId>,
-        sums: &BTreeMap<ClockId, Accumulator>,
-        step: &mut Step<V>,
-    ) -> Result<(), StoreError> {
-        let (start, end) = keys::range(keys::committed(self.id));
-        for (key, _) in step.scan(&start, &end).await? {
-            step.delete(key);
-        }
+    /// Moves some more of a verified snapshot into place, in key order:
+    /// what the snapshot has replaces what was committed, and what it
+    /// hasn't goes. Once it's all moved, the snapshot is this device's
+    /// committed state. Whatever the device holds that the snapshot's
+    /// checkpoint covers is already in there; whatever it doesn't is
+    /// judged again on top.
+    pub(super) async fn install<V: View>(&mut self, step: &mut Step<V>) -> Result<(), StoreError> {
+        let Some(mut installing) = self.installing.take() else {
+            return Ok(());
+        };
 
+        let committed = keys::committed(self.id);
+        let (first, end) = keys::range(committed.clone());
+        let resume = |after: &Vec<u8>| keys::after(&[&committed[..], after].concat());
+        let from = installing.after.as_ref().map_or(first, resume);
+        let old = step.scan_page(&from, &end, MOVE).await?;
         let staged = keys::staged(self.id);
         let (start, end) = keys::range(staged.clone());
-        for (key, value) in step.scan(&start, &end).await? {
-            let committed = [&keys::committed(self.id)[..], &key[staged.len()..]].concat();
-            step.put(committed, value);
+        let new = step.scan_page(&start, &end, MOVE).await?;
+
+        // A full page may not be the last. Nothing past the end of one
+        // is known, so this step goes no further than the nearer end.
+        let last = |page: &[(Vec<u8>, Vec<u8>)], prefix: &[u8]| {
+            let last = page.last().filter(|_| page.len() == MOVE);
+
+            last.map(|(key, _)| key[prefix.len()..].to_vec())
+        };
+        let reach = match (last(&old, &committed), last(&new, &staged)) {
+            (Some(old), Some(new)) => Some(old.min(new)),
+            (old, new) => old.or(new),
+        };
+        let within = |key: &[u8]| reach.as_ref().is_none_or(|reach| key <= &reach[..]);
+        for (key, _) in old {
+            if within(&key[committed.len()..]) {
+                step.delete(key);
+            }
+        }
+        for (key, value) in new {
+            let rest = &key[staged.len()..];
+            if !within(rest) {
+                continue;
+            }
+
+            // What's wanted can narrow while this is under way.
+            let clock = rest.first_chunk::<32>().map(|it| ClockId::from_bytes(*it));
+            if clock.is_some_and(|clock| self.wants(clock)) {
+                step.put([&committed[..], rest].concat(), value);
+            }
             step.delete(key);
         }
+        step.changed(Changed::Everything { group: self.id });
 
-        let nothing = Accumulator::default();
+        if reach.is_some() {
+            installing.after = reach;
+            self.installing = Some(installing);
+            return Ok(());
+        }
+
+        let covers = self.chain.at(installing.height).and_then(covers_of);
+        let covers = covers.unwrap_or_default();
         for (&id, covered) in &covers.clocks {
             if !self.wants(id) {
                 self.passed |= !covered.frontier.is_empty();
                 continue;
             }
 
-            let sum = sums.get(&id).unwrap_or(&nothing);
-            step.put(keys::state(self.id, id), sum.to_bytes());
-            let theirs = dropped.iter().filter(|model| model.clock() == id);
+            let sum = installing.sums.get(&id).cloned();
+            let sum = sum.unwrap_or_else(|| Accumulator::default().to_bytes());
+            step.put(keys::state(self.id, id), sum);
+            let theirs = installing.dropped.iter();
+            let theirs = theirs.filter(|model| model.clock() == id);
             let theirs = theirs.copied().collect();
             self.clock(id)
                 .adopt(&covered.frontier, theirs, step)
                 .await?;
         }
 
-        self.caught_up(height, step);
+        // Whoever sent it is waiting to hear, and has more to send.
+        self.caught_up(installing.height, step);
+        self.said = true;
+
+        Ok(())
+    }
+
+    /// The clocks a snapshot being moved into place has something of,
+    /// that this device doesn't want.
+    fn unwanted(&self) -> Vec<ClockId> {
+        let installing = self.installing.as_ref();
+        let covers = installing.and_then(|it| self.chain.at(it.height));
+        let covers = covers.and_then(covers_of).unwrap_or_default();
+        let passed = |(id, covered): &(&ClockId, &super::commit::Covered)| {
+            !self.wants(**id) && !covered.frontier.is_empty()
+        };
+
+        let unwanted = covers.clocks.iter().filter(passed);
+        unwanted.map(|(id, _)| *id).collect()
+    }
+
+    /// Whether a snapshot being moved into place has anything of a
+    /// clock this device doesn't want. If so, there's no starting to
+    /// want it.
+    pub(super) fn passing(&self) -> bool {
+        !self.unwanted().is_empty()
+    }
+
+    /// Takes back what a snapshot has put in place of clocks no longer
+    /// wanted. Such a clock isn't held until the whole snapshot is in.
+    pub(super) async fn retract<V: View>(&self, step: &mut Step<V>) -> Result<(), StoreError> {
+        for clock in self.unwanted() {
+            let prefix = [&keys::committed(self.id)[..], clock.as_bytes()].concat();
+            let (start, end) = keys::range(prefix);
+            for (key, _) in step.scan(&start, &end).await? {
+                step.delete(key);
+            }
+        }
 
         Ok(())
     }
@@ -345,6 +444,7 @@ impl Group {
         self.folded = height;
         self.base = height;
         self.folding = None;
+        self.installing = None;
         self.sound.clear();
         self.staging = None;
 
