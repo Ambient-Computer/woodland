@@ -22,6 +22,7 @@ A model is one kind of data inside a [clock](groups.md): a namespace of keys and
 - A table: see [tables](tables.md).
 - A map where the last write to a key is what is read.
 - A map where the first write to a key holds it: names, locks, anything exactly one writer should get.
+- A map of ordered lists, a [merging kind](#merging-kinds): items are inserted, removed, and moved.
 - Any map may be restricted to [committed reads](reads.md). Readers then never see a value that could be displaced.
 
 ## Merging kinds
@@ -30,6 +31,9 @@ A model is one kind of data inside a [clock](groups.md): a namespace of keys and
 - Such a model also declares how concurrent writes to one key combine, as a pure function of those writes.
 - That function is held to the same determinism as a [commit operation](commit-operations.md), and its meaning is fixed once released.
 - A merging model still commits and compacts by the same rules. Finality lets it discard the metadata merging needed.
+- Writes combine in [timeline](log.md) order, so what is read before a write commits is what it commits to if nothing earlier arrives.
+- A merge is never [pruned](transactions.md) for what a concurrent merge did. An edit placed beside an item that is gone lands by its other neighbour, or at the end.
+- An item moved concurrently is in one place: where the later move put it.
 
 ## Extension
 

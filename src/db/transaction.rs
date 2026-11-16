@@ -31,6 +31,17 @@ impl Transaction {
         clocks.all(|clock| clock == first).then_some(first)
     }
 
+    /// Adds an operation.
+    pub(crate) fn with(mut self, operation: Operation) -> Self {
+        self.operations.push(operation);
+        self
+    }
+
+    /// How many operations it has.
+    pub(crate) fn len(&self) -> usize {
+        self.operations.len()
+    }
+
     /// Sets `key` in a key-value or threshold model. Naming a new model
     /// creates it.
     pub fn set(

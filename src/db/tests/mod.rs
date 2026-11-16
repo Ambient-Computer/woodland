@@ -18,6 +18,7 @@ mod membership;
 mod random;
 mod roles;
 mod sealed;
+mod sequences;
 mod single;
 mod sync;
 mod tables;

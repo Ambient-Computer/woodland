@@ -78,12 +78,14 @@ mod allowance;
 mod claims;
 mod kv;
 pub(crate) mod query;
+mod sequence;
 pub(crate) mod table;
 
 use serde::{Deserialize, Serialize};
 
 pub use allowance::{Allowance, Allowances};
 pub use query::Query;
+pub use sequence::Sequence;
 pub use table::{ColumnId, Filter, Row, Table, Value};
 
 use crate::actor::Peer;
@@ -106,6 +108,7 @@ pub(crate) enum Change {
     /// Boxed because it names devices by their whole public keys.
     Allowance(Box<allowance::Operation>),
     Table(table::Operation),
+    Sequence(sequence::Operation),
     /// A change to a table that's worked out when it's committed, and
     /// does nothing until then.
     Deferred(table::Deferred),
@@ -221,12 +224,12 @@ pub(crate) enum Effect {
 /// one did.
 #[cfg(not(test))]
 pub(crate) fn vocabulary() -> u8 {
-    Kind::Allowances as u8
+    Kind::Sequence as u8
 }
 
 #[cfg(test)]
 thread_local! {
-    static VOCABULARY: std::cell::Cell<u8> = const { std::cell::Cell::new(Kind::Allowances as u8) };
+    static VOCABULARY: std::cell::Cell<u8> = const { std::cell::Cell::new(Kind::Sequence as u8) };
 }
 
 #[cfg(test)]
@@ -238,9 +241,15 @@ pub(crate) fn vocabulary() -> u8 {
 /// allowances were added, or as the latest.
 #[cfg(test)]
 pub(crate) fn predate(old: bool) {
-    let latest = if old { Kind::Table } else { Kind::Allowances };
+    let latest = if old { Kind::Table } else { Kind::Sequence };
 
     VOCABULARY.set(latest as u8);
+}
+
+/// What a key of a merging model holds once `write` is combined with
+/// what it held.
+pub(crate) fn combine(held: Option<&[u8]>, write: &[u8]) -> Vec<u8> {
+    sequence::combine(held, write)
 }
 
 /// The kinds of model there are. A model's kind is part of its ID.
@@ -251,6 +260,7 @@ pub(crate) enum Kind {
     Threshold = 3,
     Table = 4,
     Allowances = 5,
+    Sequence = 6,
 }
 
 impl Kind {
@@ -258,6 +268,12 @@ impl Kind {
     /// aren't kept as versions at all: they wait in the log.
     pub(crate) fn shows_uncommitted(self) -> bool {
         !matches!(self, Self::Threshold)
+    }
+
+    /// Whether a key holds every write to it combined, rather than
+    /// the last.
+    pub(crate) fn merges(self) -> bool {
+        matches!(self, Self::Sequence)
     }
 }
 
@@ -306,8 +322,21 @@ impl Operation {
         match &mut self.change {
             Change::Table(operation) => operation.seal(author, seq, index),
             Change::Allowance(operation) => operation.seal(author, seq, index),
+            Change::Sequence(operation) => operation.seal(author, seq, index),
             _ => {}
         }
+    }
+
+    pub(crate) fn sequence(model: ModelId, key: Vec<u8>, edit: sequence::Edit) -> Self {
+        let change = Change::Sequence(sequence::Operation::new(key, edit));
+
+        Self { model, change }
+    }
+
+    /// Whether what the operation writes is combined with what its
+    /// key holds, rather than taking its place.
+    pub(crate) fn merges(&self) -> bool {
+        matches!(self.change, Change::Sequence(_))
     }
 
     pub(crate) fn allowance(model: ModelId, operation: allowance::Operation) -> Self {
@@ -375,6 +404,7 @@ impl Operation {
         match (&self.change, self.model.kind()) {
             (Change::Kv(_), Some(Kind::Kv | Kind::Threshold))
             | (Change::Claims(_), Some(Kind::Claims))
+            | (Change::Sequence(_), Some(Kind::Sequence))
             | (Change::Expect { .. } | Change::Drop, Some(_)) => true,
             (Change::Allowance(operation), Some(Kind::Allowances)) => operation.belongs(),
             (Change::Table(operation), Some(Kind::Table)) => operation.belongs(),
@@ -384,6 +414,7 @@ impl Operation {
                 | Change::Claims(_)
                 | Change::Allowance(_)
                 | Change::Table(_)
+                | Change::Sequence(_)
                 | Change::Deferred(_)
                 | Change::Expect { .. }
                 | Change::Drop,
@@ -421,6 +452,7 @@ impl Operation {
             Change::Claims(operation) => vec![operation.write()],
             Change::Allowance(operation) => operation.writes(),
             Change::Table(operation) => operation.writes(),
+            Change::Sequence(operation) => vec![operation.write()],
             Change::Expect { .. } | Change::Drop | Change::Deferred(_) => Vec::new(),
         };
 
@@ -442,7 +474,7 @@ impl Operation {
     /// transaction to happen.
     pub(crate) fn requires(&self) -> Vec<(Vec<u8>, Requirement)> {
         match &self.change {
-            Change::Kv(_) | Change::Drop | Change::Deferred(_) => Vec::new(),
+            Change::Kv(_) | Change::Sequence(_) | Change::Drop | Change::Deferred(_) => Vec::new(),
             Change::Claims(operation) => vec![operation.requires()],
             Change::Expect { key, requirement } => vec![(key.clone(), *requirement)],
             Change::Allowance(operation) => operation.requires(),
@@ -516,6 +548,16 @@ impl ModelId {
         Self::new(Kind::Allowances, clock.into(), nonce)
     }
 
+    /// Sequences: ordered lists that merge. What two devices put into
+    /// one list while apart is all there when they meet, where each
+    /// put it. See [`Transaction::insert_at`].
+    ///
+    /// [`Transaction::insert_at`]: crate::Transaction::insert_at
+    #[must_use]
+    pub fn sequence(clock: impl Into<ClockId>, nonce: [u8; 32]) -> Self {
+        Self::new(Kind::Sequence, clock.into(), nonce)
+    }
+
     /// A table: rows of typed cells, in columns that are themselves
     /// part of the data. It exists once a transaction [creates] it.
     ///
@@ -533,6 +575,7 @@ impl ModelId {
             Kind::Threshold,
             Kind::Table,
             Kind::Allowances,
+            Kind::Sequence,
         ]
         .into_iter()
         .find(|&kind| kind as u8 == self.id[0] && kind as u8 <= vocabulary())

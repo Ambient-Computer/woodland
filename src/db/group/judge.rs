@@ -124,14 +124,27 @@ pub(super) fn show<V>(id: GroupId, stamp: Stamp, operations: &[Operation], step:
 where
     V: View,
 {
+    // A merging model's key shows everything the transaction did to
+    // it. Any other shows the last thing.
+    let mut merged: BTreeMap<Place, Vec<Vec<u8>>> = BTreeMap::new();
     for operation in operations {
         let shown = operation.model.kind().is_some_and(Kind::shows_uncommitted);
         for write in operation.writes().into_iter().filter(|_| shown) {
+            if operation.merges() {
+                let writes = merged.entry((write.model, write.key)).or_default();
+                writes.extend(write.value);
+                continue;
+            }
+
             step.save(
                 keys::version(id, write.model, &write.key, stamp),
                 &write.value,
             );
         }
+    }
+    for ((model, key), writes) in merged {
+        let writes = Some(crate::encoding::encode(&writes));
+        step.save(keys::version(id, model, &key, stamp), &writes);
     }
 }
 
@@ -160,7 +173,17 @@ pub(super) async fn commit<V: View>(
     for operation in operations {
         let model = operation.model;
         for write in operation.writes() {
-            self::write(id, model, &write.key, write.value, state, step).await?;
+            let value = match write.value {
+                Some(value) if operation.merges() => {
+                    let committed = keys::committed_value(id, model, &write.key);
+                    let held = step.get(&committed).await?;
+
+                    Some(crate::model::combine(held.as_deref(), &value))
+                }
+
+                value => value,
+            };
+            self::write(id, model, &write.key, value, state, step).await?;
         }
 
         if operation.drops() {

@@ -30,7 +30,7 @@
 use std::ops::{Bound, RangeBounds};
 
 use super::table::{self, ColumnId, Value};
-use super::{Kind, ModelId, kv};
+use super::{Kind, ModelId, kv, sequence};
 use crate::db::keys::{self, Record};
 use crate::db::{Changed, GroupId};
 use crate::encoding;
@@ -222,6 +222,10 @@ impl Query {
                 }
                 _ => {}
             }
+        }
+
+        if self.model.kind().is_some_and(Kind::merges) {
+            return sequence::current(committed, versions).into_iter().collect();
         }
 
         kv::current(committed, versions).into_iter().collect()
