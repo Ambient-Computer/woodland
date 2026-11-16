@@ -34,11 +34,17 @@
 //! store restored from a backup is no different. It has forgotten
 //! everything since the copy was taken.
 
+#[cfg(test)]
+mod contract;
+#[cfg(feature = "file")]
+mod file;
 mod memory;
 
 use std::error::Error;
 use std::fmt;
 
+#[cfg(feature = "file")]
+pub use file::{FileStore, FileView};
 pub use memory::{MemoryStore, MemoryView};
 
 /// One change within a batch.
