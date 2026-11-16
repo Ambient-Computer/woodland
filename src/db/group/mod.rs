@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 use crate::actor::{Identity, Peer, Signed, verify_all};
 use crate::chain::{Certificate, Chain, Checkpoint, Digest, Electorate, Saved};
 use crate::db::{ClockId, GroupId, Pending, keys};
+use crate::encoding;
 use crate::model::Operation;
 use crate::seal::Keyring;
 use crate::store::{StoreError, View};
@@ -83,6 +84,8 @@ pub(crate) struct Group {
     origin: Origin,
     /// Where it has got to, as a peer being sent a snapshot.
     heir: Remote,
+    /// The heights of the decided checkpoints that are in storage.
+    stored: BTreeSet<u64>,
     /// Proposed checkpoints this device has checked against its own
     /// copy, and would vote for.
     sound: BTreeSet<Digest>,
@@ -214,6 +217,7 @@ impl Group {
             indexes: BTreeMap::new(),
             origin: Origin::Whole,
             heir: Remote::default(),
+            stored: BTreeSet::new(),
             sound: BTreeSet::new(),
             fore: Foresight::default(),
             #[cfg(test)]
@@ -269,7 +273,15 @@ impl Group {
             return Ok(None);
         };
 
-        let mut group = Self::new(id, Chain::restore(saved));
+        let (start, end) = keys::range(keys::links(id));
+        let mut links = Vec::new();
+        for (_, link) in step.scan(&start, &end).await? {
+            let link = encoding::decode::<Certificate>(&link);
+            links.push(link.ok_or_else(|| StoreError::new("a stored checkpoint is unreadable"))?);
+        }
+        let stored = links.iter().map(|link| link.checkpoint.height).collect();
+        let mut group = Self::new(id, Chain::restore(saved, links));
+        group.stored = stored;
         group.folded = meta.folded;
         group.base = meta.base;
         group.staging = meta.staging;
@@ -394,7 +406,7 @@ impl Group {
         self.proofs.values().any(conflict)
     }
 
-    fn persist<V: View>(&self, step: &mut Step<V>) {
+    fn persist<V: View>(&mut self, step: &mut Step<V>) {
         let clocks = self.clocks.iter();
         let meta = Meta {
             clocks: clocks.map(|(&id, clock)| (id, clock.kept())).collect(),
@@ -419,7 +431,24 @@ impl Group {
         step.save(keys::meta(self.id), &meta);
         if self.said {
             step.save(keys::chain(self.id), &self.chain.save());
+            self.store_links(step);
         }
+    }
+
+    /// Brings the decided checkpoints in storage in line with those
+    /// held: the new ones in, and those shed out.
+    fn store_links<V: View>(&mut self, step: &mut Step<V>) {
+        let held = self.chain.links().iter();
+        let held: BTreeSet<u64> = held.map(|link| link.checkpoint.height).collect();
+        for link in self.chain.links() {
+            if !self.stored.contains(&link.checkpoint.height) {
+                step.save(keys::link(self.id, link.checkpoint.height), link);
+            }
+        }
+        for &height in self.stored.difference(&held) {
+            step.delete(keys::link(self.id, height));
+        }
+        self.stored = held;
     }
 
     /// Appends an entry to this device's own chain in `clock`, if it

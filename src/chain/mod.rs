@@ -183,6 +183,15 @@ impl Chain {
         sparse.decided
     }
 
+    /// Every decided checkpoint held, in order, with who voted for it.
+    /// They're kept apart from [what's saved] of the rest, so that
+    /// deciding one more doesn't mean writing them all again.
+    ///
+    /// [what's saved]: Self::save
+    pub(crate) fn links(&self) -> &[Certificate] {
+        &self.decided
+    }
+
     /// The latest checkpoint this device knows to be final.
     pub(crate) fn tip(&self) -> &Checkpoint {
         self.decided
@@ -272,7 +281,8 @@ impl Chain {
 
     /// Everything worth keeping across a restart.
     pub(crate) fn save(&self) -> Saved {
-        let gossip = self.gossip(0);
+        // Decided checkpoints are kept one by one: see `links`.
+        let gossip = self.gossip(u64::MAX);
 
         Saved {
             founding: self.founding.clone(),
@@ -285,23 +295,23 @@ impl Chain {
 
     /// Picks up from what was saved. It was all checked before it was
     /// stored.
-    pub(crate) fn restore(saved: Saved) -> Self {
+    pub(crate) fn restore(saved: Saved, links: Vec<Certificate>) -> Self {
         fn trusted<T>(stored: Vec<Signed<T>>) -> BTreeMap<Peer, Verified<T>> {
             let stored = stored.into_iter().map(Verified::trust_stored);
 
             stored.map(|it| (it.author(), it)).collect()
         }
         let Gossip {
-            decided,
             prepares,
             promises,
             proposals,
             votes,
+            ..
         } = saved.gossip;
 
         Self {
             founding: saved.founding,
-            decided,
+            decided: links,
             evidence: Vec::new(),
             slot: Slot {
                 promised: saved.promised,

@@ -4,7 +4,8 @@
 //! ```text
 //! [IDENTITY]                                    → the device's secret key
 //! [FOUNDING][group]                             → the group's first checkpoint
-//! [GROUP][group][PROTOCOL][CHAIN]               → the checkpoint chain
+//! [GROUP][group][PROTOCOL][CHAIN]               → where the checkpoint chain began, and what's undecided
+//! [GROUP][group][PROTOCOL][LINK][height]        → a decided checkpoint, and who voted for it
 //! [GROUP][group][PROTOCOL][META]                → what's held, what's committed
 //! [GROUP][group][PROTOCOL][LOG][clock][author][seq] → an entry
 //! [GROUP][group][PROTOCOL][PROOF][author]     → proof that the author forked
@@ -67,6 +68,7 @@ const META: u8 = 2;
 const LOG: u8 = 3;
 const STATE: u8 = 4;
 const PROOF: u8 = 5;
+const LINK: u8 = 6;
 
 /// A stored key of model data, parsed back into what it names.
 #[derive(Debug, PartialEq, Eq)]
@@ -149,6 +151,16 @@ pub(crate) fn meta(id: GroupId) -> Vec<u8> {
 /// The running sum of everything committed in a clock.
 pub(crate) fn state(id: GroupId, clock: ClockId) -> Vec<u8> {
     [protocol(id), vec![STATE], clock.as_bytes().to_vec()].concat()
+}
+
+/// Every decided checkpoint held, in order.
+pub(crate) fn links(id: GroupId) -> Vec<u8> {
+    [protocol(id), vec![LINK]].concat()
+}
+
+/// The checkpoint decided at `height`.
+pub(crate) fn link(id: GroupId, height: u64) -> Vec<u8> {
+    [links(id), height.to_be_bytes().to_vec()].concat()
 }
 
 /// Every fork proof held.

@@ -17,6 +17,9 @@ pub struct MemoryStore {
     /// Shared with every view taken since the last batch. A batch copies
     /// it only if a view is still holding the old one.
     entries: Arc<Entries>,
+    /// How many times each key has been written.
+    #[cfg(test)]
+    pub(crate) puts: BTreeMap<Vec<u8>, usize>,
 }
 
 impl MemoryStore {
@@ -32,6 +35,11 @@ impl Store for MemoryStore {
     fn apply(&mut self, batch: Vec<Write>) -> impl Future<Output = Result<(), StoreError>> {
         let entries = Arc::make_mut(&mut self.entries);
         for write in batch {
+            #[cfg(test)]
+            if let Write::Put { key, .. } = &write {
+                *self.puts.entry(key.clone()).or_default() += 1;
+            }
+
             match write {
                 Write::Put { key, value } => entries.insert(key, value),
                 Write::Delete { key } => entries.remove(&key),

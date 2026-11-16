@@ -388,3 +388,64 @@ fn any_kind_of_model_can_show_only_whats_committed() {
         );
     }
 }
+
+/// What's stored of the chain: one value for where it began and
+/// what's undecided, and one for each decided checkpoint.
+fn chain_stored(sim: &Sim, device: usize, group: GroupId) -> (usize, Vec<Vec<u8>>) {
+    let view = sim.devices[device].store.view();
+    let head = block_on(crate::db::step::scan(
+        &view,
+        &keys::chain(group),
+        &keys::after(&keys::chain(group)),
+    ));
+    let (start, end) = keys::range(keys::links(group));
+    let links = block_on(crate::db::step::scan(&view, &start, &end)).expect("scanned");
+    let head = head
+        .expect("scanned")
+        .first()
+        .map_or(0, |(_, value)| value.len());
+
+    (head, links.into_iter().map(|(key, _)| key).collect())
+}
+
+/// Deciding a checkpoint doesn't mean writing every earlier one
+/// again: each is kept by itself, and those shed are deleted.
+#[test]
+fn a_decided_checkpoint_is_stored_by_itself() {
+    let (mut sim, group) = Sim::group(3, 3);
+    let write = |sim: &mut Sim, round: usize| {
+        sim.write(PHONE, set(notes(group), "round", &round.to_string()));
+        sim.settle();
+    };
+    write(&mut sim, 0);
+    let (head, few) = chain_stored(&sim, PHONE, group);
+    for round in 1..12 {
+        write(&mut sim, round);
+    }
+    let (later, many) = chain_stored(&sim, PHONE, group);
+    let folded = sim.devices[PHONE].groups[&group].folded();
+
+    assert_eq!(many.len(), few.len() + 11);
+    assert_eq!(many.len(), usize::try_from(folded).expect("a few"));
+    assert!(later < head * 2, "{head} grew to {later}");
+    let puts = &sim.devices[PHONE].store.puts;
+    assert!(many.iter().all(|key| puts[key] == 1), "written again");
+
+    // A restart finds them all, and carries on.
+    sim.restart(PHONE);
+    sim.connect_all();
+    write(&mut sim, 12);
+    assert_eq!(sim.devices[PHONE].groups[&group].folded(), folded + 1);
+    let round = sim.committed(LAPTOP, group, notes(group), "round");
+    assert_eq!(round.as_deref(), Some("12"));
+
+    // Shedding them deletes them.
+    sim.compact(PHONE, group);
+    let (_, kept) = chain_stored(&sim, PHONE, group);
+    assert!(kept.len() < many.len(), "{} of {}", kept.len(), many.len());
+    sim.restart(PHONE);
+    sim.connect_all();
+    write(&mut sim, 13);
+    let round = sim.committed(PHONE, group, notes(group), "round");
+    assert_eq!(round.as_deref(), Some("13"));
+}
