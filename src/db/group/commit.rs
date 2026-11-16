@@ -175,6 +175,9 @@ impl Group {
         };
 
         let patience = 2 + u64::try_from(rank).unwrap_or(u64::MAX - 2);
+        if tip.electorate.is_reader(me) {
+            return Ok(());
+        }
 
         // A witness has no state to commit to, so it starts no attempt
         // of its own. It can carry on with a checkpoint someone else

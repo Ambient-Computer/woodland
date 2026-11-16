@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::actor::Peer;
 use crate::db::ClockId;
+use crate::seal::SealingKey;
 
 /// What a peer may do in a group, and how much it counts toward a
 /// quorum.
@@ -11,11 +12,14 @@ use crate::db::ClockId;
 /// A contributor writes, and checks what it votes for. A witness never
 /// writes, and votes for the order of checkpoints without vouching for
 /// what they cover: weight for a device that's always on and holds
-/// nothing.
+/// nothing. A reader does neither, and is named so that it can read a
+/// sealed group.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Role {
     weight: u32,
     part: Part,
+    /// The key it's sent a sealed group's secrets under.
+    key: Option<SealingKey>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -23,6 +27,7 @@ enum Part {
     /// Writes to these clocks. `None` is every clock.
     Contributor(Option<BTreeSet<ClockId>>),
     Witness,
+    Reader,
 }
 
 impl Role {
@@ -33,6 +38,7 @@ impl Role {
         Self {
             weight,
             part: Part::Contributor(None),
+            key: None,
         }
     }
 
@@ -42,7 +48,34 @@ impl Role {
         Self {
             weight,
             part: Part::Witness,
+            key: None,
         }
+    }
+
+    /// Reads a sealed group, and does nothing else: it never writes
+    /// and has no say. `key` is its [sealing key].
+    ///
+    /// [sealing key]: crate::Database::sealing_key
+    #[must_use]
+    pub fn reader(key: SealingKey) -> Self {
+        Self {
+            weight: 0,
+            part: Part::Reader,
+            key: Some(key),
+        }
+    }
+
+    /// Lets a contributor read a sealed group, which every contributor
+    /// to one has to. `key` is its [sealing key]. A witness has no use
+    /// for one: it votes on what it can't read.
+    ///
+    /// [sealing key]: crate::Database::sealing_key
+    #[must_use]
+    pub fn sealed_to(mut self, key: SealingKey) -> Self {
+        if matches!(self.part, Part::Contributor(_)) {
+            self.key = Some(key);
+        }
+        self
     }
 
     /// Narrows a contributor to `clocks`. Whatever it wrote elsewhere
@@ -59,13 +92,13 @@ impl Role {
     fn writes(&self, clock: ClockId) -> bool {
         match &self.part {
             Part::Contributor(clocks) => clocks.as_ref().is_none_or(|it| it.contains(&clock)),
-            Part::Witness => false,
+            Part::Witness | Part::Reader => false,
         }
     }
 
     /// Whether there's anything this lets a peer do.
     fn is_something(&self) -> bool {
-        self.weight > 0 || matches!(self.part, Part::Contributor(_))
+        self.weight > 0 || !matches!(self.part, Part::Witness)
     }
 }
 
@@ -130,6 +163,21 @@ impl Electorate {
         role.is_some_and(|role| role.part == Part::Witness)
     }
 
+    /// Whether `peer` is named only so that it can read.
+    pub(crate) fn is_reader(&self, peer: Peer) -> bool {
+        let role = self.0.get(&peer);
+
+        role.is_some_and(|role| role.part == Part::Reader)
+    }
+
+    /// Everyone a sealed group's secrets go to, and the key each is
+    /// sent them under.
+    pub(crate) fn keys(&self) -> impl Iterator<Item = (Peer, &SealingKey)> + '_ {
+        let keyed = self.0.iter().filter(|(_, role)| role.key.is_some());
+
+        keyed.filter_map(|(&peer, role)| Some((peer, role.key.as_ref()?)))
+    }
+
     /// Who may write to `clock`.
     pub(crate) fn writers(&self, clock: ClockId) -> Writers<'_> {
         Writers {
@@ -168,8 +216,10 @@ impl Electorate {
     /// work out what it would commit.
     pub(crate) fn is_viable(&self) -> bool {
         let contributes = |role: &Role| matches!(role.part, Part::Contributor(_));
+        // A key its owner didn't sign for is someone else's.
+        let vouched = self.keys().all(|(peer, key)| key.is_vouched_by(peer));
 
-        self.peers().next().is_some() && self.0.values().any(contributes)
+        self.peers().next().is_some() && self.0.values().any(contributes) && vouched
     }
 
     /// Whether `holders` carry more than half the total weight.

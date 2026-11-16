@@ -31,6 +31,7 @@ use crate::testing::block_on;
 
 use super::{Database, Error, Outputs, Transaction};
 use crate::chain::Role;
+use crate::seal::SealingKey;
 
 const PHONE: usize = 0;
 const LAPTOP: usize = 1;

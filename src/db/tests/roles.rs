@@ -270,3 +270,91 @@ fn witnesses_finish_what_a_contributor_started_and_left() {
         assert_eq!(committed.as_deref(), Some("1"), "device {device}");
     }
 }
+
+fn key(sim: &Sim, device: usize) -> SealingKey {
+    sim.devices[device].sealing_key()
+}
+
+/// The phone and the laptop write and decide. The friend only reads.
+fn read() -> (Sim, GroupId) {
+    let (mut sim, group) = Sim::group(4, 3);
+    let roles = [
+        (PHONE, Role::contributor(1)),
+        (LAPTOP, Role::contributor(1)),
+        (FRIEND, Role::reader(key(&sim, FRIEND))),
+    ];
+    sim.assign(PHONE, group, roles);
+    sim.settle();
+
+    (sim, group)
+}
+
+#[test]
+fn a_reader_reads_and_never_writes() {
+    let (mut sim, group) = read();
+    sim.write_to(PHONE, group, set(notes(group), "a", "1"));
+    sim.settle();
+
+    assert_eq!(
+        sim.committed(FRIEND, group, notes(group), "a").as_deref(),
+        Some("1")
+    );
+    assert!(refused(
+        &mut sim,
+        FRIEND,
+        group,
+        set(notes(group), "b", "2")
+    ));
+}
+
+#[test]
+fn a_reader_has_no_say_and_starts_nothing() {
+    let (mut sim, group) = read();
+    let before = sim.devices[FRIEND].groups[&group].tip().height;
+    let asked = block_on(sim.devices[FRIEND].reconfigure(group, []));
+    assert!(matches!(asked, Err(Error::NotAContributor)));
+
+    // The friend holds something to commit, and doesn't try to.
+    sim.disconnect_all();
+    sim.write_to(PHONE, group, set(notes(group), "a", "1"));
+    sim.connect(PHONE, FRIEND);
+    sim.run();
+    sim.disconnect_all();
+    assert_eq!(
+        sim.shown(FRIEND, group, notes(group), "a").as_deref(),
+        Some("1")
+    );
+    for _ in 0..16 {
+        sim.tick(FRIEND);
+    }
+    assert!(!sim.devices[FRIEND].groups[&group].attempting());
+
+    // The phone and the friend together aren't enough.
+    sim.connect(PHONE, FRIEND);
+    for _ in 0..16 {
+        sim.tick(PHONE);
+        sim.tick(FRIEND);
+        sim.run();
+    }
+    assert_eq!(sim.devices[PHONE].groups[&group].tip().height, before);
+}
+
+#[test]
+fn a_key_its_owner_didnt_sign_for_names_nobody() {
+    let (mut sim, group) = Sim::group(4, 3);
+    sim.settle();
+    let before = sim.devices[PHONE].groups[&group].tip().height;
+
+    // The friend, under a key that's the laptop's.
+    let roles = [
+        (PHONE, Role::contributor(1)),
+        (LAPTOP, Role::contributor(1)),
+        (FRIEND, Role::reader(key(&sim, LAPTOP))),
+    ];
+    let roles = roles.map(|(device, role)| (sim.id(device), role));
+    let asked = block_on(sim.devices[PHONE].reconfigure(group, roles));
+
+    assert!(matches!(asked, Err(Error::NotAContributor)));
+    sim.settle();
+    assert_eq!(sim.devices[PHONE].groups[&group].tip().height, before);
+}

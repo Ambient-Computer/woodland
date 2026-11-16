@@ -31,6 +31,7 @@ use crate::actor::{Identity, Peer};
 use crate::chain::{Chain, Checkpoint, Electorate, Role};
 use crate::encoding;
 use crate::model::Query;
+use crate::seal::SealingKey;
 use crate::store::{Store, StoreError};
 
 pub use changed::Changed;
@@ -164,6 +165,14 @@ impl<S: Store> Database<S> {
     /// The key peers know this device by.
     pub fn id(&self) -> VerifyingKey {
         self.identity.public_key()
+    }
+
+    /// The key this device is sent a sealed group's secrets under.
+    /// Whoever gives this device a role in one needs it: see
+    /// [`Role::sealed_to`] and [`Role::reader`].
+    #[must_use]
+    pub fn sealing_key(&self) -> SealingKey {
+        SealingKey::of(&self.identity)
     }
 
     /// The groups this device holds.

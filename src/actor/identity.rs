@@ -36,6 +36,15 @@ impl Identity {
     pub(crate) fn sign(&self, message: &[u8]) -> Signature {
         self.keypair.sign(message)
     }
+
+    /// The secret half of the key this device is sent secrets under.
+    /// It's worked out from the signing key and can't be worked back,
+    /// so the two are separate keys with one thing to keep safe.
+    pub(crate) fn sealing(&self) -> x25519_dalek::StaticSecret {
+        let seed = self.keypair.to_bytes();
+
+        blake3::derive_key("woodland/sealing key", &seed).into()
+    }
 }
 
 /// Prints only the public key. The secret must never reach logs.
