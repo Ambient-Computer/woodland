@@ -27,10 +27,10 @@ use super::super::step::Step;
 use super::root::Accumulator;
 
 /// A key in a model.
-type Place = (ModelId, Vec<u8>);
+pub(super) type Place = (ModelId, Vec<u8>);
 
 /// What a key holds, as far as requirements can tell. `None` if nothing.
-type Held = Option<Fingerprint>;
+pub(super) type Held = Option<Fingerprint>;
 
 /// What uncommitted entries have done, partway along the timeline.
 #[derive(Debug, Default)]
@@ -47,6 +47,11 @@ impl Written {
             holds: BTreeMap::new(),
             dropped: dropped.clone(),
         }
+    }
+
+    /// `place` holds this, whatever was written there before.
+    pub(super) fn hold(&mut self, place: Place, held: Held) {
+        self.holds.insert(place, held);
     }
 
     pub(super) fn apply(&mut self, declared: &[Declaration]) {

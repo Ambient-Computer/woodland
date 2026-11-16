@@ -18,6 +18,7 @@ mod root;
 mod rules;
 mod sealing;
 mod sync;
+mod verdicts;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -263,6 +264,16 @@ impl Group {
         let installing = self.installing.as_ref().map(|it| it.height);
 
         self.folding.or(installing).unwrap_or(self.folded)
+    }
+
+    /// How many verdicts on entries have been worked out one at a
+    /// time, rather than all together.
+    #[cfg(test)]
+    pub(crate) fn weighed(&self) -> usize {
+        self.clocks
+            .values()
+            .map(|clock| clock.verdicts.weighed)
+            .sum()
     }
 
     /// Every change waiting to be committed, clock by clock.

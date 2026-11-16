@@ -145,10 +145,16 @@ impl Clock {
         let stored = stored.and_then(|bytes| Accumulator::from_bytes(&bytes));
         let mut state = stored.unwrap_or_default();
         let mut done = false;
+        let mut moved = Vec::new();
         while *budget > 0 && !done {
             *budget -= 1;
-            done = self.turn(&mut job, &entry, &mut state, step).await?;
+            done = self
+                .turn(&mut job, &entry, &mut state, &mut moved, step)
+                .await?;
         }
+        // Verdicts on entries still to be committed go by what's
+        // committed, which is changing under them.
+        self.verdicts.moved(moved);
         step.put(keys::state(self.group, self.id), state.to_bytes());
         if !done {
             self.job = Some(job);
@@ -177,6 +183,7 @@ impl Clock {
         job: &mut Job,
         entry: &Outline,
         state: &mut Accumulator,
+        moved: &mut Vec<(ModelId, Vec<u8>)>,
         step: &mut Step<V>,
     ) -> Result<bool, StoreError> {
         let aside = keys::trial(self.group);
@@ -229,6 +236,7 @@ impl Clock {
                     };
 
                     judge::write(self.group, model, &key, tried.value, state, step).await?;
+                    moved.push((model, key.clone()));
                     step.changed(Changed::Key {
                         group: self.group,
                         model,
@@ -256,6 +264,7 @@ impl Clock {
                 }
                 for (key, value) in page {
                     state.clear(model, &key[prefix.len()..], &value);
+                    moved.push((model, key[prefix.len()..].to_vec()));
                     step.delete(key);
                 }
             }

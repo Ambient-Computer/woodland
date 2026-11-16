@@ -25,6 +25,7 @@ use super::job::Job;
 use super::judge::{self, Written};
 use super::root::{Accumulator, Root};
 use super::rules;
+use super::verdicts::Verdicts;
 
 #[derive(Clone, Debug)]
 pub(super) struct Clock {
@@ -52,10 +53,8 @@ pub(super) struct Clock {
     /// The transaction being committed, if that takes more than a
     /// step.
     pub(super) job: Option<Job>,
-    /// The uncommitted entries that happen, as storage shows them.
-    live: BTreeSet<Stamp>,
-    /// Whether verdicts need working out again.
-    pub(super) stale: bool,
+    /// Which uncommitted entries happen.
+    pub(super) verdicts: Verdicts,
 }
 
 /// What's kept of a clock besides its entries and its state.
@@ -101,8 +100,7 @@ impl Clock {
             keys: Keyring::Open,
             lost: false,
             job: None,
-            live: BTreeSet::new(),
-            stale: false,
+            verdicts: Verdicts::default(),
         }
     }
 
@@ -139,7 +137,7 @@ impl Clock {
 
         // Storage already shows these: verdicts depend on nothing but
         // what was stored along with them.
-        clock.live = clock.judged(step).await?;
+        clock.recall(step).await?;
 
         Ok(clock)
     }
@@ -223,8 +221,9 @@ impl Clock {
     pub(super) fn integrate<V: View>(&mut self, entry: &Checked, step: &mut Step<V>) {
         let key = keys::log(self.group, self.id, entry.author(), entry.header().seq);
         step.save(key, &entry.entry);
-        self.history.add(entry.outline());
-        self.stale = true;
+        let outline = entry.outline();
+        self.verdicts.arrived(&outline);
+        self.history.add(outline);
     }
 
     /// The changes waiting to be committed, of the entries that
@@ -234,7 +233,7 @@ impl Clock {
         step: &Step<V>,
     ) -> Result<Vec<Pending>, StoreError> {
         let mut pending = Vec::new();
-        for stamp in &self.live {
+        for stamp in &self.verdicts.live {
             let entry = self.history.uncommitted.get(stamp);
             let Some(entry) = entry.filter(|entry| !entry.waits.is_empty()) else {
                 continue;
@@ -255,52 +254,6 @@ impl Clock {
         }
 
         Ok(pending)
-    }
-
-    /// Which uncommitted entries happen.
-    async fn judged<V: View>(&self, step: &Step<V>) -> Result<BTreeSet<Stamp>, StoreError> {
-        let mut written = Written::on(&self.dropped);
-        let mut live = BTreeSet::new();
-        if self.is_blind() {
-            return Ok(live);
-        }
-
-        for (&stamp, entry) in &self.history.uncommitted {
-            if judge::weigh(self.group, entry, &written, step).await? {
-                written.apply(&entry.declared);
-                live.insert(stamp);
-            }
-        }
-
-        Ok(live)
-    }
-
-    /// Works out every uncommitted verdict again, if anything could
-    /// have changed one, and makes storage show exactly the entries
-    /// that happen.
-    pub(super) async fn rejudge<V: View>(&mut self, step: &mut Step<V>) -> Result<(), StoreError> {
-        if !self.stale {
-            return Ok(());
-        }
-
-        let live = self.judged(step).await?;
-        for stamp in live.symmetric_difference(&self.live) {
-            let Some(entry) = self.history.uncommitted.get(stamp) else {
-                continue;
-            };
-
-            if live.contains(stamp) {
-                let operations = self.operations(entry, step).await?;
-                judge::show(self.group, *stamp, &operations, step);
-            } else {
-                judge::hide(self.group, entry, step);
-            }
-            judge::notify(self.group, entry, false, step);
-        }
-        self.live = live;
-        self.stale = false;
-
-        Ok(())
     }
 
     /// Reads back what an entry does. Only its outline is kept in memory.
@@ -404,6 +357,8 @@ impl Clock {
         settled: Settled,
         step: &mut Step<V>,
     ) {
+        // A dropped model takes every entry that writes to it along.
+        self.verdicts.stale |= self.dropped != settled.dropped;
         self.dropped = settled.dropped;
         self.lost |= settled.lost;
         for (stamp, happened) in settled.verdicts {
@@ -416,11 +371,11 @@ impl Clock {
             }
             judge::hide(self.group, &entry, step);
             judge::notify(self.group, &entry, false, step);
-            self.live.remove(&stamp);
+            self.verdicts.gone(&entry);
         }
 
         self.history.commit(frontier);
-        self.stale = true;
+        self.verdicts.stale |= self.lost;
     }
 
     /// Lets go of whatever was written, past the last checkpoint, by
@@ -459,9 +414,8 @@ impl Clock {
             step.delete(keys::log(self.group, self.id, author, entry.link.seq));
             judge::hide(self.group, &entry, step);
             judge::notify(self.group, &entry, false, step);
-            self.live.remove(&entry.stamp());
+            self.verdicts.gone(&entry);
         }
-        self.stale = true;
     }
 
     /// Sheds every entry `frontier` covers. They're as good as gone
@@ -536,14 +490,14 @@ impl Clock {
         for stamp in covered {
             if let Some(entry) = self.history.forget(stamp) {
                 judge::hide(self.group, &entry, step);
-                self.live.remove(&stamp);
+                self.verdicts.gone(&entry);
             }
         }
 
         self.shed_through(frontier);
         self.history.adopt(frontier);
         self.lost = false;
-        self.stale = true;
+        self.verdicts.stale = true;
     }
 
     /// The first `page` entries of each chain that a peer lacks, if it

@@ -360,6 +360,7 @@ impl Group {
         let within = |key: &[u8]| reach.as_ref().is_none_or(|reach| key <= &reach[..]);
         for (key, _) in old {
             if within(&key[committed.len()..]) {
+                self.moved(&key[committed.len()..]);
                 step.delete(key);
             }
         }
@@ -372,6 +373,7 @@ impl Group {
             // What's wanted can narrow while this is under way.
             let clock = rest.first_chunk::<32>().map(|it| ClockId::from_bytes(*it));
             if clock.is_some_and(|clock| self.wants(clock)) {
+                self.moved(rest);
                 step.put([&committed[..], rest].concat(), value);
             }
             step.delete(key);
@@ -427,6 +429,20 @@ impl Group {
     /// want it.
     pub(super) fn passing(&self) -> bool {
         !self.unwanted().is_empty()
+    }
+
+    /// A committed value changed, other than by committing an entry.
+    /// `place` is its model and then its key. Entries that wait to be
+    /// committed may have been judged by it.
+    fn moved(&mut self, place: &[u8]) {
+        let Some((model, key)) = place.split_first_chunk::<64>() else {
+            return;
+        };
+
+        let model = ModelId::from_bytes(*model);
+        if let Some(clock) = self.clocks.get_mut(&model.clock()) {
+            clock.verdicts.moved([(model, key.to_vec())]);
+        }
     }
 
     /// Takes back what a snapshot has put in place of clocks no longer

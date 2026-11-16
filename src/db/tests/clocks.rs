@@ -231,3 +231,53 @@ fn removal_cuts_every_clock() {
         assert_eq!(sim.shown(device, group, notes(group), "todo"), None);
     }
 }
+
+/// An entry that arrives late is judged, and so is whatever it could
+/// have changed. What follows it in the timeline and has nothing to do
+/// with it is left alone.
+#[test]
+fn a_late_arrival_costs_what_it_changes_not_what_follows_it() {
+    let (mut sim, group) = Sim::group(3, 3);
+    sim.disconnect_all();
+    sim.write(NAS, set(notes(group), "from the nas", "early"));
+    sim.connect(PHONE, LAPTOP);
+    for index in 0..30 {
+        sim.write(PHONE, set(notes(group), &format!("note {index:02}"), "x"));
+    }
+    sim.run();
+    let before = sim.devices[LAPTOP].groups[&group].weighed();
+    assert_eq!(before, 30);
+
+    sim.connect(NAS, LAPTOP);
+    sim.run();
+
+    assert!(
+        sim.shown(LAPTOP, group, notes(group), "from the nas")
+            .is_some()
+    );
+    assert!(sim.shown(LAPTOP, group, notes(group), "note 29").is_some());
+    assert_eq!(sim.devices[LAPTOP].groups[&group].weighed(), before + 1);
+}
+
+/// Committing a drop takes along every waiting entry that writes to
+/// the model, whatever keys they write.
+#[test]
+fn a_committed_drop_takes_what_waited_to_be_written() {
+    let (mut sim, group) = Sim::group(3, 3);
+    sim.isolate(LAPTOP);
+    sim.write(LAPTOP, set(notes(group), "written meanwhile", "x"));
+    sim.write(PHONE, Transaction::new().drop_model(notes(group)));
+    sim.settle();
+    assert!(
+        sim.shown(LAPTOP, group, notes(group), "written meanwhile")
+            .is_some()
+    );
+
+    sim.connect_all();
+    sim.run();
+
+    assert_eq!(
+        sim.shown(LAPTOP, group, notes(group), "written meanwhile"),
+        None
+    );
+}
