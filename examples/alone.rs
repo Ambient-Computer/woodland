@@ -10,21 +10,11 @@
 
 #![expect(clippy::print_stdout, reason = "an example says what it did")]
 
-use std::pin::pin;
-use std::task::{Context, Poll, Waker};
+#[path = "support/executor.rs"]
+mod executor;
 
+use executor::block_on;
 use woodland::{Answer, Database, Error, MemoryStore, ModelId, Outcome, Query, Transaction};
-
-/// A store in memory answers at once, so a future is asked once.
-fn block_on<F: Future>(future: F) -> F::Output {
-    let mut future = pin!(future);
-    let mut context = Context::from_waker(Waker::noop());
-    loop {
-        if let Poll::Ready(output) = future.as_mut().poll(&mut context) {
-            return output;
-        }
-    }
-}
 
 fn main() -> Result<(), Error> {
     // The secret is the device's signing key. It's made once, and
