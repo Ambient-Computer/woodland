@@ -42,7 +42,7 @@ mod testing;
 pub use actor::Identity;
 pub use chain::Role;
 pub use db::{
-    Answer, Changed, ClockId, Database, Error, Found, GroupId, Outcome, Outputs, Pending,
+    Answer, Changed, ClockId, Database, Error, Found, GroupId, Outcome, Outputs, Part, Pending,
     Transaction, TransactionId, Waiting,
 };
 pub use model::{

@@ -1,5 +1,7 @@
 //! What a read found, and how sure it is.
 
+use crate::model::Query;
+
 /// A key and what it holds.
 pub type Found = (Vec<u8>, Vec<u8>);
 
@@ -17,6 +19,18 @@ pub enum Answer {
     /// Only what's committed. It's the same on every device that has
     /// got this far, and never goes back.
     Committed(Vec<Found>),
+}
+
+/// Some of the answer to a [query], and how to ask for the rest.
+///
+/// [query]: crate::Query
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Part {
+    /// What was found, up to the limit asked for.
+    pub answer: Answer,
+    /// The query for what comes after, if the limit was what stopped
+    /// this one. It may find nothing.
+    pub rest: Option<Query>,
 }
 
 impl Answer {

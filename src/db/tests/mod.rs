@@ -35,7 +35,7 @@ use crate::model::{ModelId, Query};
 use crate::store::{MemoryStore, Store, Write};
 use crate::testing::block_on;
 
-use super::{Answer, Database, Error, Outcome, Outputs, Transaction, TransactionId};
+use super::{Answer, Database, Error, Found, Outcome, Outputs, Transaction, TransactionId};
 use crate::chain::Role;
 use crate::seal::SealingKey;
 
@@ -423,6 +423,23 @@ impl Sim {
         assert_eq!(answer.is_committed(), query.is_committed());
 
         answer.into_found()
+    }
+
+    /// Everything `query` finds on the device, read `limit` at a time:
+    /// each part, in order.
+    fn read_in_parts(&self, device: usize, query: &Query, limit: usize) -> Vec<Vec<Found>> {
+        self.wake(device);
+
+        let mut parts = Vec::new();
+        let mut next = Some(query.clone());
+        while let Some(query) = next {
+            let part = block_on(self.devices[device].read_some(&query, limit)).expect("read");
+            assert_eq!(part.answer.is_committed(), query.is_committed());
+            parts.push(part.answer.into_found());
+            next = part.rest;
+        }
+
+        parts
     }
 
     /// What `key` holds, as the device would show it right now.

@@ -4,7 +4,7 @@ use crate::model::{ColumnId, ModelId, Query};
 use crate::store::Store;
 
 use super::step::{self, Step};
-use super::{Answer, Database, Error, GroupId, Outputs, Pending};
+use super::{Answer, Database, Error, GroupId, Outputs, Part, Pending, parts};
 
 impl<S: Store> Database<S> {
     /// Starts keeping an index of `column` of `table`, so that the
@@ -87,11 +87,45 @@ impl<S: Store> Database<S> {
         })
     }
 
+    /// Answers `query` up to `limit` of what it asks for, and says how
+    /// to ask for the rest. Use it for anything that might be large.
+    ///
+    /// What's counted is what the query is of: keys, or a [table]'s
+    /// rows, or the rows an index finds. A row comes with all its
+    /// cells or not at all, and a table's columns come with every
+    /// part.
+    ///
+    /// Each part is read from whole steps, but two parts may be read
+    /// either side of one. Whatever that step changed is in its
+    /// [`Changed`].
+    ///
+    /// [table]: crate::ModelId::table
+    /// [`Changed`]: crate::Changed
+    ///
+    /// # Errors
+    ///
+    /// If the store fails.
+    pub async fn read_some(&self, query: &Query, limit: usize) -> Result<Part, Error> {
+        let (found, rest) = parts::read(&self.store.view(), query, limit).await?;
+        let answer = if query.is_committed() {
+            Answer::Committed(found)
+        } else {
+            Answer::Optimistic(found)
+        };
+
+        Ok(Part {
+            answer,
+            rest: rest.map(|from| query.rest(from)),
+        })
+    }
+
     /// The changes in `group` that are waiting to be committed before
     /// they do anything, in the order they'll be tried. Only those
     /// whose transactions count for now are included.
     ///
     /// A [`Changed::Pending`] says when to ask again.
+    ///
+    /// [`Changed::Pending`]: crate::Changed::Pending
     ///
     /// # Errors
     ///

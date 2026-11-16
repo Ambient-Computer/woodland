@@ -9,7 +9,7 @@ use std::ops::Bound;
 use super::*;
 
 /// Signs someone up with no address, at a tier.
-fn sign_up_at(cluster: &mut Sim, device: usize, key: &str, paid: i64) {
+pub(super) fn sign_up_at(cluster: &mut Sim, device: usize, key: &str, paid: i64) {
     let table = accounts(cluster);
     let cells = [(tier(table), Value::from(paid))];
     let key = key.to_owned();
@@ -34,7 +34,7 @@ fn found(cluster: &Sim, device: usize, query: &Query) -> Vec<String> {
         .collect()
 }
 
-fn signed_up() -> (Sim, GroupId, ModelId) {
+pub(super) fn signed_up() -> (Sim, GroupId, ModelId) {
     let mut cluster = household();
     let table = create_accounts(&mut cluster, PHONE);
     for (key, paid) in [("ada", 1), ("al", 9), ("alan", 3), ("grace", 2)] {

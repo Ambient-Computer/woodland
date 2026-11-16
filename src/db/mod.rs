@@ -18,6 +18,7 @@ mod id;
 pub(crate) mod keys;
 mod message;
 mod outcome;
+mod parts;
 mod pending;
 mod proof;
 mod reading;
@@ -39,7 +40,7 @@ use crate::encoding;
 use crate::seal::Secret;
 use crate::store::{Store, StoreError};
 
-pub use answer::{Answer, Found};
+pub use answer::{Answer, Found, Part};
 pub use changed::Changed;
 use group::{Group, Invitation, Wrote};
 pub use id::{ClockId, GroupId};

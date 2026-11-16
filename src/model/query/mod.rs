@@ -16,6 +16,14 @@
 //!   long a quorum takes to decide a checkpoint. A [threshold] model
 //!   is always read this way.
 //!
+//! # A part at a time
+//!
+//! A query for more than fits comfortably in memory is read with a
+//! limit ([`Database::read_some`]). Each part comes with the query for
+//! the rest.
+//!
+//! [`Database::read_some`]: crate::Database::read_some
+//!
 //! # Subscribing
 //!
 //! The database doesn't keep queries, so it can't push results. Each
@@ -26,6 +34,8 @@
 //!
 //! [affects]: Query::is_affected_by
 //! [threshold]: ModelId::threshold
+
+mod paging;
 
 use std::ops::{Bound, RangeBounds};
 
@@ -85,7 +95,12 @@ impl Query {
     /// [`Table::read`]: crate::Table::read
     #[must_use]
     pub fn table(group: GroupId, table: ModelId) -> Self {
-        Self::prefix(group, table, b"")
+        // The columns are a range of their own, so that they come
+        // with every part of a table that's read in parts.
+        let schema = table::schema();
+        let rest = (schema.1.clone().unwrap_or_default(), None);
+
+        Self::ranges(group, table, vec![schema, rest])
     }
 
     /// The rows of a [table] whose keys are in a range, such as

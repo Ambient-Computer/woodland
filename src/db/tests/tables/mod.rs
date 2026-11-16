@@ -4,6 +4,7 @@
 mod indexes;
 mod long;
 mod numbers;
+mod parts;
 pub(super) mod references;
 mod removals;
 mod rules;
