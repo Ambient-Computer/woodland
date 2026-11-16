@@ -11,6 +11,7 @@ use crate::model::ModelId;
 use crate::actor::Peer;
 
 use super::entry::{Entry, Frontier};
+use super::group::Handed;
 use super::proof::Proof;
 
 /// Everything one peer tells another about one group, at once. Every
@@ -30,6 +31,8 @@ pub(crate) struct Message {
     /// Fork proofs the other side hasn't said it holds.
     pub(crate) proofs: Vec<Proof>,
     pub(crate) snapshot: Option<Piece>,
+    /// A secret the peer said it lacks and is due.
+    pub(crate) secret: Option<Handed>,
 }
 
 /// How much a peer holds, so the other side can work out what it lacks.
@@ -56,6 +59,9 @@ pub(crate) struct Summary {
     pub(crate) restoring: BTreeMap<ClockId, Frontier>,
     /// The height of the checkpoint it shed and wants back next.
     pub(crate) lacking: Option<u64>,
+    /// The secret it lacks and wants handed to it: the one brought in
+    /// by the checkpoint at this height.
+    pub(crate) wanting: Option<u64>,
 }
 
 /// Part of a snapshot: committed values, in key order.

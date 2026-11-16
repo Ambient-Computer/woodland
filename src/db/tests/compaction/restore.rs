@@ -198,6 +198,7 @@ fn offer(sim: &mut Sim, from: usize, to: usize, group: GroupId, restored: Vec<En
         restored,
         proofs: Vec::new(),
         snapshot: None,
+        secret: None,
     };
     let from = sim.id(from);
     let received = block_on(sim.devices[to].receive(from, &encoding::encode(&message)));
@@ -334,6 +335,7 @@ fn a_checkpoint_comes_back_only_into_the_gap_it_fills() {
             restored: Vec::new(),
             proofs: Vec::new(),
             snapshot: None,
+            secret: None,
         };
         let from = sim.id(NAS);
         let received = block_on(sim.devices[PHONE].receive(from, &encoding::encode(&message)));

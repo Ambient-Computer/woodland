@@ -20,11 +20,13 @@ A sealed [group](groups.md) encrypts what its contributors write, so that peers 
 
 - A sealed group has a current secret. Every peer the [configuration](membership.md) lists as contributor or reader holds it.
 - A contributor that lacks the secret neither writes nor votes until it has it.
-- A checkpoint may replace the secret. One that removes a contributor or reader always does.
+- A checkpoint may replace the secret. One that removes a contributor or reader, or replaces a peer's key, always does.
+- A replacement is derived for one set of readers. An attempt that names a different set never reveals it.
 - The new secret is delivered inside the checkpoint, to each peer that should hold it and to nobody else.
 - A contributor votes for such a checkpoint only after finding its own copy and checking it against what the checkpoint commits to.
 - A secret belongs to the checkpoint that carries it. A secret from an attempt that was never decided is discarded and never used.
 - An entry is encrypted under the secret of the checkpoint its header names.
+- An entry that does not open under that secret is not an entry. Everyone who holds the secret agrees; a peer without it cannot tell, and carries it.
 - Nothing is re-encrypted when the secret changes. Old data stays under old secrets; new writes and new snapshots use the new one.
 
 ## What removal guarantees

@@ -20,7 +20,7 @@ use crate::clock::Stamp;
 use crate::db::{ClockId, GroupId};
 use crate::encoding;
 use crate::model::{Declaration, ModelId, Operation};
-use crate::seal::Keyring;
+use crate::seal::{Keyring, Opened};
 
 /// Names an entry, or a payload, by its content.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -87,8 +87,7 @@ pub(crate) struct Checked {
     /// What it does. Nothing, if this device can't tell.
     pub(crate) operations: Vec<Operation>,
     /// Whether this device can't tell what it does: it's sealed under
-    /// a secret that isn't held here, or it does something this
-    /// version doesn't know of.
+    /// a secret that isn't held here.
     pub(crate) unread: bool,
     hash: Hash,
 }
@@ -126,35 +125,51 @@ impl Entry {
     /// Checks everything that can be checked without knowing anything
     /// else: the signature, the group, that the payload is the one the
     /// header was signed over, and, if this device can read it, that
-    /// it stays within its clock.
+    /// it says something and stays within its clock.
     ///
-    /// An entry this device can't read is still an entry. It's kept and
-    /// passed on as it is.
+    /// An entry this device lacks the secret for is still an entry.
+    /// It's kept and passed on as it is. One that everyone with the
+    /// secret can see is nonsense isn't.
     pub(crate) fn check(self, group: GroupId, keys: &Keyring) -> Option<Checked> {
         let header = verify_all(vec![self.header.clone()]).pop()?;
         let said = header.payload();
         let intact = said.group == group && said.payload == Hash::of_payload(&self.payload);
-        let operations = self.read(keys);
+        let (operations, unread) = match self.read(keys) {
+            Read::Does(operations) => (operations, false),
+            Read::Sealed => (Vec::new(), true),
+            Read::Nonsense => return None,
+        };
         let within = |operation: &Operation| operation.model.clock() == said.clock;
-        let intact = intact && operations.iter().flatten().all(within);
+        let intact = intact && operations.iter().all(within);
         let hash = Hash::of_header(header.author(), said);
 
         intact.then_some(Checked {
             entry: self,
-            unread: operations.is_none(),
-            operations: operations.unwrap_or_default(),
+            operations,
+            unread,
             hash,
         })
     }
 
-    /// What the entry does, if this device can tell.
-    fn read(&self, keys: &Keyring) -> Option<Vec<Operation>> {
+    fn read(&self, keys: &Keyring) -> Read {
         let header = self.header.payload();
         let about = about(self.header.author(), header);
-        let plain = keys.open(&about, header.under.height, &self.payload)?;
 
-        encoding::decode(&plain)
+        match keys.open(&about, header.under.height, &self.payload) {
+            Opened::Plain(plain) => encoding::decode(&plain).map_or(Read::Nonsense, Read::Does),
+            Opened::Unreadable => Read::Sealed,
+            Opened::Garbled => Read::Nonsense,
+        }
     }
+}
+
+/// What a device makes of an entry's payload.
+enum Read {
+    Does(Vec<Operation>),
+    /// This device lacks the secret to tell.
+    Sealed,
+    /// It isn't a list of operations, whoever reads it.
+    Nonsense,
 }
 
 impl Entry {
@@ -171,13 +186,17 @@ impl Entry {
 
     /// Reads back an entry that was checked before it was stored.
     pub(crate) fn trusted(self, keys: &Keyring) -> Checked {
-        let operations = self.read(keys);
         let hash = Hash::of_header(self.header.author(), self.header.payload());
+        let (operations, unread) = match self.read(keys) {
+            Read::Does(operations) => (operations, false),
+            Read::Sealed => (Vec::new(), true),
+            Read::Nonsense => (Vec::new(), false),
+        };
 
         Checked {
             entry: self,
-            unread: operations.is_none(),
-            operations: operations.unwrap_or_default(),
+            operations,
+            unread,
             hash,
         }
     }
@@ -269,6 +288,7 @@ mod tests {
     use super::*;
     use crate::chain::{Checkpoint, Electorate};
     use crate::model::ModelId;
+    use crate::seal::Secret;
 
     fn entry(clock: ClockId, model: ModelId) -> (GroupId, Entry) {
         let identity = Identity::from_secret_key([1; 32]);
@@ -304,6 +324,84 @@ mod tests {
 
         let (group, outside) = entry(clock, ModelId::kv(other, [5; 32]));
         assert!(outside.check(group, &Keyring::Open).is_none());
+    }
+
+    fn sealed_under(purpose: &[u8]) -> Keyring {
+        let secret = Secret::make(&Identity::from_secret_key([1; 32]), purpose);
+
+        Keyring::Sealed(BTreeMap::from([(0, Some(secret))]))
+    }
+
+    fn sealed_entry(keys: &Keyring) -> (GroupId, Entry) {
+        let clock = ClockId::from_bytes([3; 32]);
+        let (group, entry) = entry(clock, ModelId::kv(clock, [5; 32]));
+        let header = entry.header.payload().clone();
+        let identity = Identity::from_secret_key([1; 32]);
+        let operations = vec![Operation::set(
+            ModelId::kv(clock, [5; 32]),
+            b"key".to_vec(),
+            b"value".to_vec(),
+        )];
+        let entry = Entry::author(&identity, header, operations, keys);
+
+        (group, entry.expect("the secret is held").entry)
+    }
+
+    #[test]
+    fn a_sealed_entry_is_read_with_its_secret_and_kept_without() {
+        let keys = sealed_under(b"ours");
+        let (group, entry) = sealed_entry(&keys);
+        let without = Keyring::Sealed(BTreeMap::from([(0, None)]));
+
+        let read = entry.clone().check(group, &keys).expect("an entry");
+        assert!(!read.unread);
+        assert_eq!(read.operations.len(), 1);
+
+        let carried = entry.clone().check(group, &without).expect("an entry");
+        assert!(carried.unread);
+        assert_eq!(carried.operations.len(), 0);
+        assert!(entry.trusted(&without).unread);
+    }
+
+    /// Whoever holds the secret can tell, and they all tell the same.
+    #[test]
+    fn an_entry_that_isnt_sealed_under_the_groups_secret_is_no_entry() {
+        let (group, entry) = sealed_entry(&sealed_under(b"theirs"));
+
+        assert!(entry.check(group, &sealed_under(b"ours")).is_none());
+    }
+
+    #[test]
+    fn a_sealed_entry_doesnt_open_anywhere_else() {
+        let keys = sealed_under(b"ours");
+        let (group, entry) = sealed_entry(&keys);
+        let header = entry.header.payload().clone();
+        let identity = Identity::from_secret_key([1; 32]);
+        let moved = Header {
+            seq: 2,
+            payload: Hash::of_payload(&entry.payload),
+            ..header
+        };
+        let moved = Entry {
+            header: Signed::sign(&identity, moved).signed().clone(),
+            payload: entry.payload,
+        };
+
+        assert!(moved.check(group, &keys).is_none());
+    }
+
+    #[test]
+    fn nothing_is_written_without_the_secret_in_force() {
+        let clock = ClockId::from_bytes([3; 32]);
+        let (_, entry) = entry(clock, ModelId::kv(clock, [5; 32]));
+        let header = entry.header.payload().clone();
+        let identity = Identity::from_secret_key([1; 32]);
+        let secret = Secret::make(&identity, b"old");
+        let keys = Keyring::Sealed(BTreeMap::from([(0, Some(secret))]));
+        let later = Keyring::Sealed(BTreeMap::from([(0, None)]));
+
+        assert!(Entry::author(&identity, header.clone(), Vec::new(), &keys).is_some());
+        assert!(Entry::author(&identity, header, Vec::new(), &later).is_none());
     }
 
     #[test]

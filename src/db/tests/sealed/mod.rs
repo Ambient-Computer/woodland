@@ -9,6 +9,8 @@ use crate::chain::Electorate;
 use crate::db::group::Sealing;
 use crate::seal::Secret;
 
+mod rotation;
+
 const GUEST: usize = 4;
 
 /// Long and unlikely enough to look for in what a device holds.
@@ -341,6 +343,7 @@ fn an_open_group_says_nothing_of_secrets() {
         epoch: 0,
         commitment: another_secret().commitment(),
         grants: BTreeMap::new(),
+        previous: None,
     };
 
     let plain = held.candidate(&phone.identity, electorate.clone(), |_| {});
@@ -386,22 +389,35 @@ fn a_checkpoint_that_keeps_the_secret_from_someone_it_names_isnt_voted_for() {
 
 /// Nobody but the guest can tell its copy is of some other secret, so
 /// the checkpoint is decided. The guest doesn't take the copy for the
-/// real thing.
+/// real thing. It was named, so it's due the secret, and whoever has
+/// it hands it over.
 #[test]
-fn a_secret_that_isnt_the_groups_is_never_used() {
+fn a_peer_whose_copy_was_no_good_is_handed_the_secret_by_another() {
     let (mut sim, group) = sealed();
+    sim.write_to(PHONE, group, set(notes(group), "plan", NEEDLE));
+    sim.settle();
     let guest = sim.devices[GUEST].identity.peer();
-    let before = sim.devices[LAPTOP].groups[&group].tip().height;
     let about = crate::db::group::sealed_about(group, 0);
     let wrong = another_secret().grant(&sim.devices[PHONE].identity, &key(&sim, GUEST), &about);
 
     put_forward(&mut sim, group, |said| {
         sealing(said).grants.insert(guest, wrong);
     });
+    let told = sent(&mut sim, NEEDLE);
+    sim.settle();
 
-    assert!(sim.devices[GUEST].groups[&group].tip().height > before);
-    assert!(!sim.devices[GUEST].reads(group));
-    assert!(sim.devices[FRIEND].reads(group));
+    assert_eq!(told, BTreeSet::new());
+    assert!(
+        sim.devices[GUEST].groups[&group]
+            .tip()
+            .electorate
+            .is_reader(guest)
+    );
+    assert!(sim.devices[GUEST].reads(group));
+    assert_eq!(
+        read_note(&sim, GUEST, group, "plan").as_deref(),
+        Some(NEEDLE)
+    );
 }
 
 #[test]

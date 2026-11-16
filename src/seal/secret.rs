@@ -109,6 +109,21 @@ impl Secret {
         decrypt(&key, nonce, about, sealed)
     }
 
+    /// Encrypts `older` under this secret, so that whoever is given
+    /// this one reads what was written before it.
+    pub(crate) fn wrap(&self, about: &[u8], older: &Self) -> Vec<u8> {
+        self.seal(about, &older.0)
+    }
+
+    /// Undoes [`wrap`].
+    ///
+    /// [`wrap`]: Self::wrap
+    pub(crate) fn unwrap(&self, about: &[u8], wrapped: &[u8]) -> Option<Self> {
+        let plain = self.open(about, wrapped)?;
+
+        Some(Self(plain.try_into().ok()?))
+    }
+
     /// Encrypts the secret to `key`, so that only its owner reads it.
     /// `about` ties the grant to where it's used.
     pub(crate) fn grant(&self, from: &Identity, to: &SealingKey, about: &[u8]) -> Grant {

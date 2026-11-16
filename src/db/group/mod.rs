@@ -31,6 +31,7 @@ use super::step::Step;
 use clock::{Clock, Kept};
 use compact::Staging;
 pub(crate) use interest::Refused;
+pub(crate) use sealing::Handed;
 pub(crate) use sealing::found as found_sealed;
 #[cfg(test)]
 pub(crate) use sealing::{Sealing, about as sealed_about};

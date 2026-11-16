@@ -24,6 +24,7 @@ use super::Group;
 use super::clock::Clock;
 use super::commit::covers_of;
 use super::compact::Sending;
+use super::sealing::Handed;
 
 /// How many entries go in one message. A peer that's far behind gets
 /// the rest as it answers.
@@ -54,6 +55,10 @@ pub(super) struct Remote {
     pub(super) restoring: BTreeMap<ClockId, Frontier>,
     /// The height of the checkpoint it shed and wants back next.
     pub(super) lacking: Option<u64>,
+    /// A secret it asked for, ready to be sent.
+    owed: Option<Handed>,
+    /// The secret it was last handed, so it's handed each one once.
+    handed: Option<u64>,
     /// How far it says it has got with a snapshot.
     pub(super) staged: Option<(u64, Option<Vec<u8>>)>,
     /// The snapshot this device is sending it.
@@ -121,9 +126,25 @@ impl Group {
         remote.interest.clone_from(&message.summary.interest);
         remote.restoring.clone_from(&message.summary.restoring);
         remote.lacking = message.summary.lacking;
+        let asked = message
+            .summary
+            .wanting
+            .filter(|it| remote.handed != Some(*it));
 
         self.said |= self.chain.receive(message.chain);
         self.overhear(step);
+
+        // What the chain now says of secrets comes before anything
+        // sealed under them.
+        self.unlock(identity, step).await?;
+        if let Some(handed) = message.secret {
+            self.take_handed(identity, handed, step).await?;
+        }
+        let owed = asked.and_then(|epoch| self.hand(identity, from, epoch));
+        let handing = owed.is_some();
+        if let (Some(remote), true) = (self.remotes.get_mut(&from), handing) {
+            remote.owed = owed;
+        }
         for proof in message.proofs {
             self.accuse(proof, step);
         }
@@ -135,7 +156,7 @@ impl Group {
         // A peer that sent entries, or part of a snapshot, is waiting to
         // hear how far they got.
         let took = self.mend(message.links) | self.take_back(message.restored, step);
-        let sent = !message.entries.is_empty() || message.snapshot.is_some() || took;
+        let sent = !message.entries.is_empty() || message.snapshot.is_some() || took || handing;
         let owed = sent.then_some(from);
         if let Some(piece) = message.snapshot {
             self.stage(piece, step).await?;
@@ -320,7 +341,9 @@ impl Group {
         let proofs = accused.iter().filter_map(|author| self.proofs.get(author));
         let proofs: Vec<_> = proofs.cloned().collect();
 
+        let secret = remote.owed.clone();
         let news = !entries.is_empty()
+            || secret.is_some()
             || !restored.is_empty()
             || !links.is_empty()
             || !proofs.is_empty()
@@ -340,9 +363,13 @@ impl Group {
             restored,
             proofs,
             snapshot,
+            secret,
         };
         step.send(peer, &message);
         if let Some(remote) = self.remotes.get_mut(&peer) {
+            if let Some(handed) = remote.owed.take() {
+                remote.handed = Some(handed.epoch);
+            }
             remote.height = remote.height.max(height);
             if sending.is_some() {
                 remote.sending = sending;
@@ -376,6 +403,7 @@ impl Group {
             interest: self.interest.clone(),
             restoring: self.restoring(),
             lacking: self.lacking(),
+            wanting: self.wanting(),
         }
     }
 
