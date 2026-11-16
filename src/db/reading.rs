@@ -1,12 +1,16 @@
 //! Reading what a device holds, and the indexes it keeps to read by.
 
+use crate::actor::Peer;
 use crate::model::{ColumnId, ModelId, Query};
-use crate::store::Store;
+use crate::store::{Store, View};
 
 use super::group::Group;
 use super::step::{self, Step};
 use super::veiled::Veiled;
-use super::{Answer, Database, Error, GroupId, Outputs, Part, Pending, Reached, parts};
+use super::{
+    Answer, Database, Error, GroupId, Outcome, Outputs, Part, Pending, Reached, TransactionId,
+    keys, parts,
+};
 
 impl<S: Store> Database<S> {
     /// Starts keeping an index of `columns` of `table`, one column or
@@ -76,6 +80,29 @@ impl<S: Store> Database<S> {
     /// committed. A query of a model that shows only what's committed
     /// gets the second without asking.
     ///
+    /// What last became of a transaction this device wrote in `group`:
+    /// the last thing [`Outputs::outcomes`] said of it, for an
+    /// application that wasn't there to hear. `None` if this device
+    /// didn't write it, or no longer keeps it: [`compact`] sheds what
+    /// became of a transaction along with the transaction.
+    ///
+    /// [`compact`]: Self::compact
+    ///
+    /// # Errors
+    ///
+    /// If the store fails.
+    pub async fn outcome(
+        &self,
+        group: GroupId,
+        id: TransactionId,
+    ) -> Result<Option<Outcome>, Error> {
+        let author = Peer::from(id.author);
+        let key = keys::outcome(group, id.clock, author, id.seq);
+        let stored = self.store.view().get(&key).await?;
+
+        Ok(stored.and_then(|stored| Outcome::from_bytes(&stored)))
+    }
+
     /// # Errors
     ///
     /// If the store fails.

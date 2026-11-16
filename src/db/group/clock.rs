@@ -281,6 +281,7 @@ impl Clock {
     /// Lets whoever wrote `entry` know what's become of it.
     pub(super) fn tell<V: View>(&self, entry: &Outline, outcome: Outcome, step: &mut Step<V>) {
         step.tell(Told {
+            group: self.group,
             clock: self.id,
             author: entry.author,
             seq: entry.link.seq,
@@ -555,6 +556,11 @@ impl Clock {
             budget -= page.len();
             deleted += page.len();
             for (key, _) in page {
+                // What became of it goes with it.
+                let seq = key.last_chunk::<8>().map(|seq| u64::from_be_bytes(*seq));
+                if let Some(seq) = seq {
+                    step.delete(keys::outcome(self.group, self.id, author, seq));
+                }
                 step.delete(key);
             }
             self.swept.insert(author, reached);

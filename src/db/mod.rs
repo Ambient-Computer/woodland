@@ -74,7 +74,8 @@ pub struct Outputs {
     /// The transaction this step wrote, if it was a write.
     pub wrote: Option<TransactionId>,
     /// What's become of transactions this device wrote, in the order
-    /// it happened. Told once.
+    /// it happened. Told once: [`Database::outcome`] says the last
+    /// of it again.
     pub outcomes: Vec<(TransactionId, Outcome)>,
     /// Whether there's more to do that waits for nothing. A step does
     /// only so much, so that none takes long or writes a great deal
@@ -487,6 +488,21 @@ impl<S: Store> Database<S> {
                 self.broken = true;
             }
             veiled?;
+        }
+
+        // What became of this device's own transactions is kept, so
+        // an application that wasn't there to be told can ask.
+        let me = self.identity.peer();
+        let mine = step.told().iter().filter(|told| told.author == me);
+        let kept: Vec<_> = mine
+            .map(|told| {
+                let key = keys::outcome(told.group, told.clock, told.author, told.seq);
+
+                (key, vec![told.outcome.to_byte()])
+            })
+            .collect();
+        for (key, outcome) in kept {
+            step.put(key, outcome);
         }
 
         let mut finished = step.finish();

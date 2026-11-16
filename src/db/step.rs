@@ -11,7 +11,7 @@ use serde::de::DeserializeOwned;
 
 use crate::actor::Peer;
 use crate::db::keys::Layer;
-use crate::db::{Changed, ClockId, Outcome, keys};
+use crate::db::{Changed, ClockId, GroupId, Outcome, keys};
 use crate::encoding;
 use crate::store::{Entry, Order, StoreError, View, Write};
 
@@ -133,6 +133,11 @@ impl<V: View> Step<V> {
     /// What's been reported as changed so far.
     pub(crate) fn changes(&self) -> Vec<Changed> {
         self.changed.iter().cloned().collect()
+    }
+
+    /// What's been told so far.
+    pub(crate) fn told(&self) -> &[Told] {
+        &self.told
     }
 
     pub(crate) fn tell(&mut self, told: Told) {
@@ -403,6 +408,7 @@ pub(crate) struct Finished {
 /// What's become of a transaction.
 #[derive(Debug)]
 pub(crate) struct Told {
+    pub(crate) group: GroupId,
     pub(crate) clock: ClockId,
     pub(crate) author: Peer,
     pub(crate) seq: u64,
@@ -510,7 +516,7 @@ mod tests {
             let page = block_on(step.scan_page(&from, &end, limit)).expect("read");
             prop_assert_eq!(page, within.iter().take(limit).cloned().collect::<Vec<_>>());
 
-            step.changed(Changed::Everything { group: crate::db::GroupId::from_bytes([1; 32]) });
+            step.changed(Changed::Everything { group: GroupId::from_bytes([1; 32]) });
             step.divert(None);
             let unmoved = model(&[&stored, &before]);
             let seen = block_on(step.scan(b"g", b"g\xFF")).expect("read");

@@ -35,3 +35,34 @@ pub enum Outcome {
     /// snapshot, so it never worked out whether it took effect.
     Covered,
 }
+
+impl Outcome {
+    const ALL: [Self; 6] = [
+        Self::Live,
+        Self::Pruned,
+        Self::Committed,
+        Self::Rejected,
+        Self::Discarded,
+        Self::Covered,
+    ];
+
+    /// How it's stored.
+    pub(crate) fn to_byte(self) -> u8 {
+        match self {
+            Self::Live => 0,
+            Self::Pruned => 1,
+            Self::Committed => 2,
+            Self::Rejected => 3,
+            Self::Discarded => 4,
+            Self::Covered => 5,
+        }
+    }
+
+    pub(crate) fn from_bytes(stored: &[u8]) -> Option<Self> {
+        let [byte] = stored else {
+            return None;
+        };
+
+        Self::ALL.into_iter().find(|it| it.to_byte() == *byte)
+    }
+}

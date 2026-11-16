@@ -77,6 +77,7 @@ const STATE: u8 = 4;
 const PROOF: u8 = 5;
 const LINK: u8 = 6;
 const VEIL: u8 = 7;
+const OUTCOME: u8 = 8;
 
 /// A stored key of model data, parsed back into what it names.
 #[derive(Debug, PartialEq, Eq)]
@@ -154,6 +155,15 @@ pub(crate) fn chain(id: GroupId) -> Vec<u8> {
 
 pub(crate) fn meta(id: GroupId) -> Vec<u8> {
     [protocol(id), vec![META]].concat()
+}
+
+/// What last became of a transaction this device wrote.
+pub(crate) fn outcome(id: GroupId, clock: ClockId, author: Peer, seq: u64) -> Vec<u8> {
+    let clock = clock.as_bytes().to_vec();
+    let author = author.as_bytes().to_vec();
+    let seq = seq.to_be_bytes().to_vec();
+
+    [protocol(id), vec![OUTCOME], clock, author, seq].concat()
 }
 
 /// Whether reads are being kept from a checkpoint that's partly in

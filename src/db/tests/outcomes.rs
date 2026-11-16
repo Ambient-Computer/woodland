@@ -107,3 +107,64 @@ fn an_author_that_catches_up_from_a_snapshot_is_told_it_was_covered() {
     );
     assert_eq!(told(&sim, NAS), [Outcome::Live, Outcome::Covered]);
 }
+
+/// What `device` says became of the last thing it wrote.
+fn asked(sim: &Sim, device: usize) -> Option<Outcome> {
+    let wrote = sim.wrote[device].expect("it wrote something");
+
+    block_on(sim.devices[device].outcome(sim.home, wrote)).expect("asked")
+}
+
+/// An application that stopped before it was told can ask.
+#[test]
+fn a_device_says_again_what_became_of_its_transaction() {
+    let (mut sim, group) = Sim::group(3, 3);
+    sim.write(PHONE, set(notes(group), "todo", "milk"));
+    assert_eq!(asked(&sim, PHONE), Some(Outcome::Live));
+    sim.restart(PHONE);
+    assert_eq!(asked(&sim, PHONE), Some(Outcome::Live));
+
+    sim.connect_all();
+    sim.settle();
+    sim.restart(PHONE);
+
+    assert_eq!(asked(&sim, PHONE), Some(Outcome::Committed));
+    // It wasn't anyone else's to say.
+    let wrote = sim.wrote[PHONE].expect("named");
+    let elsewhere = block_on(sim.devices[LAPTOP].outcome(group, wrote));
+    assert_eq!(elsewhere.expect("asked"), None);
+}
+
+#[test]
+fn a_device_says_what_became_of_a_transaction_that_lost() {
+    let mut cluster = household();
+    cluster.disconnect_all();
+    guards::count(&mut cluster, PHONE, None, "1");
+    guards::count(&mut cluster, LAPTOP, None, "2");
+    cluster.connect_all();
+    cluster.run();
+    let lost = match read(&cluster, PHONE, "count").as_deref() {
+        Some("1") => LAPTOP,
+        _ => PHONE,
+    };
+    assert_eq!(asked(&cluster, lost), Some(Outcome::Pruned));
+
+    cluster.settle();
+
+    assert_eq!(asked(&cluster, lost), Some(Outcome::Rejected));
+}
+
+/// What became of a transaction is kept as long as the transaction is.
+#[test]
+fn what_became_of_a_transaction_is_shed_with_it() {
+    let (mut sim, group) = Sim::group(3, 3);
+    sim.write(PHONE, set(notes(group), "todo", "milk"));
+    sim.settle();
+    assert_eq!(asked(&sim, PHONE), Some(Outcome::Committed));
+
+    sim.compact(PHONE, group);
+    sim.settle();
+
+    assert_eq!(sim.entries_kept(PHONE, group), 0);
+    assert_eq!(asked(&sim, PHONE), None);
+}

@@ -42,4 +42,6 @@ A transaction is an atomic group of operations by one [contributor](peers.md), a
 - The application is told when its transaction is first judged, each time its verdict flips, when it is committed and whether it took effect, and if it is discarded because its author was [removed](membership.md).
 - A device that catches up from a [snapshot](compaction.md) is told its transaction was covered, and not whether it took effect.
 - Each is told once. A device that stops before delivering its outputs does not tell it again.
+- A device can be asked what last became of a transaction it wrote, for as long as it keeps the transaction: until [compaction](compaction.md) sheds it.
+- What became of a discarded transaction is kept for as long as the device holds the [group](groups.md).
 - Rejection is all or nothing and never silent; there is no partial merge of a guarded transaction.
