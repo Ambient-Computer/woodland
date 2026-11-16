@@ -359,3 +359,32 @@ fn a_device_waits_longer_before_each_attempt_at_the_same_checkpoint() {
 
     assert!(waits[1] < waits[2] && waits[2] < waits[3], "{waits:?}");
 }
+
+/// Any kind of model can be restricted to committed reads, and is then
+/// a model of its own.
+#[test]
+fn any_kind_of_model_can_show_only_whats_committed() {
+    let (mut sim, group) = Sim::group(3, 3);
+    let open = ModelId::claims(group, [5; 32]);
+    let held = open.committed_only();
+    assert_ne!(open, held);
+    sim.isolate(PHONE);
+    for names in [open, held] {
+        let claim = Transaction::new().claim(names, "ada", "phone");
+        sim.write_to(PHONE, group, claim);
+    }
+    sim.settle();
+
+    assert!(sim.shown(PHONE, group, open, "ada").is_some());
+    assert_eq!(sim.shown(PHONE, group, held, "ada"), None);
+
+    sim.connect_all();
+    sim.settle();
+
+    for device in [PHONE, LAPTOP, NAS] {
+        assert_eq!(
+            sim.shown(device, group, held, "ada").as_deref(),
+            Some("phone")
+        );
+    }
+}

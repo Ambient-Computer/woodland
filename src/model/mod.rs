@@ -13,7 +13,7 @@
 //!   and none of its operations happen.
 //!
 //! And about itself: whether readers may see writes that **haven't
-//! committed** ([`Kind::shows_uncommitted`]).
+//! committed** ([`ModelId::shows_uncommitted`]).
 //!
 //! A key holds whatever the last transaction that wasn't pruned wrote
 //! there. The kinds of model differ only in what they declare:
@@ -271,6 +271,10 @@ pub(crate) fn combine(held: Option<&[u8]>, write: &[u8]) -> Vec<u8> {
     sequence::combine(held, write)
 }
 
+/// Set in the first byte of the ID of a model that's restricted to
+/// committed reads.
+const HELD: u8 = 0x80;
+
 /// The kinds of model there are. A model's kind is part of its ID.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
@@ -283,9 +287,9 @@ pub(crate) enum Kind {
 }
 
 impl Kind {
-    /// Whether readers see writes that aren't committed. If not, they
-    /// aren't kept as versions at all: they wait in the log.
-    pub(crate) fn shows_uncommitted(self) -> bool {
+    /// Whether readers of this kind see writes that aren't committed,
+    /// unless the model says otherwise.
+    fn shows_uncommitted(self) -> bool {
         !matches!(self, Self::Threshold)
     }
 
@@ -586,6 +590,22 @@ impl ModelId {
         Self::new(Kind::Table, clock.into(), nonce)
     }
 
+    /// The same kind of model, restricted to committed reads: nobody
+    /// ever reads a value from it that could still be displaced, its
+    /// own author included. It's a different model from the one this
+    /// started as, with its own keys.
+    #[must_use]
+    pub fn committed_only(mut self) -> Self {
+        self.id[0] |= HELD;
+        self
+    }
+
+    /// Whether readers see writes that aren't committed. If not, they
+    /// aren't kept as versions at all: they wait in the log.
+    pub(crate) fn shows_uncommitted(&self) -> bool {
+        self.id[0] & HELD == 0 && self.kind().is_some_and(Kind::shows_uncommitted)
+    }
+
     /// `None` for an ID this version of the library didn't make.
     pub(crate) fn kind(&self) -> Option<Kind> {
         [
@@ -597,7 +617,7 @@ impl ModelId {
             Kind::Sequence,
         ]
         .into_iter()
-        .find(|&kind| kind as u8 == self.id[0] && kind as u8 <= vocabulary())
+        .find(|&kind| kind as u8 == self.id[0] & !HELD && kind as u8 <= vocabulary())
     }
 
     /// The clock the model belongs to. A transaction writes to the

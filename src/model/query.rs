@@ -245,7 +245,7 @@ impl Query {
             group,
             model,
             ranges,
-            optimistic: model.kind().is_some_and(Kind::shows_uncommitted),
+            optimistic: model.shows_uncommitted(),
             exact: None,
         }
     }

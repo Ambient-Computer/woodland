@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::clock::Stamp;
 use crate::db::{Changed, GroupId, keys};
-use crate::model::{Declaration, Effect, Fingerprint, Kind, ModelId, Operation, Requirement};
+use crate::model::{Declaration, Effect, Fingerprint, ModelId, Operation, Requirement};
 use crate::store::{StoreError, View};
 
 use super::super::entry::Outline;
@@ -133,7 +133,7 @@ where
     // it. Any other shows the last thing.
     let mut merged: BTreeMap<Place, Vec<Vec<u8>>> = BTreeMap::new();
     for operation in operations {
-        let shown = operation.model.kind().is_some_and(Kind::shows_uncommitted);
+        let shown = operation.model.shows_uncommitted();
         for write in operation.writes().into_iter().filter(|_| shown) {
             if operation.merges() {
                 let writes = merged.entry((write.model, write.key)).or_default();
