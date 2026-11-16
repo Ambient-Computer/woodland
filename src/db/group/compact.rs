@@ -112,6 +112,15 @@ impl Group {
         self.said = true;
     }
 
+    /// Deletes some more of the entries that were dropped: the first
+    /// of them in the step that dropped them.
+    pub(super) fn bury<V: View>(&mut self, step: &mut Step<V>) {
+        let mut budget = SWEEP;
+        for clock in self.clocks.values_mut() {
+            budget -= clock.bury(budget, step);
+        }
+    }
+
     /// Deletes some more of the history that's been shed.
     pub(super) async fn sweep<V: View>(&mut self, step: &mut Step<V>) -> Result<(), StoreError> {
         let mut budget = SWEEP;
@@ -499,7 +508,7 @@ impl Group {
             let void = entries.filter(|entry| !self.standing(entry.author, id, entry.under));
             let void: BTreeSet<Peer> = void.map(|entry| entry.author).collect();
             for author in void {
-                self.clock(id).void(author, 0, step);
+                self.clock(id).void(author, 0);
             }
         }
 

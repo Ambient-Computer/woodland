@@ -55,6 +55,10 @@ pub(super) struct Clock {
     pub(super) job: Option<Job>,
     /// Which uncommitted entries happen.
     pub(super) verdicts: Verdicts,
+    /// Entries that will never count and are still stored. Dropping
+    /// them is a decision, made at once. Deleting follows, so much a
+    /// step. They're past the end of their author's chain, always.
+    pub(super) condemned: BTreeMap<(Peer, u64), Outline>,
 }
 
 /// What's kept of a clock besides its entries and its state.
@@ -69,6 +73,9 @@ pub(super) struct Kept {
     dropped: BTreeSet<ModelId>,
     lost: bool,
     job: Option<Job>,
+    /// How far past the end of each author's chain there are entries
+    /// stored that never counted.
+    condemned: BTreeMap<Peer, u64>,
 }
 
 /// What committing a checkpoint's entries comes to, in one clock.
@@ -101,6 +108,7 @@ impl Clock {
             lost: false,
             job: None,
             verdicts: Verdicts::default(),
+            condemned: BTreeMap::new(),
         }
     }
 
@@ -135,6 +143,20 @@ impl Clock {
             }
         }
 
+        for (author, last) in kept.condemned {
+            let first = reach(&clock.history.heads, author) + 1;
+            let (start, end) = (
+                keys::log(group, id, author, first),
+                keys::log(group, id, author, last.saturating_add(1)),
+            );
+            for (_, stored) in step.scan(&start, &end).await? {
+                let entry = encoding::decode::<Entry>(&stored);
+                let entry = entry.ok_or_else(|| StoreError::new("a stored entry is unreadable"))?;
+                let outline = entry.trusted(&clock.keys).outline();
+                clock.condemned.insert((author, outline.link.seq), outline);
+            }
+        }
+
         // Storage already shows these: verdicts depend on nothing but
         // what was stored along with them.
         clock.recall(step).await?;
@@ -153,6 +175,7 @@ impl Clock {
             dropped: self.dropped.clone(),
             lost: self.lost,
             job: self.job.clone(),
+            condemned: self.last_condemned(),
         }
     }
 
@@ -217,6 +240,7 @@ impl Clock {
     }
 
     pub(super) fn integrate<V: View>(&mut self, entry: &Checked, step: &mut Step<V>) {
+        self.make_way(entry.author(), entry.header().seq, step);
         let key = keys::log(self.group, self.id, entry.author(), entry.header().seq);
         step.save(key, &entry.entry);
         let outline = entry.outline();
@@ -396,7 +420,7 @@ impl Clock {
     /// anyone `writers` leaves out. That's the whole of removal: a
     /// removed contributor's history ends at the checkpoint that
     /// removed it.
-    pub(super) fn cut<V: View>(&mut self, writers: Writers<'_>, height: u64, step: &mut Step<V>) {
+    pub(super) fn cut(&mut self, writers: Writers<'_>, height: u64) {
         // An entry written under a later checkpoint was written by
         // someone let back in since. This device is only now catching
         // up to where they were stopped.
@@ -406,12 +430,16 @@ impl Clock {
         let removed = authors.filter(|&author| !writers.includes(author));
         let removed: BTreeSet<Peer> = removed.collect();
         for author in removed {
-            self.void(author, 0, step);
+            self.void(author, 0);
         }
     }
 
     /// Drops everything `author` wrote past `seq` that isn't committed.
-    pub(super) fn void<V: View>(&mut self, author: Peer, seq: u64, step: &mut Step<V>) {
+    /// From here on none of it is held. What's stored of it goes a
+    /// [few entries a step].
+    ///
+    /// [few entries a step]: Self::bury
+    pub(super) fn void(&mut self, author: Peer, seq: u64) {
         let entries = self.history.cut(author, seq);
         if entries.is_empty() {
             return;
@@ -425,11 +453,60 @@ impl Clock {
             "dropped entries that will never count"
         );
         for entry in entries {
-            step.delete(keys::log(self.group, self.id, author, entry.link.seq));
-            judge::hide(self.group, &entry, step);
-            judge::notify(self.group, &entry, false, step);
-            self.tell(&entry, Outcome::Discarded, step);
             self.verdicts.gone(&entry);
+            self.condemned.insert((author, entry.link.seq), entry);
+        }
+    }
+
+    /// The last entry stored past the end of each author's chain.
+    fn last_condemned(&self) -> BTreeMap<Peer, u64> {
+        self.condemned.keys().copied().collect()
+    }
+
+    /// Whether what's stored at this place in `author`'s chain is an
+    /// entry that was dropped.
+    pub(super) fn is_condemned(&self, author: Peer, seq: u64) -> bool {
+        self.condemned.contains_key(&(author, seq))
+    }
+
+    /// Deletes an entry that was dropped, and what it wrote.
+    fn inter<V: View>(&self, entry: &Outline, step: &mut Step<V>) {
+        step.delete(keys::log(self.group, self.id, entry.author, entry.link.seq));
+        judge::hide(self.group, entry, step);
+        judge::notify(self.group, entry, false, step);
+        self.tell(entry, Outcome::Discarded, step);
+    }
+
+    /// Deletes up to `budget` entries that were dropped. Returns how
+    /// many.
+    pub(super) fn bury<V: View>(&mut self, budget: usize, step: &mut Step<V>) -> usize {
+        let mut buried = 0;
+        while buried < budget {
+            let Some((_, entry)) = self.condemned.pop_first() else {
+                break;
+            };
+            self.inter(&entry, step);
+            buried += 1;
+        }
+
+        buried
+    }
+
+    /// Deletes whatever dropped entry is stored where `author`'s chain
+    /// is about to reach.
+    fn make_way<V: View>(&mut self, author: Peer, seq: u64, step: &mut Step<V>) {
+        if let Some(entry) = self.condemned.remove(&(author, seq)) {
+            self.inter(&entry, step);
+        }
+    }
+
+    /// Deletes every dropped entry stored where `frontier` says an
+    /// author's chain has reached.
+    fn make_way_through<V: View>(&mut self, frontier: &Frontier, step: &mut Step<V>) {
+        let covered = |&(author, seq): &(Peer, u64)| seq <= reach(frontier, author);
+        let covered: Vec<_> = self.condemned.keys().copied().filter(covered).collect();
+        for (author, seq) in covered {
+            self.make_way(author, seq, step);
         }
     }
 
@@ -451,7 +528,7 @@ impl Clock {
             self.swept.get(author).copied().unwrap_or(0) >= link.seq
         };
 
-        !self.shed.iter().all(swept)
+        !self.shed.iter().all(swept) || !self.condemned.is_empty()
     }
 
     /// Deletes up to `budget` entries that were shed. Returns how many.
@@ -496,8 +573,9 @@ impl Clock {
         // was never going to count, and neither was anything written
         // on top of it.
         for author in self.history.replaced(frontier) {
-            self.void(author, 0, step);
+            self.void(author, 0);
         }
+        self.make_way_through(frontier, step);
 
         self.dropped = dropped;
         let covered = self.history.covered(frontier);

@@ -411,7 +411,7 @@ impl Group {
                 let writers = self.chain.tip().electorate.writers(id);
                 for author in replaced {
                     if !writers.includes(author) {
-                        clock.void(author, 0, step);
+                        clock.void(author, 0);
                         self.said = true;
                     }
                 }
@@ -455,13 +455,13 @@ impl Group {
 
         for (id, ..) in plan {
             let writers = checkpoint.electorate.writers(id);
-            self.clock(id).cut(writers, checkpoint.height, step);
+            self.clock(id).cut(writers, checkpoint.height);
         }
 
         self.folded = checkpoint.height;
         self.passed |= passed;
         self.sound.clear();
-        self.silence_all(step);
+        self.silence_all();
 
         // A request to reconfigure was made of the electorate as it was.
         // Once that changes, however it changes, the request is spent.

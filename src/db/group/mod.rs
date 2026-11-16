@@ -312,6 +312,14 @@ impl Group {
         Ok(Some(group))
     }
 
+    /// How many entries were dropped and are still stored.
+    #[cfg(test)]
+    pub(crate) fn burying(&self) -> usize {
+        let clocks = self.clocks.values();
+
+        clocks.map(|clock| clock.condemned.len()).sum()
+    }
+
     /// The height of the last checkpoint committed here.
     #[cfg(test)]
     pub(crate) fn folded(&self) -> u64 {
@@ -608,8 +616,10 @@ impl Group {
             }
         }
         self.look_back(step).await?;
+        self.bury(step);
 
-        self.clocks.retain(|_, clock| !clock.is_empty());
+        self.clocks
+            .retain(|_, clock| !clock.is_empty() || clock.is_unswept());
         for clock in self.clocks.values_mut() {
             clock.rejudge(step).await?;
         }

@@ -252,7 +252,7 @@ impl Group {
                     continue;
                 };
                 if clock.history.displaces(entry, &decided) {
-                    clock.void(entry.author(), 0, step);
+                    clock.void(entry.author(), 0);
                     moved = true;
                 }
             }

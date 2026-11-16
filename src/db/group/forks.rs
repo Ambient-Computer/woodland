@@ -67,7 +67,7 @@ impl Group {
         }
         step.save(keys::proof(self.id, author), &proof);
         self.proofs.insert(author, proof);
-        self.silence(author, step);
+        self.silence(author);
 
         true
     }
@@ -131,20 +131,20 @@ impl Group {
 
     /// Drops whatever `author` wrote that no checkpoint covers, or has
     /// been proposed to.
-    fn silence<V: View>(&mut self, author: Peer, step: &mut Step<V>) {
+    fn silence(&mut self, author: Peer) {
         let ids: Vec<ClockId> = self.clocks.keys().copied().collect();
         for id in ids {
             let kept = reach(&self.spoken_for(id), author);
-            self.clock(id).void(author, kept, step);
+            self.clock(id).void(author, kept);
         }
     }
 
     /// Does the same for everyone proven to have forked. What a
     /// proposal named and the checkpoint that was decided didn't is
     /// let go of here.
-    pub(super) fn silence_all<V: View>(&mut self, step: &mut Step<V>) {
+    pub(super) fn silence_all(&mut self) {
         for author in self.proven() {
-            self.silence(author, step);
+            self.silence(author);
         }
     }
 
@@ -156,7 +156,14 @@ impl Group {
         step: &Step<V>,
     ) -> Result<Option<Proof>, StoreError> {
         let header = entry.header();
+        let dropped = self.clocks.get(&header.clock);
+        let dropped = dropped.is_some_and(|clock| clock.is_condemned(entry.author(), header.seq));
         let key = keys::log(self.id, header.clock, entry.author(), header.seq);
+        if dropped {
+            // What's stored there is on its way out: its author was
+            // made to start again.
+            return Ok(None);
+        }
         let Some(held) = step.load::<Entry>(&key).await? else {
             return Ok(None);
         };

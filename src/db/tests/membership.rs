@@ -1,4 +1,5 @@
 use super::*;
+use crate::db::group::SWEEP;
 
 #[test]
 fn a_new_contributor_writes_once_a_checkpoint_admits_it() {
@@ -251,4 +252,214 @@ fn a_request_from_a_member_with_no_say_is_ignored() {
 
     let written = block_on(sim.devices[NAS].write(group, set(notes(group), "todo", "milk")));
     assert!(matches!(written, Err(Error::NotAContributor)));
+}
+
+/// How many entries of the home group's own clock the device stores.
+fn stored(sim: &Sim, device: usize, group: GroupId) -> usize {
+    let view = sim.devices[device].store.view();
+    let (start, end) = keys::range(keys::logs(group));
+
+    block_on(crate::db::step::scan(&view, &start, &end))
+        .expect("scanned")
+        .len()
+}
+
+const MANY: usize = 30;
+
+/// The nas writes a lot that nobody hears, and is removed.
+fn removed_with_a_lot_unheard(sim: &mut Sim, group: GroupId) {
+    sim.isolate(NAS);
+    for note in 0..MANY {
+        sim.write_to(NAS, group, set(notes(group), &format!("lost {note}"), "x"));
+    }
+    sim.reconfigure(PHONE, group, [PHONE, LAPTOP]);
+    sim.settle();
+}
+
+/// Dropping what a removed contributor wrote is decided at once, and
+/// what's stored of it is deleted a few entries a step: however much
+/// there is, no step does all of it.
+#[test]
+fn what_removal_cut_is_deleted_a_few_entries_a_step() {
+    let (mut sim, group) = Sim::group(3, 3);
+    removed_with_a_lot_unheard(&mut sim, group);
+    let burying = |sim: &Sim| sim.devices[NAS].groups[&group].burying();
+    let before = stored(&sim, NAS, group);
+
+    sim.connect_all();
+    while burying(&sim) == 0 {
+        assert!(sim.deliver(), "the nas never heard");
+    }
+    let (mut left, mut kept) = (burying(&sim), stored(&sim, NAS, group));
+    assert_eq!(left, MANY - SWEEP);
+    assert_eq!(kept, before - SWEEP);
+
+    // It carries on by itself, and through being stopped.
+    sim.isolate(NAS);
+    assert!(sim.devices[NAS].groups[&group].is_busy());
+    sim.wake(NAS);
+    let outputs = block_on(sim.devices[NAS].resume()).expect("resumed");
+    sim.absorb(NAS, outputs);
+    assert_eq!(burying(&sim), left - SWEEP);
+    sim.restart(NAS);
+    assert_eq!(burying(&sim), left - SWEEP);
+    (left, kept) = (burying(&sim), stored(&sim, NAS, group));
+    while sim.devices[NAS].groups[&group].is_busy() {
+        sim.wake(NAS);
+        let outputs = block_on(sim.devices[NAS].resume()).expect("resumed");
+        sim.absorb(NAS, outputs);
+        let now = (burying(&sim), stored(&sim, NAS, group));
+        assert!(left - now.0 <= SWEEP && kept - now.1 <= SWEEP, "{now:?}");
+        (left, kept) = now;
+    }
+
+    assert_eq!(burying(&sim), 0);
+    assert_eq!(stored(&sim, NAS, group), before - MANY);
+    for note in 0..MANY {
+        let lost = sim.shown(NAS, group, notes(group), &format!("lost {note}"));
+        assert_eq!(lost, None, "note {note}");
+    }
+}
+
+/// A contributor let back in starts its chain again where it was cut,
+/// which is where the entries it lost may still be stored.
+#[test]
+fn a_contributor_back_writes_over_what_its_still_deleting() {
+    let (mut sim, group) = Sim::group(3, 3);
+    removed_with_a_lot_unheard(&mut sim, group);
+    sim.reconfigure(PHONE, group, [PHONE, LAPTOP, NAS]);
+    sim.settle();
+    let burying = |sim: &Sim| sim.devices[NAS].groups[&group].burying();
+
+    sim.connect_all();
+    while burying(&sim) == 0 {
+        assert!(sim.deliver(), "the nas never heard");
+    }
+    while sim.devices[NAS].groups[&group].folded() < sim.devices[PHONE].groups[&group].folded() {
+        assert!(sim.deliver(), "the nas never caught up");
+    }
+    assert!(burying(&sim) > SWEEP, "{} left", burying(&sim));
+    for note in 0..MANY {
+        sim.write_to(NAS, group, set(notes(group), &format!("kept {note}"), "y"));
+    }
+    sim.restart(NAS);
+    sim.connect_all();
+    sim.settle();
+
+    assert_eq!(burying(&sim), 0);
+    for device in [PHONE, LAPTOP, NAS] {
+        for note in 0..MANY {
+            let kept = sim.committed(device, group, notes(group), &format!("kept {note}"));
+            assert_eq!(kept.as_deref(), Some("y"), "device {device}, note {note}");
+        }
+        for note in 0..MANY {
+            let lost = sim.shown(device, group, notes(group), &format!("lost {note}"));
+            assert_eq!(lost, None, "device {device}, note {note}");
+        }
+    }
+}
+
+/// Carries on as [`Sim::settle`] does, but for one device, which is
+/// left with whatever it had to do.
+fn settle_without(sim: &mut Sim, idle: usize, group: GroupId) {
+    for _ in 0..12 {
+        for device in (0..sim.devices.len()).filter(|&device| device != idle) {
+            sim.tick(device);
+        }
+        loop {
+            if sim.deliver() {
+                continue;
+            }
+            let busy = |device: &usize| sim.devices[*device].groups[&group].is_busy();
+            let Some(device) = (0..sim.devices.len()).filter(|&it| it != idle).find(busy) else {
+                break;
+            };
+            sim.wake(device);
+            let outputs = block_on(sim.devices[device].resume()).expect("resumed");
+            sim.absorb(device, outputs);
+        }
+    }
+}
+
+/// A reader hears a lot from the nas that nobody else does. The nas
+/// is removed and let back in, and the reader, hearing of it, is
+/// stopped partway through deleting what it heard. Meanwhile the nas
+/// writes as much again, which is committed.
+fn a_reader_partway_through_deleting(sim: &mut Sim, group: GroupId, each: usize) {
+    sim.disconnect_all();
+    sim.connect(NAS, FRIEND);
+    for note in 0..each {
+        sim.write_to(NAS, group, set(notes(group), &format!("lost {note}"), "x"));
+    }
+    sim.run();
+    sim.disconnect_all();
+    sim.connect(PHONE, LAPTOP);
+    sim.reconfigure(PHONE, group, [PHONE, LAPTOP]);
+    sim.settle();
+    sim.reconfigure(PHONE, group, [PHONE, LAPTOP, NAS]);
+    sim.settle();
+
+    sim.connect(FRIEND, PHONE);
+    let folded = |sim: &Sim, device: usize| sim.devices[device].groups[&group].folded();
+    while folded(sim, FRIEND) < folded(sim, PHONE) {
+        assert!(sim.deliver(), "the reader never caught up");
+    }
+    sim.isolate(FRIEND);
+    let burying = sim.devices[FRIEND].groups[&group].burying();
+    assert!(burying > SWEEP, "{burying} left");
+
+    sim.connect(NAS, PHONE);
+    sim.connect(NAS, LAPTOP);
+    settle_without(sim, FRIEND, group);
+    for note in 0..each {
+        sim.write_to(NAS, group, set(notes(group), &format!("kept {note}"), "y"));
+    }
+    settle_without(sim, FRIEND, group);
+    assert_eq!(sim.devices[FRIEND].groups[&group].burying(), burying);
+}
+
+fn only_what_was_kept_shows(sim: &Sim, device: usize, group: GroupId, each: usize) {
+    assert_eq!(sim.devices[device].groups[&group].burying(), 0);
+    for note in 0..each {
+        let kept = sim.committed(device, group, notes(group), &format!("kept {note}"));
+        assert_eq!(kept.as_deref(), Some("y"), "note {note}");
+    }
+    for note in 0..each {
+        let lost = sim.shown(device, group, notes(group), &format!("lost {note}"));
+        assert_eq!(lost, None, "note {note}");
+    }
+}
+
+/// What a contributor let back in writes arrives where the entries it
+/// lost are still stored, on a device that's still deleting them.
+#[test]
+fn entries_arrive_over_ones_still_being_deleted() {
+    let (mut sim, group) = Sim::group(4, 3);
+    a_reader_partway_through_deleting(&mut sim, group, MANY);
+
+    sim.connect(FRIEND, PHONE);
+    sim.settle();
+    only_what_was_kept_shows(&sim, FRIEND, group, MANY);
+}
+
+/// The same, when what was written since arrives as a snapshot: the
+/// author's chain is then past all of it at once.
+#[test]
+fn a_snapshot_arrives_over_entries_still_being_deleted() {
+    let (mut sim, group) = Sim::group(4, 3);
+    a_reader_partway_through_deleting(&mut sim, group, 10 * MANY);
+    sim.compact(PHONE, group);
+
+    sim.connect(FRIEND, PHONE);
+    let folded = |sim: &Sim, device: usize| sim.devices[device].groups[&group].folded();
+    let mut left = 0;
+    while folded(&sim, FRIEND) < folded(&sim, PHONE) {
+        left = sim.devices[FRIEND].groups[&group].burying();
+        assert!(sim.deliver() || sim.resume(), "the reader never caught up");
+    }
+    assert!(left > SWEEP, "{left} left when the snapshot was taken on");
+    sim.restart(FRIEND);
+    sim.connect(FRIEND, PHONE);
+    sim.settle();
+    only_what_was_kept_shows(&sim, FRIEND, group, 10 * MANY);
 }
