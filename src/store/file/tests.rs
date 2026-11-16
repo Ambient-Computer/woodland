@@ -84,3 +84,81 @@ fn a_database_comes_back_from_its_file() {
     assert_eq!(database.id(), id, "the key is in the file");
     assert_eq!(read, [(b"a".to_vec(), b"b".to_vec())]);
 }
+
+/// How many keys each batch of the kill test writes.
+const WIDTH: u8 = 40;
+
+/// Set, for the process that gets killed, to the folder it writes in.
+const VICTIM: &str = "WOODLAND_KILL_TEST_FOLDER";
+
+fn number(bytes: &[u8]) -> Option<u64> {
+    Some(u64::from_be_bytes(bytes.try_into().ok()?))
+}
+
+/// Not a test of its own: [`a_store_killed_mid_batch_holds_whole_batches`]
+/// runs it in another process, and kills it. Each batch writes its
+/// number under every key, and once it's applied, says so in a file
+/// beside the store.
+#[test]
+fn the_process_that_gets_killed() {
+    let Some(folder) = std::env::var_os(VICTIM) else {
+        return;
+    };
+    let folder = std::path::PathBuf::from(folder);
+    let mut store = FileStore::open(folder.join("store")).expect("opened");
+    let last = get(&store.view(), &[0]).and_then(|it| number(&it));
+    for batch in last.map_or(1, |last| last + 1)..=u64::MAX {
+        let value = batch.to_be_bytes();
+        let writes = (0..WIDTH).map(|key| put(&[key], &value));
+        apply(&mut store, writes.collect());
+        std::fs::write(folder.join("applied.next"), value).expect("noted");
+        std::fs::rename(folder.join("applied.next"), folder.join("applied")).expect("noted");
+    }
+}
+
+/// A process can die anywhere. What's left is every batch whose call
+/// returned, and maybe the one in progress, whole.
+#[test]
+fn a_store_killed_mid_batch_holds_whole_batches() {
+    let folder = folder();
+    let applied = || std::fs::read(folder.path().join("applied")).ok();
+    let applied = || applied().and_then(|it| number(&it)).unwrap_or(0);
+    let mut reached = 0;
+    for round in 1..=4u64 {
+        let test = "store::file::tests::the_process_that_gets_killed";
+        let mut victim = std::process::Command::new(std::env::current_exe().expect("a test"))
+            .args(["--exact", test, "--test-threads", "1"])
+            .env(VICTIM, folder.path())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("started");
+
+        // Let it get somewhere, a different distance each time.
+        let patience = std::time::Instant::now();
+        while applied() < reached + round * 3 {
+            assert!(patience.elapsed().as_secs() < 60, "it never wrote");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        victim.kill().expect("killed");
+        victim.wait().expect("gone");
+
+        let returned = applied();
+        let store = open(&folder, "store");
+        let view = store.view();
+        let held = |key: u8| get(&view, &[key]).and_then(|it| number(&it));
+        let first = held(0).expect("something was applied");
+        for key in 0..WIDTH {
+            assert_eq!(held(key), Some(first), "round {round}: a batch was torn");
+        }
+        assert!(
+            first >= returned,
+            "round {round}: lost a batch that returned"
+        );
+        assert!(
+            first <= returned + 1,
+            "round {round}: holds a batch nobody applied"
+        );
+        reached = first;
+    }
+}
