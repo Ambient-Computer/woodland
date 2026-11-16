@@ -149,12 +149,6 @@ impl History {
         frontier.iter().all(held)
     }
 
-    /// Whether an entry this device holds isn't the one `frontier` names
-    /// for its place: its author signed two.
-    pub(super) fn contradicts(&self, frontier: &Frontier) -> bool {
-        !self.replaced(frontier).is_empty()
-    }
-
     /// The authors of whom this device holds an entry other than the
     /// one `frontier` names for its place.
     pub(super) fn replaced(&self, frontier: &Frontier) -> Vec<Peer> {

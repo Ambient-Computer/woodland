@@ -382,7 +382,7 @@ impl Group {
                 continue;
             }
 
-            let Some(clock) = self.clocks.get(&id) else {
+            let Some(clock) = self.clocks.get_mut(&id) else {
                 if covered.is_some_and(|it| !it.frontier.is_empty()) {
                     return Ok(false);
                 }
@@ -391,13 +391,30 @@ impl Group {
 
             let frontier = covered.map(|it| it.frontier.clone());
             let frontier = frontier.unwrap_or_else(|| clock.history.committed.clone());
-            if clock.history.contradicts(&frontier) {
-                tracing::error!(
+            // Whatever is held in place of an entry the checkpoint names
+            // was never going to count, and neither was anything on top
+            // of it. Its author forked, and the two entries together
+            // are the proof, which is on its way. Unless the author has
+            // gone since: nobody passes on proof against someone who
+            // has, and it may be this device, back from losing its
+            // store. Then what's held goes, the entries that do count
+            // are missing, and peers can tell.
+            let replaced = clock.history.replaced(&frontier);
+            if !replaced.is_empty() {
+                tracing::warn!(
                     group = ?self.id,
                     clock = ?id,
                     height = checkpoint.height,
                     "holding an entry its author replaced, can't commit"
                 );
+                let writers = self.chain.tip().electorate.writers(id);
+                for author in replaced {
+                    if !writers.includes(author) {
+                        clock.void(author, 0, step);
+                        self.said = true;
+                    }
+                }
+
                 return Ok(false);
             }
             if !clock.history.holds(&frontier) {
