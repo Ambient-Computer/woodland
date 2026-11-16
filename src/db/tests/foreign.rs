@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::model::Allowances;
+use crate::{ColumnId, Table};
 
 const SEATS: &str = "seats";
 
@@ -163,4 +164,34 @@ fn a_clock_nobody_can_read_carries_on_once_its_writer_is_gone() {
             "device {device}"
         );
     }
+}
+
+/// The NAS has tables, from before a table could be named. A rename
+/// isn't something it can throw away: it stops vouching for the clock
+/// until it can read it.
+#[test]
+fn an_operation_added_to_a_kind_since_waits_for_an_update() {
+    let mut sim = household_with_old(&[NAS]);
+    let group = sim.home;
+    let table = ModelId::table(photos(group), [9; 32]);
+    let columns: [(ColumnId, &str); 0] = [];
+    sim.write(PHONE, Transaction::new().create_table(table, columns));
+    sim.settle();
+    sim.write(PHONE, Transaction::new().rename_table(table, "people"));
+    sim.settle();
+
+    let name = |sim: &Sim, device: usize| {
+        sim.wake(device);
+        let read = Table::read(&sim.read(device, &Query::table(group, table).committed()));
+
+        read.map(|it| it.name().to_owned())
+    };
+    assert_eq!(name(&sim, PHONE).as_deref(), Some("people"));
+    assert_ne!(name(&sim, NAS).as_deref(), Some("people"));
+
+    update(&mut sim, NAS);
+    sim.connect_all();
+    sim.settle();
+
+    assert_eq!(name(&sim, NAS).as_deref(), Some("people"));
 }

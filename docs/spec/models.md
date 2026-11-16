@@ -41,5 +41,7 @@ A model is one kind of data inside a [clock](groups.md): a namespace of keys and
 - A peer that meets a kind it does not have cannot verify state for that clock. It may still relay it.
 - It neither reads nor writes that clock from then on, and [votes](checkpoints.md) for nothing that commits more of it.
 - If a quorum commits what it could not read, it takes their word that it is committed. Once it has the kind, it fetches the clock again.
-- An operation says which model it is for in a way every peer can read, whatever its kind. An operation that means nothing in a kind the peer has is invalid.
+- An operation says which model it is for in a way every peer can read, whatever its kind.
+- An operation added to a kind after the kind was released says so the same way. A peer whose library predates it treats it as a kind it does not have.
+- An operation that means nothing to the release it names is invalid, to every peer.
 - Adding a kind never changes the log, the checkpoint chain, or sync.

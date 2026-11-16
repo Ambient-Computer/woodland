@@ -169,12 +169,16 @@ impl Entry {
 #[derive(Serialize, Deserialize)]
 struct Carried {
     model: ModelId,
+    /// The version of the library that first had the operation, if
+    /// that's later than the one that first had its kind.
+    since: u8,
     change: Vec<u8>,
 }
 
 fn carried(operations: &[Operation]) -> Vec<Carried> {
     let carried = |operation: &Operation| Carried {
         model: operation.model,
+        since: operation.since(),
         change: encoding::encode(&operation.change),
     };
 
@@ -189,17 +193,24 @@ fn understood(plain: &[u8], clock: ClockId) -> Read {
     if carried.iter().any(|it| it.model.clock() != clock) {
         return Read::Nonsense;
     }
-    if carried.iter().any(|it| it.model.kind().is_none()) {
+    let latest = crate::model::vocabulary();
+    if carried
+        .iter()
+        .any(|it| it.model.kind().is_none() || it.since > latest)
+    {
         return Read::Foreign;
     }
 
     let operation = |carried: Carried| {
         let change = encoding::decode(&carried.change)?;
-
-        Some(Operation {
+        let operation = Operation {
             model: carried.model,
             change,
-        })
+        };
+
+        // A version that can read it has to agree on when it was
+        // added, or an earlier one couldn't tell it from nonsense.
+        (operation.since() == carried.since).then_some(operation)
     };
     let operations: Option<Vec<Operation>> = carried.into_iter().map(operation).collect();
 
@@ -211,7 +222,8 @@ enum Read {
     Does(Vec<Operation>),
     /// This device lacks the secret to tell.
     Sealed,
-    /// It's for a kind of model this device doesn't have.
+    /// It's for a kind of model this device doesn't have, or says
+    /// something a later version of the library added to one it has.
     Foreign,
     /// It isn't a list of operations, whoever reads it.
     Nonsense,
@@ -395,6 +407,7 @@ mod tests {
         let sound = carried(&[Operation::set(model, b"key".to_vec(), b"value".to_vec())]);
         let garbled = vec![Carried {
             model,
+            since: 0,
             change: vec![0xFF; 9],
         }];
 
@@ -404,6 +417,32 @@ mod tests {
         assert!(entry.check(group, &Keyring::Open).is_none());
         let (group, entry) = saying(clock, b"\xFF\xFF\xFF");
         assert!(entry.check(group, &Keyring::Open).is_none());
+    }
+
+    /// A later version can add an operation to a kind an earlier one
+    /// has. The earlier one can tell that's what it's looking at.
+    #[test]
+    fn an_operation_added_to_a_kind_since_is_kept_unread() {
+        let clock = ClockId::from_bytes([3; 32]);
+        let table = ModelId::table(clock, [5; 32]);
+        let name = crate::model::table::Operation::Name {
+            name: "people".to_owned(),
+        };
+        let mut said = carried(&[Operation::table(table, name)]);
+        let (group, newer) = saying(clock, &encoding::encode(&said));
+
+        crate::model::predate(true);
+        let kept = newer.clone().check(group, &Keyring::Open);
+        crate::model::predate(false);
+
+        assert!(kept.expect("an entry all the same").unread);
+        assert!(!newer.check(group, &Keyring::Open).expect("read").unread);
+
+        // One that claims to be older than it is would be nonsense to
+        // a device that old, so it's nonsense to every device.
+        said[0].since = 0;
+        let (group, lying) = saying(clock, &encoding::encode(&said));
+        assert!(lying.check(group, &Keyring::Open).is_none());
     }
 
     #[test]

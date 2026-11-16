@@ -238,17 +238,24 @@ pub(crate) enum Effect {
     Drop,
 }
 
-/// How many kinds of model this version of the library has. Kinds
-/// are only ever added, so a later version has every kind an earlier
-/// one did.
+/// The first version of the library in which a table has a name.
+const NAMES: u8 = 7;
+
+/// The latest of everything this version of the library can read.
+const LATEST: u8 = NAMES;
+
+/// How much this version of the library can read. Each kind of model
+/// has a number, and so does each operation added to a kind since.
+/// They're only ever added, so a later version reads everything an
+/// earlier one did.
 #[cfg(not(test))]
 pub(crate) fn vocabulary() -> u8 {
-    Kind::Sequence as u8
+    LATEST
 }
 
 #[cfg(test)]
 thread_local! {
-    static VOCABULARY: std::cell::Cell<u8> = const { std::cell::Cell::new(Kind::Sequence as u8) };
+    static VOCABULARY: std::cell::Cell<u8> = const { std::cell::Cell::new(LATEST) };
 }
 
 #[cfg(test)]
@@ -260,9 +267,9 @@ pub(crate) fn vocabulary() -> u8 {
 /// allowances were added, or as the latest.
 #[cfg(test)]
 pub(crate) fn predate(old: bool) {
-    let latest = if old { Kind::Table } else { Kind::Sequence };
+    let latest = if old { Kind::Table as u8 } else { LATEST };
 
-    VOCABULARY.set(latest as u8);
+    VOCABULARY.set(latest);
 }
 
 /// What a key of a merging model holds once `write` is combined with
@@ -420,6 +427,15 @@ impl Operation {
         let change = Change::Drop;
 
         Self { model, change }
+    }
+
+    /// The version of the library that first had this operation, if
+    /// it's later than the one that first had its kind. Zero if not.
+    pub(crate) fn since(&self) -> u8 {
+        match &self.change {
+            Change::Table(table::Operation::Name { .. }) => NAMES,
+            _ => 0,
+        }
     }
 
     /// Whether the change is one its model takes.
