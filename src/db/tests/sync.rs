@@ -167,3 +167,44 @@ fn an_entry_under_a_checkpoint_nobody_decided_is_refused() {
     assert_eq!(sim.shown(LAPTOP, group, notes(group), "todo"), None);
     assert_eq!(sim.entries_kept(LAPTOP, group), 0);
 }
+
+/// A device that takes several messages in one step ends up where it
+/// would have, taking them one at a time.
+#[test]
+fn messages_taken_together_do_what_they_do_apart() {
+    let run = |together: bool| {
+        let (mut sim, group) = Sim::group(3, 3);
+        for (device, key) in [(PHONE, "one"), (LAPTOP, "two"), (NAS, "three")] {
+            sim.write(device, set(notes(group), key, key));
+        }
+        let mut steps = 0;
+        loop {
+            let delivered = if together {
+                sim.deliver_burst()
+            } else {
+                sim.deliver()
+            };
+            if !delivered && !sim.resume() {
+                break;
+            }
+            steps += 1;
+        }
+        for device in [PHONE, LAPTOP, NAS] {
+            for key in ["one", "two", "three"] {
+                assert_eq!(
+                    sim.shown(device, group, notes(group), key).as_deref(),
+                    Some(key)
+                );
+            }
+        }
+        sim.settle();
+        let committed = sim.committed(NAS, group, notes(group), "one");
+
+        (steps, committed)
+    };
+    let (apart, one) = run(false);
+    let (together, other) = run(true);
+
+    assert_eq!(one, other);
+    assert!(together < apart, "{together} steps, for {apart} apart");
+}

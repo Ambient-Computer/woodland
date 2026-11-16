@@ -592,20 +592,38 @@ impl<S: Store> Database<S> {
     ///
     /// If the store fails.
     pub async fn receive(&mut self, from: VerifyingKey, message: &[u8]) -> Result<Outputs, Error> {
-        let from = Peer::from(from);
-        let mut step = self.begin()?;
-        let Some(message) = encoding::decode::<Message>(message) else {
-            tracing::warn!(peer = ?from, "dropped an unreadable message");
-            return Ok(Outputs::default());
-        };
-        let Some(group) = self.groups.get_mut(&message.group) else {
-            return Ok(Outputs::default());
-        };
+        self.receive_all([(from, message)]).await
+    }
 
-        let received = group
-            .receive(&self.identity, from, message, &mut step)
-            .await;
-        self.guard(received)?;
+    /// Several messages arrived, from one peer or many. They're taken
+    /// in order, in one step: everything they change is stored
+    /// together, and what they lead this device to say is said once
+    /// that's done. It's the same as receiving each in turn, with one
+    /// write to the store where there would have been one each.
+    ///
+    /// # Errors
+    ///
+    /// If the store fails.
+    pub async fn receive_all<'a>(
+        &mut self,
+        messages: impl IntoIterator<Item = (VerifyingKey, &'a [u8])>,
+    ) -> Result<Outputs, Error> {
+        let mut step = self.begin()?;
+        for (from, message) in messages {
+            let from = Peer::from(from);
+            let Some(message) = encoding::decode::<Message>(message) else {
+                tracing::warn!(peer = ?from, "dropped an unreadable message");
+                continue;
+            };
+            let Some(group) = self.groups.get_mut(&message.group) else {
+                continue;
+            };
+
+            let received = group
+                .receive(&self.identity, from, message, &mut step)
+                .await;
+            self.guard(received)?;
+        }
 
         self.finish(step).await
     }

@@ -58,6 +58,8 @@ enum Action {
     Lose {
         message: usize,
     },
+    /// A device takes everything waiting for it in one step.
+    Burst,
     Connect {
         a: usize,
         b: usize,
@@ -101,6 +103,7 @@ fn action() -> impl Strategy<Value = Action> {
         3 => (any::<usize>(), any::<usize>())
             .prop_map(|(message, to)| Action::Reorder { message, to }),
         2 => any::<usize>().prop_map(|message| Action::Lose { message }),
+        3 => Just(Action::Burst),
         3 => (device(), device()).prop_map(|(a, b)| Action::Connect { a, b }),
         3 => (device(), device()).prop_map(|(a, b)| Action::Disconnect { a, b }),
         1 => device().prop_map(|device| Action::Restart { device }),
@@ -249,6 +252,9 @@ impl Run {
             Action::Repeat { message } => sim.repeat(message),
             Action::Reorder { message, to } => sim.reorder(message, to),
             Action::Lose { message } => sim.lose(message),
+            Action::Burst => {
+                sim.deliver_burst();
+            }
             Action::Connect { a, b } if a != b => sim.connect(a, b),
             Action::Disconnect { a, b } if a != b => sim.disconnect(a, b),
             Action::Restart { device } => sim.restart(device),

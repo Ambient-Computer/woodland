@@ -202,6 +202,29 @@ impl Sim {
         true
     }
 
+    /// Delivers every message waiting for whoever the one that has
+    /// waited longest is for, at once. Returns whether there were any.
+    fn deliver_burst(&mut self) -> bool {
+        let Some(&(_, to, _)) = self.queue.front() else {
+            return false;
+        };
+
+        let (burst, rest) = std::mem::take(&mut self.queue)
+            .into_iter()
+            .partition(|(_, recipient, _)| *recipient == to);
+        self.queue = rest;
+        let burst: VecDeque<(usize, usize, Vec<u8>)> = burst;
+        let burst: Vec<_> = burst
+            .iter()
+            .map(|(from, _, message)| (self.id(*from), message.as_slice()))
+            .collect();
+        self.wake(to);
+        let outputs = block_on(self.devices[to].receive_all(burst)).expect("received");
+        self.absorb(to, outputs);
+
+        true
+    }
+
     /// Puts a second copy of a waiting message at the back of the
     /// queue. `message` picks one, whatever it is.
     fn repeat(&mut self, message: usize) {
