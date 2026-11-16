@@ -27,7 +27,7 @@ mod succession;
 mod sync;
 mod tables;
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use ed25519_dalek::VerifyingKey;
 
@@ -36,6 +36,7 @@ use crate::model::{ModelId, Query};
 use crate::store::{MemoryStore, Store, Write};
 use crate::testing::block_on;
 
+use super::veiled::Veiled;
 use super::{Answer, Database, Error, Found, Outcome, Outputs, Transaction, TransactionId};
 use crate::chain::Role;
 use crate::seal::SealingKey;
@@ -51,6 +52,9 @@ struct Sim {
     queue: VecDeque<(usize, usize, Vec<u8>)>,
     links: BTreeSet<(usize, usize)>,
     changes: Vec<Vec<Changed>>,
+    /// What a committed read of each group last showed on each device,
+    /// and which checkpoint it was of.
+    shown: Vec<BTreeMap<GroupId, (u64, Vec<Found>)>>,
     /// What each device has been told of its own transactions.
     told: Vec<Vec<(TransactionId, Outcome)>>,
     /// The last transaction each device wrote.
@@ -87,6 +91,7 @@ impl Sim {
             queue: VecDeque::new(),
             links: BTreeSet::new(),
             changes: vec![Vec::new(); 8],
+            shown: vec![BTreeMap::new(); 8],
             told: vec![Vec::new(); 8],
             wrote: vec![None; 8],
             home: GroupId::from_bytes([0; 32]),
@@ -132,7 +137,37 @@ impl Sim {
         found.expect("a message for a device in the simulation")
     }
 
+    /// Holds the device to this: what's committed shows a checkpoint
+    /// at a time. Unless a step says everything may have changed, what
+    /// a committed read finds is different only if it's of another
+    /// checkpoint.
+    fn check_committed(&mut self, device: usize, changed: &[Changed]) {
+        let database = &self.devices[device];
+        let mut shown = BTreeMap::new();
+        for (&id, group) in &database.groups {
+            let view = Veiled::new(database.store.view(), group.shown());
+            let (start, end) = keys::range(keys::committed(id));
+            let found = block_on(crate::db::step::scan(&view, &start, &end)).expect("scanned");
+            let at = group.committed_at().checkpoint;
+            let everything = changed.contains(&Changed::Everything { group: id });
+            if let Some((was_at, was)) = self.shown[device].get(&id)
+                && *was_at == at
+                && !everything
+            {
+                assert!(
+                    *was == found,
+                    "committed reads changed without a checkpoint"
+                );
+            }
+
+            shown.insert(id, (at, found));
+        }
+
+        self.shown[device] = shown;
+    }
+
     fn absorb(&mut self, device: usize, outputs: Outputs) {
+        self.check_committed(device, &outputs.changed);
         self.changes[device].extend(outputs.changed);
         self.told[device].extend(outputs.outcomes);
         self.wrote[device] = outputs.wrote.or(self.wrote[device]);
@@ -430,6 +465,18 @@ impl Sim {
         assert_eq!(answer.is_committed(), query.is_committed());
 
         answer.into_found()
+    }
+
+    /// What `query` would find in the device's store as it stands,
+    /// which no reader is shown while a checkpoint is partly in place.
+    fn stored(&self, device: usize, query: &Query) -> Vec<Found> {
+        let view = self.devices[device].store.view();
+        let mut scanned = Vec::new();
+        for (start, end) in query.storage_ranges() {
+            scanned.extend(block_on(crate::db::step::scan(&view, &start, &end)).expect("scanned"));
+        }
+
+        query.results(&scanned)
     }
 
     /// Everything `query` finds on the device, read `limit` at a time:

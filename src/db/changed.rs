@@ -44,9 +44,10 @@ pub enum Changed {
         model: ModelId,
         columns: Vec<ColumnId>,
     },
-    /// Committed reads in the group are now of the checkpoint at this
-    /// height, exactly: every key it changed has been reported, in this
-    /// step or the ones before. No read is different because of it.
+    /// Every key the checkpoint at this height changed has been
+    /// reported, in this step or the ones before. Committed reads have
+    /// been of this checkpoint since the first of them was. No read is
+    /// different because of it.
     Checkpoint { group: GroupId, height: u64 },
     /// Anything in the group, for either kind of read. The device
     /// caught up from a snapshot, or dropped writes that were discarded.

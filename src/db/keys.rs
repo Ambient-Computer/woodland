@@ -16,6 +16,7 @@
 //! [GROUP][group][SEALED][cursor]                → a piece of a snapshot this device can't read
 //! [GROUP][group][TRIAL][model][key…]            → what a transaction being tried would leave
 //! [GROUP][group][AHEAD][the rest of a key…]     → what a checkpoint not yet decided would leave
+//! [GROUP][group][BEFORE][the rest of a key…]    → what the key held before a checkpoint that's partly in place
 //! ```
 //!
 //! A model's ID starts with its clock's, so everything a clock owns is
@@ -67,6 +68,7 @@ const AHEAD: u8 = 8;
 const INDEX: u8 = 9;
 const INDEXED: u8 = 10;
 const INDEXES: u8 = 11;
+const BEFORE: u8 = 12;
 
 const CHAIN: u8 = 1;
 const META: u8 = 2;
@@ -74,6 +76,7 @@ const LOG: u8 = 3;
 const STATE: u8 = 4;
 const PROOF: u8 = 5;
 const LINK: u8 = 6;
+const VEIL: u8 = 7;
 
 /// A stored key of model data, parsed back into what it names.
 #[derive(Debug, PartialEq, Eq)]
@@ -151,6 +154,40 @@ pub(crate) fn chain(id: GroupId) -> Vec<u8> {
 
 pub(crate) fn meta(id: GroupId) -> Vec<u8> {
     [protocol(id), vec![META]].concat()
+}
+
+/// Whether reads are being kept from a checkpoint that's partly in
+/// place, and how.
+pub(crate) fn veil(id: GroupId) -> Vec<u8> {
+    [protocol(id), vec![VEIL]].concat()
+}
+
+/// What keys held before a checkpoint that's partly in place. What
+/// follows is the key, less the group it starts with.
+pub(crate) fn before(id: GroupId) -> Vec<u8> {
+    [group(id), vec![BEFORE]].concat()
+}
+
+/// The parts of a group that reads are answered from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Layer {
+    /// What's committed, and the index of it.
+    Committed,
+    /// What entries no checkpoint covers have written.
+    Versions,
+    /// The index of everything a device shows.
+    Shown,
+}
+
+/// Which part of a group a key is in, if it's one that reads are
+/// answered from. `rest` is the key, less the group it starts with.
+pub(crate) fn layer(rest: &[u8]) -> Option<Layer> {
+    match rest {
+        [COMMITTED, ..] | [INDEX, 1, ..] => Some(Layer::Committed),
+        [UNCOMMITTED, ..] => Some(Layer::Versions),
+        [INDEX, 0, ..] => Some(Layer::Shown),
+        _ => None,
+    }
 }
 
 /// The running sum of everything committed in a clock.

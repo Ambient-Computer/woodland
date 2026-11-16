@@ -27,7 +27,16 @@ fn crowd() -> (Sim, ModelId) {
     (cluster, table)
 }
 
-/// How many rows the device has committed.
+/// How many rows the device's store has committed, whatever it
+/// shows.
+fn stored(cluster: &Sim, device: usize, table: ModelId) -> usize {
+    let query = Query::table(cluster.home, table).committed();
+    let read = Table::read(&cluster.stored(device, &query));
+
+    read.map_or(0, |table| table.rows().len())
+}
+
+/// How many rows the device shows as committed.
 fn rows(cluster: &Sim, device: usize, table: ModelId) -> usize {
     let query = Query::table(cluster.home, table).committed();
     let read = Table::read(&cluster.read(device, &query));
@@ -56,13 +65,32 @@ fn start(cluster: &mut Sim) {
     assert!(cluster.devices[FRIEND].groups[&cluster.home].folded() < height);
 }
 
+/// How many rows the device shows, and how many of them its index of
+/// ages finds.
+fn shown(cluster: &Sim, device: usize, table: ModelId) -> (usize, usize) {
+    let read = Table::read(&cluster.read(device, &Query::table(cluster.home, table)));
+    let indexed = Query::index(cluster.home, table, age(table), ..);
+
+    (
+        read.map_or(0, |table| table.rows().len()),
+        cluster.read(device, &indexed).len(),
+    )
+}
+
 /// Stops the friend, starts it again, and has it finish. Returns how
-/// many rows it had committed after each step.
+/// many rows it had committed after each step. What it shows, and
+/// what its index finds, are one table the whole way.
 fn finish(cluster: &mut Sim, table: ModelId) -> BTreeSet<usize> {
     cluster.restart(FRIEND);
     let mut seen = BTreeSet::new();
     while cluster.resume() {
         seen.insert(rows(cluster, FRIEND, table));
+        let (rows, indexed) = shown(cluster, FRIEND, table);
+        let kept = cluster.devices[FRIEND].has_index(cluster.home, table, age(table));
+        assert!(
+            !kept || rows == indexed,
+            "the index and the rows are of one moment"
+        );
     }
 
     seen
@@ -79,22 +107,29 @@ fn a_change_to_every_row_is_committed_over_many_steps() {
     cluster.write(PHONE, transaction);
     cluster.settle();
     assert_eq!(rows(&cluster, PHONE, table), 21);
+    cluster.keep_index(FRIEND, table, age(table));
+    assert_eq!(shown(&cluster, FRIEND, table), (CROWD, CROWD));
 
     // While it's being worked out, none of it shows.
     start(&mut cluster);
     assert_eq!(rows(&cluster, FRIEND, table), CROWD);
 
-    // Once it's known to happen it's put in place, a part at a time.
-    while rows(&cluster, FRIEND, table) == CROWD {
+    // Once it's known to happen it's put in place, a part at a time,
+    // and still none of it shows.
+    while stored(&cluster, FRIEND, table) == CROWD {
         assert!(cluster.resume());
     }
+    assert!((22..=CROWD + 1).contains(&stored(&cluster, FRIEND, table)));
+    assert_eq!(rows(&cluster, FRIEND, table), CROWD);
     assert!(cluster.devices[FRIEND].groups[&cluster.home].is_busy());
 
     // Stopped partway through that, it carries on. It doesn't start
-    // again on top of the part that's done.
+    // again on top of the part that's done. A reader sees the table
+    // as it was, and then as it is: never some of each.
     let seen = finish(&mut cluster, table);
-    assert!(seen.iter().any(|rows| (22..CROWD).contains(rows)));
+    assert_eq!(seen, [21, CROWD].into());
     assert_eq!(rows(&cluster, FRIEND, table), 21);
+    assert_eq!(shown(&cluster, FRIEND, table), (21, 21));
     assert_eq!(sum(&cluster, FRIEND, table), sum(&cluster, PHONE, table));
 }
 

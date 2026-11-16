@@ -295,21 +295,18 @@ impl Run {
             for (index, key) in KEYS.into_iter().enumerate() {
                 let names = names_of(self.group, index);
                 let held = self.sim.committed(device, self.group, names, key);
-                let folded = self.folded(device);
+                let shown = self.shown(device);
                 let Some(held) = held else {
                     let known = self.claims.get(key);
                     prop_assert!(
-                        known.is_none_or(|(_, since)| folded < *since),
+                        known.is_none_or(|(_, since)| shown < *since),
                         "device {device} lost the committed claim on {key}"
                     );
                     continue;
                 };
 
-                // Partway through a checkpoint, what shows as committed
-                // may be that checkpoint's.
-                let reached = self.sim.devices[device].groups[&self.group].reached();
                 let first = self.claims.entry(key);
-                let (first, _) = first.or_insert_with(|| (held.clone(), reached));
+                let (first, _) = first.or_insert_with(|| (held.clone(), shown));
                 prop_assert_eq!(&*first, &held, "the committed claim on {} changed", key);
             }
         }
@@ -337,9 +334,11 @@ impl Run {
         Ok(())
     }
 
-    /// How many checkpoints `device` has committed.
-    fn folded(&self, device: usize) -> u64 {
-        self.sim.devices[device].groups[&self.group].folded()
+    /// Which checkpoint `device` shows a committed read of.
+    fn shown(&self, device: usize) -> u64 {
+        let group = &self.sim.devices[device].groups[&self.group];
+
+        group.committed_at().checkpoint
     }
 }
 

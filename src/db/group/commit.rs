@@ -360,7 +360,7 @@ impl Group {
     pub(super) async fn fold<V: View>(&mut self, step: &mut Step<V>) -> Result<bool, StoreError> {
         // Committed state is in pieces until a snapshot is in place,
         // and stays as it is while a successor copies it.
-        if self.installing.is_some() || self.pinned.is_some() {
+        if self.installing.is_some() || self.pinned.is_some() || self.is_lifting() {
             return Ok(false);
         }
 

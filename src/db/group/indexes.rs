@@ -9,7 +9,7 @@
 //! A new index is filled in a page of rows at a time, and so is one
 //! that has to start again because the rows were replaced wholesale.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -20,7 +20,7 @@ use crate::model::{ModelId, Query};
 use crate::store::{StoreError, View};
 
 use super::super::step::Step;
-use super::Group;
+use super::{Group, Shown};
 
 /// About how many keys one part of filling an index looks at.
 const PAGE: usize = if cfg!(test) { 6 } else { 256 };
@@ -247,19 +247,31 @@ impl Group {
         Ok(())
     }
 
-    /// What a key holds, to one level of read.
+    /// What a key holds, to one level of read: as it's stored, or as
+    /// a reader is `shown` it while a checkpoint is partly in place.
     async fn held<V: View>(
         &self,
         model: ModelId,
         key: &[u8],
-        committed: bool,
+        (committed, shown): (bool, Option<&Shown>),
         step: &Step<V>,
     ) -> Result<Option<Vec<u8>>, StoreError> {
         let query = Query::key(self.id, model, key);
         let query = if committed { query.committed() } else { query };
         let mut scanned = Vec::new();
         for (start, end) in query.storage_ranges() {
-            scanned.extend(step.scan(&start, &end).await?);
+            scanned.extend(match shown {
+                Some(Shown {
+                    prefix,
+                    before,
+                    blank,
+                }) => {
+                    let range = (&start[..], &end[..]);
+
+                    step.scan_shown(range, prefix, before, *blank).await?
+                }
+                None => step.scan(&start, &end).await?,
+            });
         }
 
         Ok(query
@@ -277,11 +289,11 @@ impl Group {
         table: ModelId,
         columns: &[ColumnId],
         row: &[u8],
-        committed: bool,
+        level: (bool, Option<&Shown>),
         step: &Step<V>,
     ) -> Result<Option<Vec<Value>>, StoreError> {
         let exists = Place::Row(row.to_vec()).key();
-        let incarnation = self.held(table, &exists, committed, step).await?;
+        let incarnation = self.held(table, &exists, level, step).await?;
         let Some(incarnation) = incarnation.and_then(|held| held.try_into().ok()) else {
             return Ok(None);
         };
@@ -289,12 +301,12 @@ impl Group {
         let mut values = Vec::new();
         for &column in columns {
             let named = Place::Column(column).key();
-            if self.held(table, &named, committed, step).await?.is_none() {
+            if self.held(table, &named, level, step).await?.is_none() {
                 return Ok(None);
             }
 
             let cell = Place::Cell(row.to_vec(), incarnation, column).key();
-            let held = self.held(table, &cell, committed, step).await?;
+            let held = self.held(table, &cell, level, step).await?;
             let value = held.and_then(|held| encoding::decode::<Value>(&held));
             match value.filter(|value| *value != Value::Null) {
                 Some(value) => values.push(value),
@@ -315,12 +327,19 @@ impl Group {
         committed: bool,
         step: &mut Step<V>,
     ) -> Result<(), StoreError> {
-        let values = self.values(table, columns, row, committed, step).await?;
+        let level = (committed, None);
+        let values = self.values(table, columns, row, level, step).await?;
         let entry = values.map(|values| Place::index(columns, &values, row));
 
         let of = Place::indexed(columns);
         let whereabouts = keys::indexed(self.id, committed, table, &of, row);
         let was = step.get(&whereabouts).await?;
+        if let Some(shown) = self.shown().filter(|_| !committed) {
+            let places = (was.clone(), entry.clone());
+            self.file_shown((table, columns), row, places, &shown, step)
+                .await?;
+        }
+
         if was == entry {
             return Ok(());
         }
@@ -345,6 +364,56 @@ impl Group {
             }
 
             None => step.delete(whereabouts),
+        }
+
+        Ok(())
+    }
+
+    /// Has readers find a row where it belongs in an index of what's
+    /// shown, while a checkpoint is partly in place: where what they're
+    /// shown of the row puts it, which needn't be where what's stored
+    /// does. `places` are where the index itself had the row, and has
+    /// it now.
+    ///
+    /// The index is kept right for what's stored, so that it's right
+    /// the moment the checkpoint shows. What readers find meanwhile
+    /// is kept beside it, like every value the checkpoint replaces
+    /// (see [`Step::keep`]), a place at a time: here or not here.
+    async fn file_shown<V: View>(
+        &self,
+        (table, columns): (ModelId, &[ColumnId]),
+        row: &[u8],
+        (was, entry): (Option<Vec<u8>>, Option<Vec<u8>>),
+        shown: &Shown,
+        step: &mut Step<V>,
+    ) -> Result<(), StoreError> {
+        let beside = |key: Vec<u8>| [&shown.before[..], &key[shown.prefix.len()..]].concat();
+        let level = (false, Some(shown));
+        let values = self.values(table, columns, row, level, step).await?;
+        let seen = values.map(|values| Place::index(columns, &values, row));
+
+        // Where readers last found it: where this said, or where it
+        // was when the checkpoint began.
+        let of = Place::indexed(columns);
+        let found = beside(keys::indexed(self.id, false, table, &of, row));
+        let last = step.load::<Option<Vec<u8>>>(&found).await?;
+        let last = last.unwrap_or_else(|| was.clone());
+        step.save(found, &seen);
+
+        let places: BTreeSet<_> = [was, entry, last, seen.clone()]
+            .into_iter()
+            .flatten()
+            .collect();
+        for place in places {
+            let here = (Some(&place) == seen.as_ref()).then(Vec::<u8>::new);
+            let key = keys::index(self.id, false, table, &place);
+            step.save(beside(key), &here);
+            step.changed(Changed::Key {
+                group: self.id,
+                model: table,
+                key: place,
+                committed: false,
+            });
         }
 
         Ok(())

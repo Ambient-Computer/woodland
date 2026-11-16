@@ -28,6 +28,7 @@ mod succession;
 #[cfg(test)]
 mod tests;
 mod transaction;
+mod veiled;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -463,6 +464,14 @@ impl<S: Store> Database<S> {
     }
 
     async fn finish(&mut self, mut step: Step<S::View>) -> Result<Outputs, Error> {
+        for group in self.groups.values_mut() {
+            let raised = group.raise(&mut step).await;
+            if raised.is_err() {
+                self.broken = true;
+            }
+            raised?;
+        }
+
         let changes = step.changes();
         for group in self.groups.values_mut() {
             let derived = group.derive(&changes, &mut step).await;
@@ -472,7 +481,17 @@ impl<S: Store> Database<S> {
             derived?;
         }
 
-        let finished = step.finish();
+        for group in self.groups.values_mut() {
+            let veiled = group.veil(&mut step).await;
+            if veiled.is_err() {
+                self.broken = true;
+            }
+            veiled?;
+        }
+
+        let mut finished = step.finish();
+        let hidden = |change: &Changed| self.groups.values().any(|group| group.hides(change));
+        finished.changed.retain(|change| !hidden(change));
         let applied = self.store.apply(finished.batch).await;
         self.guard(applied)?;
         self.pin();

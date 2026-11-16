@@ -9,6 +9,16 @@ A read is local and never waits on another peer. The reader chooses how certain 
 - The level is chosen per read, not per database or per connection.
 - A model may restrict itself to committed reads, for values others act on; see [models](models.md).
 
+## Moments
+
+- Every read made between two [steps](library.md) is of one moment, however many reads there are.
+- Reads either side of a step may differ. The step's report says where.
+- No read is held open across a step. A reader that needs one moment reads between steps, or reads again what was reported.
+- A committed read is the state of exactly one [checkpoint](checkpoints.md), and says which.
+- A checkpoint shows all at once, at both levels, however many steps a peer takes to apply it.
+- While a checkpoint is applied, an optimistic read shows what it showed before and whatever has arrived since.
+- A peer that is several checkpoints behind may show the last of them without ever showing those between.
+
 ## Mixing levels
 
 - A guard built from an optimistic read is as provisional as the read.
@@ -36,9 +46,9 @@ A read is local and never waits on another peer. The reader chooses how certain 
 ## Mirrors
 
 - A mirror is a copy of committed state kept outside the core, in whatever form its owner wants: another database, a search index, a log of events.
-- A committed read says which [checkpoint](checkpoints.md) it is of, and a report of committed change says which checkpoint made it. A mirror knows from those where it stands.
-- A checkpoint may take a peer several [steps](library.md) to apply. Between them a committed read holds some of the next checkpoint, and says so.
-- A mirror is the state of a checkpoint when the report of that checkpoint arrives, and not between.
+- A report of committed change says which checkpoint made it. With the checkpoint a committed read [names](#moments), a mirror knows where it stands.
+- What a checkpoint changed is reported once the checkpoint shows, across as many steps as that takes. The report of the checkpoint itself comes last.
+- A mirror is the state of a checkpoint when the report of that checkpoint arrives.
 - A mirror is built by reading everything, and kept by reading what each later checkpoint is reported to have changed.
 - Reading everything takes many reads, and a checkpoint may arrive between them. Its report covers whatever the earlier reads missed.
 - The core keeps no record of past reports. A mirror that missed one reads everything again, as a peer far behind takes a [snapshot](compaction.md).

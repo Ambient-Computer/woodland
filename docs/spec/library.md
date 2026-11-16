@@ -18,10 +18,13 @@ Woodland is a library with a deterministic core. The application owns the proces
 - This ordering is a safety property of [agreement](checkpoints.md), not a data-loss precaution, and no binding may relax it.
 - A step does bounded work. Anything long, such as catching up, settling a large checkpoint, or evaluating a wide [commit operation](commit-operations.md), continues across steps.
 - A step that leaves work which waits for nothing says so in its outputs, and the application steps the core again. The core never steps itself.
-- A [checkpoint](checkpoints.md) committed across several steps is committed in [timeline](log.md) order. Between those steps a committed [read](reads.md) shows part of it, all of which is final.
-- A snapshot, once whole and verified, is put in place across several steps in key order. Between those steps a committed read shows each value as of the snapshot's checkpoint or as of the one the device was at.
+- A [checkpoint](checkpoints.md) committed across several steps is committed in [timeline](log.md) order. No [read](reads.md) shows any of it until all of it is in place.
+- A snapshot, once whole and verified, is put in place across several steps in key order. No read shows any of it until all of it is in place.
+- While either is put in place, the device keeps what each value it replaces held, and answers reads from those. What it keeps is bounded by what is replaced, and is discarded across steps afterwards.
+- A device with nothing committed keeps nothing while a snapshot is put in place. Its committed reads show nothing until then.
+- The next checkpoint is not begun until what was kept for the last is discarded.
 - Until the last of either is done, the device has the state of no checkpoint: it neither [compacts](compaction.md) nor serves a snapshot, and commits nothing further.
-- A [transaction](transactions.md) with a [commit operation](commit-operations.md), or one that drops a [model](models.md), may take several steps to commit. It is worked out to one side, where no read sees it. Once its outcome is known its effect is put in place, and between those steps a committed read shows part of that effect, all of which is final.
+- A [transaction](transactions.md) with a [commit operation](commit-operations.md), or one that drops a [model](models.md), may take several steps to commit. It is worked out to one side, where no read sees it. Once its outcome is known its effect is put in place, as part of its checkpoint.
 - A device with a say works out the state a proposed [checkpoint](checkpoints.md) comes to before it proposes or votes for it. That takes several steps, is done to one side where no read sees it, and is started again by a device that stops.
 - [Shedding](compaction.md) history is a decision, made in one step: from then on the device answers as one that no longer has it. Deleting it follows across steps, and nothing waits for that.
 - A device partway through putting a snapshot in place can stop [wanting](sync.md) a clock, but cannot start wanting one the snapshot has passed over.

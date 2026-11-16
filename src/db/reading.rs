@@ -5,6 +5,7 @@ use crate::store::Store;
 
 use super::group::Group;
 use super::step::{self, Step};
+use super::veiled::Veiled;
 use super::{Answer, Database, Error, GroupId, Outputs, Part, Pending, Reached, parts};
 
 impl<S: Store> Database<S> {
@@ -79,7 +80,7 @@ impl<S: Store> Database<S> {
     ///
     /// If the store fails.
     pub async fn read(&self, query: &Query) -> Result<Answer, Error> {
-        let view = self.store.view();
+        let view = self.view(query);
         let mut scanned = Vec::new();
         for (start, end) in query.storage_ranges() {
             scanned.extend(step::scan(&view, &start, &end).await?);
@@ -113,7 +114,7 @@ impl<S: Store> Database<S> {
     ///
     /// If the store fails.
     pub async fn read_some(&self, query: &Query, limit: usize) -> Result<Part, Error> {
-        let (found, rest) = parts::read(&self.store.view(), query, limit).await?;
+        let (found, rest) = parts::read(&self.view(query), query, limit).await?;
         let answer = if query.is_committed() {
             Answer::Committed(found, self.reached(query))
         } else {
@@ -129,12 +130,16 @@ impl<S: Store> Database<S> {
     /// How far what's committed has got in the group `query` reads.
     fn reached(&self, query: &Query) -> Reached {
         let held = self.groups.get(&query.group());
-        let nothing = Reached {
-            checkpoint: 0,
-            settled: true,
-        };
 
-        held.map_or(nothing, Group::committed_at)
+        held.map_or(Reached { checkpoint: 0 }, Group::committed_at)
+    }
+
+    /// The store as a reader of `query` is meant to see it: without
+    /// any of a checkpoint that's partly in place.
+    fn view(&self, query: &Query) -> Veiled<S::View> {
+        let held = self.groups.get(&query.group());
+
+        Veiled::new(self.store.view(), held.and_then(Group::shown))
     }
 
     /// The changes in `group` that are waiting to be committed before

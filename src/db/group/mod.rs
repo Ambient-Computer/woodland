@@ -21,6 +21,7 @@ mod rules;
 mod sealing;
 mod succession;
 mod sync;
+mod veil;
 mod verdicts;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -29,7 +30,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::actor::{Identity, Peer, Signed, verify_all};
 use crate::chain::{Certificate, Chain, Checkpoint, Digest, Electorate, Saved};
-use crate::db::{ClockId, GroupId, Pending, Reached, keys};
+use crate::db::{ClockId, GroupId, Pending, keys};
 use crate::encoding;
 use crate::model::Operation;
 use crate::seal::Keyring;
@@ -53,6 +54,7 @@ use sync::Remote;
 pub(crate) use commit::STRIDE;
 #[cfg(test)]
 pub(crate) use compact::SWEEP;
+pub(crate) use veil::Shown;
 
 #[derive(Debug)]
 pub(crate) struct Group {
@@ -116,6 +118,12 @@ pub(crate) struct Group {
     /// The height of a checkpoint that's partly committed. Until the
     /// rest is, committed state is the state of no checkpoint.
     folding: Option<u64>,
+    /// Whether reads are kept from what's partly in place: see
+    /// [`veil`].
+    veil: Option<veil::Veil>,
+    /// The height committed state was last wholly at, with nothing
+    /// kept from readers.
+    settled: u64,
     /// A whole snapshot that's partly in place. Until the rest is,
     /// committed state is some of each.
     installing: Option<Installing>,
@@ -239,6 +247,8 @@ impl Group {
             interest: None,
             passed: false,
             folding: None,
+            veil: None,
+            settled: 0,
             installing: None,
             mending: false,
             keys,
@@ -316,6 +326,7 @@ impl Group {
         group.extended = meta.extended;
         group.recall(step).await?;
         group.recall_indexes(step).await?;
+        group.recall_veil(step).await?;
         for (clock, kept) in meta.clocks {
             let held = Clock::load(id, clock, kept, group.keys.clone(), step).await?;
             group.clocks.insert(clock, held);
@@ -560,18 +571,11 @@ impl Group {
         let unswept = self.clocks.values().any(Clock::is_unswept);
 
         self.is_partway()
+            || self.is_veiled()
             || self.is_ahead()
             || unswept
             || self.is_indexing()
             || self.is_inheriting()
-    }
-
-    /// Which checkpoint a committed read is of right now.
-    pub(crate) fn committed_at(&self) -> Reached {
-        Reached {
-            checkpoint: self.folded,
-            settled: !self.is_partway(),
-        }
     }
 
     /// Whether committed state is partway between two checkpoints, and

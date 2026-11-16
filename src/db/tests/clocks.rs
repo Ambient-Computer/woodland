@@ -151,7 +151,7 @@ fn a_step_commits_only_so_much_however_many_clocks_there_are() {
     let height = sim.devices[PHONE].groups[&group].folded();
     let committed = |sim: &Sim| {
         let count = |model| {
-            sim.read(NAS, &Query::prefix(group, model, b"").committed())
+            sim.stored(NAS, &Query::prefix(group, model, b"").committed())
                 .len()
         };
 

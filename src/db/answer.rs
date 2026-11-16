@@ -24,22 +24,21 @@ pub enum Answer {
 /// How far what's committed on a device has got: which checkpoint a
 /// committed read is of.
 ///
+/// A committed read is the state of exactly one checkpoint. One that
+/// takes a device many steps to put in place shows all at once, when
+/// the last of it is there.
+///
 /// A copy kept somewhere else of what's committed, kept up from each
 /// step's [`Changed`], is the state of a checkpoint whenever a step
 /// reports [`Changed::Checkpoint`]. A copy that was last at one, and
-/// finds the device [settled] at the same one, has missed nothing.
+/// finds the device at the same one, has missed nothing.
 ///
 /// [`Changed`]: crate::Changed
 /// [`Changed::Checkpoint`]: crate::Changed::Checkpoint
-/// [settled]: Self::settled
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Reached {
-    /// The height of the last checkpoint all of which is in.
+    /// The height of the checkpoint.
     pub checkpoint: u64,
-    /// Whether that's all that's in. A checkpoint can cover more than
-    /// one step commits, and between those steps some of the next
-    /// checkpoint is in as well.
-    pub settled: bool,
 }
 
 /// Some of the answer to a [query], and how to ask for the rest.

@@ -10,6 +10,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::actor::Peer;
+use crate::db::keys::Layer;
 use crate::db::{Changed, ClockId, Outcome, keys};
 use crate::encoding;
 use crate::store::{Entry, Order, StoreError, View, Write};
@@ -28,6 +29,10 @@ pub(crate) struct Step<V> {
     /// A prefix, and where writes to keys that start with it are kept
     /// instead: see [`divert`](Self::divert).
     aside: Option<(Vec<u8>, Vec<u8>)>,
+    /// What this step wrote and then took away again, by key. The
+    /// store never holds it, and [`keep`](Self::keep) may still want
+    /// it.
+    fleeting: BTreeMap<Vec<u8>, Vec<u8>>,
 }
 
 /// How something kept to one side starts: it's a value, or it's the
@@ -52,6 +57,7 @@ impl<V: View> Step<V> {
             changed: BTreeSet::new(),
             told: Vec::new(),
             aside: None,
+            fleeting: BTreeMap::new(),
         }
     }
 
@@ -61,6 +67,11 @@ impl<V: View> Step<V> {
     /// noticed. `None` ends that.
     pub(crate) fn divert(&mut self, aside: Option<(Vec<u8>, Vec<u8>)>) {
         self.aside = aside;
+    }
+
+    /// Whether writes are being kept to one side.
+    pub(crate) fn is_diverted(&self) -> bool {
+        self.aside.is_some()
     }
 
     /// Where a write to `key` is kept, if it's being kept to one side.
@@ -94,10 +105,16 @@ impl<V: View> Step<V> {
     }
 
     pub(crate) fn delete(&mut self, key: Vec<u8>) {
-        match self.beside(&key) {
-            Some(beside) => self.pending.insert(beside, Some(vec![DELETE])),
-            None => self.pending.insert(key, None),
-        };
+        if let Some(beside) = self.beside(&key) {
+            self.pending.insert(beside, Some(vec![DELETE]));
+            return;
+        }
+
+        if let Some(Some(value)) = self.pending.get(&key) {
+            self.fleeting.insert(key.clone(), value.clone());
+        }
+
+        self.pending.insert(key, None);
     }
 
     pub(crate) fn send(&mut self, peer: Peer, message: &impl Serialize) {
@@ -265,6 +282,96 @@ impl<V: View> Step<V> {
         }
 
         Ok(found.into_iter().take(limit).collect())
+    }
+
+    /// Everything with a key in `start..end` as a reader is shown it
+    /// while what's under `prefix` is partly one checkpoint and partly
+    /// the next: what was kept under `before` first. See
+    /// [`keep`](Self::keep).
+    pub(crate) async fn scan_shown(
+        &self,
+        (start, end): (&[u8], &[u8]),
+        prefix: &[u8],
+        before: &[u8],
+        blank: bool,
+    ) -> Result<Vec<Entry>, StoreError> {
+        let rest = |key: &[u8]| key.get(prefix.len()..).unwrap_or_default().to_vec();
+        let nothing = blank && keys::layer(&rest(start)) == Some(Layer::Committed);
+        let mut found = if nothing {
+            BTreeMap::new()
+        } else {
+            self.all(start, end).await?
+        };
+
+        let beside = |key: &[u8]| [before, &rest(key)[..]].concat();
+        for (kept, was) in self.all(&beside(start), &beside(end)).await? {
+            let key = [prefix, &kept[before.len()..]].concat();
+            match encoding::decode::<Option<Vec<u8>>>(&was).flatten() {
+                Some(value) => found.insert(key, value),
+                None => found.remove(&key),
+            };
+        }
+
+        Ok(found.into_iter().collect())
+    }
+
+    /// Whether the store held nothing in `start..end` before this step.
+    pub(crate) async fn was_empty(&self, start: &[u8], end: &[u8]) -> Result<bool, StoreError> {
+        let first = self.view.scan(start, Some(end), Order::Ascending, 1);
+
+        Ok(first.await?.is_empty())
+    }
+
+    /// Keeps what this step's writes replace, of what reads are
+    /// answered from under `prefix`: each under `before`, unless
+    /// something is kept there already. A reader that looks there
+    /// first sees none of what's been written since the first was
+    /// kept.
+    ///
+    /// A version is kept only if it's being taken away: a new one is
+    /// for showing. One that this step both wrote and took away is
+    /// kept as it was written, since a reader was owed the sight of
+    /// it. Nothing committed is kept if `blank`, which is for when
+    /// there was nothing. The index of what's shown is kept by
+    /// whoever files rows in it, who knows what a reader should find.
+    ///
+    /// Doing this twice in a step keeps what was written in between.
+    pub(crate) async fn keep(
+        &mut self,
+        prefix: &[u8],
+        before: &[u8],
+        blank: bool,
+    ) -> Result<(), StoreError> {
+        let (start, end) = keys::range(prefix.to_vec());
+        let written = self.pending.range(start..end);
+        let written: Vec<_> = written
+            .map(|(key, write)| (key.clone(), write.clone()))
+            .collect();
+        for (key, write) in written {
+            let rest = &key[prefix.len()..];
+            let layer = keys::layer(rest);
+            let kept = match layer {
+                Some(Layer::Committed) => !blank,
+                Some(Layer::Versions) => write.is_none(),
+                Some(Layer::Shown) | None => false,
+            };
+            let beside = [before, rest].concat();
+            if !kept || self.held(&beside).await?.is_some() {
+                continue;
+            }
+
+            let was = self.view.get(&key).await?;
+            let fleeting = self
+                .fleeting
+                .get(&key)
+                .filter(|_| layer == Some(Layer::Versions));
+            let was = was.or_else(|| fleeting.cloned());
+            if was != write {
+                self.pending.insert(beside, Some(encoding::encode(&was)));
+            }
+        }
+
+        Ok(())
     }
 
     /// The step's writes as one batch, and what to let out once it's

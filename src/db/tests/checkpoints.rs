@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use super::*;
 use crate::db::group::STRIDE;
 
@@ -207,7 +209,7 @@ fn a_contributor_that_reaches_another_state_doesnt_vote() {
 
 /// A checkpoint can cover any amount of work, and a step does only so
 /// much. The rest is done by the steps after, whatever happens in
-/// between.
+/// between, and no reader sees any of it until it's all there.
 #[test]
 fn a_big_checkpoint_is_committed_a_few_entries_at_a_time() {
     let (mut sim, group) = Sim::group(3, 3);
@@ -229,7 +231,10 @@ fn a_big_checkpoint_is_committed_a_few_entries_at_a_time() {
         assert!(sim.deliver(), "it never heard");
     }
     assert!(sim.devices[NAS].groups[&group].folded() < height);
-    assert!(note(&sim, 0).is_some() && note(&sim, 19).is_none());
+    let everything = Query::prefix(group, notes(group), b"").committed();
+    let stored = sim.stored(NAS, &everything).len();
+    assert!((1..20).contains(&stored), "some of it is in place");
+    assert_eq!(sim.read(NAS, &everything), [], "and none of it shows");
 
     // Nothing stands in for history until all of it is committed.
     sim.compact(NAS, group);
@@ -239,8 +244,12 @@ fn a_big_checkpoint_is_committed_a_few_entries_at_a_time() {
     sim.restart(NAS);
     let resumed = block_on(sim.devices[NAS].resume()).expect("resumed");
     assert!(resumed.unfinished);
-    assert!(note(&sim, 19).is_none());
-    while sim.resume() {}
+    assert!(sim.stored(NAS, &everything).len() > stored);
+    assert_eq!(sim.read(NAS, &everything), []);
+    while sim.resume() {
+        let shown = sim.read(NAS, &everything).len();
+        assert!(shown == 0 || shown == 20, "all of it or none");
+    }
 
     assert_eq!(sim.devices[NAS].groups[&group].folded(), height);
     assert!((0..20).all(|index| note(&sim, index).is_some()));
@@ -466,7 +475,7 @@ fn a_read_says_which_level_it_answers_at() {
     assert_eq!(read(&query), Answer::Optimistic(found("eggs")));
     assert_eq!(read(&query).committed(), None);
     let committed = read(&query.committed());
-    assert!(committed.reached().is_some_and(|reached| reached.settled));
+    assert!(committed.reached().is_some());
     assert_eq!(committed.committed(), Some(found("milk")));
 
     // A model that shows only what's committed answers that way
@@ -474,4 +483,138 @@ fn a_read_says_which_level_it_answers_at() {
     let held = notes(group).committed_only();
     let query = Query::key(group, held, b"todo");
     assert!(read(&query).is_committed());
+}
+
+/// A device that isolated notes land on all at once: `count` of them,
+/// each written `value`, in one checkpoint. Returns its height.
+fn notes_for_the_nas(sim: &mut Sim, group: GroupId, count: usize, value: &str) -> u64 {
+    for index in 0..count {
+        sim.write(PHONE, set(notes(group), &format!("note {index:02}"), value));
+    }
+    sim.settle();
+
+    sim.devices[PHONE].groups[&group].folded()
+}
+
+/// While a checkpoint is put in place, a device shows what it showed
+/// before, and whatever it writes or hears of meanwhile.
+#[test]
+fn a_device_shows_what_it_did_while_a_checkpoint_goes_in() {
+    let (mut sim, group) = Sim::group(3, 3);
+    sim.isolate(NAS);
+    let height = notes_for_the_nas(&mut sim, group, 20, "x");
+    let everything = Query::prefix(group, notes(group), b"");
+
+    sim.connect(NAS, PHONE);
+    while sim.devices[NAS].groups[&group].reached() < height {
+        assert!(sim.deliver(), "it never heard");
+    }
+    assert!(sim.devices[NAS].groups[&group].folded() < height);
+
+    // It holds every entry, and showed them all before any was
+    // committed. It still does.
+    assert_eq!(sim.read(NAS, &everything).len(), 20);
+    assert_eq!(sim.read(NAS, &everything.clone().committed()), []);
+
+    // What it writes now shows at once.
+    sim.isolate(NAS);
+    sim.write(NAS, set(notes(group), "mine", "y"));
+    assert_eq!(sim.read(NAS, &everything).len(), 21);
+    while sim.resume() {
+        assert_eq!(sim.read(NAS, &everything).len(), 21);
+        let committed = sim.read(NAS, &everything.clone().committed()).len();
+        assert!(committed == 0 || committed == 20);
+    }
+
+    assert_eq!(sim.read(NAS, &everything.committed()).len(), 20);
+}
+
+/// A committed read says which checkpoint it's of, and that's the one
+/// it shows: not one the device has finished behind the scenes while
+/// starting on the next.
+#[test]
+fn a_committed_read_is_of_the_checkpoint_it_says() {
+    let (mut sim, group) = Sim::group(3, 3);
+    sim.isolate(NAS);
+    let base = sim.devices[NAS].groups[&group].folded();
+    let first = notes_for_the_nas(&mut sim, group, 2, "first");
+    let second = notes_for_the_nas(&mut sim, group, 20, "second");
+    let third = notes_for_the_nas(&mut sim, group, 20, "third");
+    assert!(base < first && first < second && second < third);
+
+    // Whatever it shows at each height is all of that checkpoint.
+    let expected = |height: u64| match height {
+        height if height < first => vec![],
+        height if height < second => vec!["first"; 2],
+        height if height < third => vec!["second"; 20],
+        _ => vec!["third"; 20],
+    };
+    let everything = Query::prefix(group, notes(group), b"").committed();
+    let check = |sim: &Sim| {
+        let answer = block_on(sim.devices[NAS].read(&everything)).expect("read");
+        let at = answer.reached().expect("committed").checkpoint;
+        let found = answer.into_found();
+        let values: Vec<_> = found.iter().map(|(_, value)| value.as_slice()).collect();
+        let expected: Vec<_> = expected(at).into_iter().map(str::as_bytes).collect();
+        assert_eq!(values, expected, "at height {at}");
+
+        at
+    };
+
+    sim.connect(NAS, PHONE);
+    let mut seen = BTreeSet::new();
+    while sim.deliver() || sim.resume() {
+        seen.insert(check(&sim));
+    }
+
+    assert_eq!(check(&sim), third);
+    assert!(seen.len() > 1);
+}
+
+/// A checkpoint that's ready while the last one's leftovers are still
+/// being cleared away waits for that. What was kept for one is never
+/// taken for what the next replaced.
+#[test]
+fn the_next_checkpoint_waits_for_the_last_to_be_cleared_away() {
+    let (mut sim, group) = Sim::group(3, 3);
+    sim.isolate(NAS);
+    notes_for_the_nas(&mut sim, group, 60, "first");
+    let second = notes_for_the_nas(&mut sim, group, 60, "second");
+    let everything = Query::prefix(group, notes(group), b"").committed();
+
+    // The second has just begun to show, and there's a lot to clear.
+    sim.connect(NAS, PHONE);
+    while sim.devices[NAS].groups[&group].committed_at().checkpoint < second {
+        assert!(sim.deliver() || sim.resume(), "it never got there");
+    }
+    assert!(sim.devices[NAS].groups[&group].is_busy());
+
+    // The others agree on a third without it, and it hears of that in
+    // the middle of the clearing. Every step of the way, a committed
+    // read is of one checkpoint: see `absorb`.
+    sim.isolate(NAS);
+    for index in 0..60 {
+        sim.write(
+            PHONE,
+            set(notes(group), &format!("note {index:02}"), "third"),
+        );
+    }
+    // Whichever device comes first is the one that carries on, and
+    // these two come first.
+    let busy = |sim: &Sim, device: usize| sim.devices[device].groups[&group].is_busy();
+    for _ in 0..12 {
+        while sim.deliver() || ((busy(&sim, PHONE) || busy(&sim, LAPTOP)) && sim.resume()) {}
+        sim.tick(PHONE);
+        sim.tick(LAPTOP);
+    }
+    let third = sim.devices[PHONE].groups[&group].folded();
+    assert!(third > second);
+    assert!(sim.devices[NAS].groups[&group].is_busy());
+    sim.connect(NAS, PHONE);
+    sim.settle();
+
+    assert_eq!(sim.devices[NAS].groups[&group].folded(), third);
+    let found = sim.read(NAS, &everything);
+    assert_eq!(found.len(), 60);
+    assert!(found.iter().all(|(_, value)| value == b"third"));
 }

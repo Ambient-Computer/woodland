@@ -116,9 +116,7 @@ impl App {
         while let Some(query) = next {
             let part = block_on(self.phone.read_some(&query, 2))?;
             let reached = part.answer.reached().expect("a committed read");
-            if reached.settled {
-                self.mirror.at = Some(reached.checkpoint);
-            }
+            self.mirror.at = Some(reached.checkpoint);
 
             let table = Table::read(part.answer.found());
             let rows = table.iter().flat_map(Table::rows);
@@ -186,12 +184,12 @@ fn main() -> Result<(), Error> {
     app.write(Transaction::new().delete_row(people, bob))?;
 
     // A mirror that was saved at a checkpoint and finds the device
-    // settled at the same one has missed nothing. Otherwise it begins
+    // at the same one has missed nothing. Otherwise it begins
     // again: the library keeps no record of what it reported.
     let all = Query::table(group, people).committed();
     let reached = block_on(app.phone.read_some(&all, 0))?.answer.reached();
     let reached = reached.expect("a committed read");
-    assert!(reached.settled && Some(reached.checkpoint) == app.mirror.at);
+    assert_eq!(Some(reached.checkpoint), app.mirror.at);
     assert_eq!(
         app.mirror.count(),
         [("blue", 2), ("green", 1), ("red", 2)].into()

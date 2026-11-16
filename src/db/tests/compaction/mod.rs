@@ -148,6 +148,7 @@ fn a_snapshot_that_isnt_the_committed_state_is_refused() {
         value: b"forged".to_vec(),
     };
     block_on(sim.devices[PHONE].store.apply(vec![forged])).expect("applied");
+    sim.shown[PHONE].clear();
     sim.connect(PHONE, LAPTOP);
     sim.run();
 

@@ -380,6 +380,12 @@ impl Group {
     /// checkpoint covers is already in there; whatever it doesn't is
     /// judged again on top.
     pub(super) async fn install<V: View>(&mut self, step: &mut Step<V>) -> Result<(), StoreError> {
+        // What was kept from readers for the last checkpoint goes
+        // before anything is kept for this.
+        if self.is_lifting() {
+            return Ok(());
+        }
+
         let Some(mut installing) = self.installing.take() else {
             return Ok(());
         };

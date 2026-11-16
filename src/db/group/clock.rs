@@ -350,6 +350,14 @@ impl Clock {
                     break;
                 }
 
+                // An entry committed before it was ever shown is shown
+                // now, for the moment before it's taken back. If this
+                // checkpoint takes more steps than one, a reader is
+                // owed the sight of it until the checkpoint shows.
+                if !step.is_diverted() && !self.verdicts.live.contains(&entry.stamp()) {
+                    judge::show(self.group, entry.stamp(), &operations, step);
+                }
+
                 judge::commit(self.group, &operations, &mut state, step).await?;
                 if !drops.is_empty() {
                     job = Some(Job::emptying(entry.stamp(), drops));

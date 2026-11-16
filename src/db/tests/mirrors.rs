@@ -51,7 +51,7 @@ impl Mirror {
         let reached = answer.reached().expect("committed");
         let found: BTreeMap<_, _> = answer.into_found().into_iter().collect();
 
-        reached.settled && Some(reached.checkpoint) == self.at && found == self.notes
+        Some(reached.checkpoint) == self.at && found == self.notes
     }
 }
 
@@ -133,9 +133,46 @@ fn a_copy_knows_whether_it_missed_anything() {
     cluster.tick(NAS);
     cluster.settle();
     assert_eq!(Some(reached(&cluster).checkpoint), mirror.at);
-    assert!(reached(&cluster).settled);
 
     write_some(&mut cluster, 1);
     cluster.settle();
     assert!(Some(reached(&cluster).checkpoint) > mirror.at);
+}
+
+/// A checkpoint too big for a step is reported once it shows: its
+/// keys across the steps after, and the checkpoint itself last.
+#[test]
+fn a_copy_follows_a_checkpoint_that_takes_many_steps() {
+    let mut cluster = household();
+    let mut mirror = Mirror::default();
+    write_some(&mut cluster, 0);
+    cluster.settle();
+    mirror.follow(&mut cluster);
+    assert!(mirror.is_current(&cluster));
+    let was = mirror.at;
+
+    cluster.isolate(NAS);
+    for round in 1..8 {
+        write_some(&mut cluster, round);
+    }
+    cluster.settle();
+    for round in 8..12 {
+        write_some(&mut cluster, round);
+    }
+    cluster.settle();
+
+    // The copy is never told of a checkpoint before it's told of
+    // everything the checkpoint changed.
+    cluster.connect(NAS, PHONE);
+    let mut steps = 0;
+    while cluster.deliver() || cluster.resume() {
+        let before = mirror.at;
+        mirror.follow(&mut cluster);
+        assert!(mirror.at == before || mirror.is_current(&cluster));
+        steps += 1;
+    }
+
+    assert!(steps > 6);
+    assert!(mirror.at > was);
+    assert!(mirror.is_current(&cluster));
 }
