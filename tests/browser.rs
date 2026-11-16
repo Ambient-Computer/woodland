@@ -168,3 +168,44 @@ async fn a_page_isnt_shortened_by_what_came_later() {
     let found: Vec<_> = page.expect("scanned").into_iter().map(|it| it.0).collect();
     assert_eq!(found, [vec![14], vec![13]]);
 }
+
+/// A page can go away anywhere, and a step can be abandoned while it
+/// waits. What's left of the batch it was applying is all of it or
+/// none of it, and every batch before it.
+///
+/// Nothing in a page can kill the page, so this is as near as a test
+/// gets: the batch is asked for, and then nobody waits for it.
+#[wasm_bindgen_test]
+async fn a_batch_abandoned_partway_is_there_whole_or_not_at_all() {
+    use std::future::Future;
+    use std::task::{Context, Waker};
+
+    const WIDTH: u8 = 40;
+    let name = name();
+    let mut before = None;
+    for round in 1..=4u8 {
+        let mut store = open(&name).await;
+        let batch = (0..WIDTH).map(|key| contract::put(&[key], &[round]));
+        {
+            let mut applying = std::pin::pin!(store.apply(batch.collect()));
+            let mut context = Context::from_waker(Waker::noop());
+            assert!(applying.as_mut().poll(&mut context).is_pending());
+        }
+        drop(store);
+        turn().await;
+
+        let store = open(&name).await;
+        let view = store.view();
+        let first = view.get(&[0]).await.expect("read");
+        for key in 1..WIDTH {
+            let held = view.get(&[key]).await.expect("read");
+            assert_eq!(held, first, "round {round}: a batch was torn");
+        }
+        let whole = first == Some(vec![round]);
+        assert!(whole || first == before, "round {round}: lost a batch");
+        before = first;
+        drop(view);
+        drop(store);
+        turn().await;
+    }
+}
