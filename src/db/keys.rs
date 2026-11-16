@@ -11,7 +11,7 @@
 //! [GROUP][group][PROTOCOL][PROOF][author]     → proof that the author forked
 //! [GROUP][group][PROTOCOL][STATE][clock]        → the sum the clock's state root is the hash of
 //! [GROUP][group][COMMITTED][model][key…]        → the key's committed value
-//! [GROUP][group][UNCOMMITTED][model][key…][stamp] → a version: a value, or none
+//! [GROUP][group][UNCOMMITTED][model][key…][end][stamp] → a version: a value, or none
 //! [GROUP][group][STAGED][model][key…]           → a value from a snapshot not yet checked
 //! [GROUP][group][SEALED][cursor]                → a piece of a snapshot this device can't read
 //! [GROUP][group][TRIAL][model][key…]            → what a transaction being tried would leave
@@ -23,9 +23,13 @@
 //!
 //! Identifiers are fixed width and counters are big-endian, so byte order
 //! matches logical order. The application's key bytes are the only part
-//! that varies in length, and everything around them is fixed width, which
-//! keeps them unambiguous without any escaping, and keeps prefix queries
-//! over them a single range.
+//! that varies in length. Where nothing follows them they're stored as
+//! they are, and a prefix query over them is a single range.
+//!
+//! A version's key is followed by a stamp, so there it's written to
+//! say where it ends (see [`escape`]). Otherwise a short key's versions
+//! would sort in among those of the longer keys it starts, and the
+//! versions of a range of keys wouldn't be a range.
 //!
 //! The payoff:
 //!
@@ -46,6 +50,7 @@ use crate::actor::Peer;
 use crate::clock::Stamp;
 use crate::db::{ClockId, GroupId};
 use crate::model::ModelId;
+use crate::model::table::{escape, unescape};
 
 const FOUNDING: u8 = 1;
 const GROUP: u8 = 2;
@@ -220,15 +225,27 @@ pub(crate) fn uncommitted(id: GroupId) -> Vec<u8> {
 
 /// Every version of `key`, and of every key that starts with it.
 pub(crate) fn versions(id: GroupId, model: ModelId, key: &[u8]) -> Vec<u8> {
-    [uncommitted(id), model.as_bytes().to_vec(), key.to_vec()].concat()
+    let mut starts = escape(key);
+    starts.truncate(starts.len() - ENDED.len());
+
+    [uncommitted(id), model.as_bytes().to_vec(), starts].concat()
 }
+
+/// What [`escape`] puts after a key to say it's over.
+const ENDED: [u8; 2] = [0, 0];
 
 /// What the entry stamped `stamp` wrote to `key`.
 pub(crate) fn version(id: GroupId, model: ModelId, key: &[u8], stamp: Stamp) -> Vec<u8> {
     let lamport = stamp.lamport.to_be_bytes();
     let author = stamp.author.as_bytes();
 
-    [versions(id, model, key), lamport.to_vec(), author.to_vec()].concat()
+    [
+        versions(id, model, key),
+        ENDED.to_vec(),
+        lamport.to_vec(),
+        author.to_vec(),
+    ]
+    .concat()
 }
 
 /// Every value of a snapshot that's still arriving.
@@ -289,8 +306,9 @@ pub(crate) fn parse(key: &[u8]) -> Option<Record> {
         }),
 
         UNCOMMITTED => {
-            let (key, author) = key.split_last_chunk::<32>()?;
-            let (key, lamport) = key.split_last_chunk::<8>()?;
+            let (key, stamp) = unescape(key)?;
+            let (lamport, author) = stamp.split_first_chunk::<8>()?;
+            let author: &[u8; 32] = author.try_into().ok()?;
             let stamp = Stamp {
                 lamport: u64::from_be_bytes(*lamport),
                 author: Peer::from_bytes(author)?,
@@ -299,7 +317,7 @@ pub(crate) fn parse(key: &[u8]) -> Option<Record> {
             Some(Record::Version {
                 group,
                 model,
-                key: key.to_vec(),
+                key,
                 stamp: Box::new(stamp),
             })
         }
@@ -421,6 +439,28 @@ mod tests {
         assert!(stored.is_sorted());
         for key in &stored {
             assert!(key.starts_with(&versions(id(), model, b"color")));
+        }
+    }
+
+    /// A key that starts another has its versions before the other's,
+    /// whatever their stamps, so the versions of a range of keys are a
+    /// range.
+    #[test]
+    fn versions_sort_by_key_before_stamp() {
+        let model = ModelId::kv(id(), [2; 32]);
+        let late = stamp(u64::MAX, laptop());
+        let early = stamp(0, phone());
+        let keys: [&[u8]; 5] = [b"", b"a", b"a\0", b"a\0\0", b"ab"];
+        let stored: Vec<_> = keys
+            .iter()
+            .flat_map(|key| [early, late].map(|stamp| version(id(), model, key, stamp)))
+            .collect();
+
+        assert!(stored.is_sorted());
+        for (key, stored) in keys.iter().zip(stored.chunks(2)) {
+            assert!(versions(id(), model, key) <= stored[0]);
+            let parsed = parse(&stored[1]);
+            assert!(matches!(parsed, Some(Record::Version { key: found, .. }) if found == *key));
         }
     }
 
