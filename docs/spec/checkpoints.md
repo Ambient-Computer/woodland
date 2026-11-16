@@ -38,6 +38,7 @@ A checkpoint is a quorum's signed statement that a stretch of history is final. 
 - A [contributor](peers.md) votes only once it holds everything inside the frontier, has checked the frontier is closed, and has recomputed the roots for itself.
 - A contributor that cannot yet check a checkpoint syncs until it can. Its vote waits; its promise does not.
 - A witness votes on the chain's shape alone: the predecessor, the configuration, and that the frontier does not go back.
+- A witness starts no attempt of its own, since it cannot work out what one would commit. A contributor without weight can: starting an attempt takes a role, and deciding it takes a quorum.
 - An attempt may have to name a checkpoint its own author has not checked, because a promise reported it. Naming is not vouching; the author still votes only after checking.
 - A checkpoint that fails a contributor's check is never voted for by it. Contributors holding enough weight to block a quorum can therefore stop a bad checkpoint, and a quorum of careless ones cannot be stopped.
 

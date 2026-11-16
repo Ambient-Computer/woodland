@@ -144,7 +144,7 @@ impl Group {
     }
 
     /// Appends an entry to this device's own chain in `clock`. Returns
-    /// whether it may: only a contributor writes.
+    /// whether it may: only a contributor to that clock writes.
     pub(crate) async fn write<V: View>(
         &mut self,
         identity: &Identity,
@@ -153,7 +153,7 @@ impl Group {
         step: &mut Step<V>,
     ) -> Result<bool, StoreError> {
         let tip = self.chain.tip().clone();
-        if !tip.electorate.includes(identity.peer()) {
+        if !tip.electorate.writers(clock).includes(identity.peer()) {
             return Ok(false);
         }
 
@@ -181,7 +181,7 @@ impl Group {
         step: &mut Step<V>,
     ) -> Result<bool, StoreError> {
         let allowed = self.chain.tip().electorate.includes(identity.peer());
-        if !allowed || electorate.is_empty() {
+        if !allowed || !electorate.is_viable() {
             return Ok(false);
         }
 
@@ -230,7 +230,7 @@ impl Group {
         step: &mut Step<V>,
     ) -> Result<(), StoreError> {
         loop {
-            self.vet(step).await?;
+            self.vet(identity.peer(), step).await?;
             let moved = self.advance(identity);
             self.said |= moved;
             let folded = self.fold(step).await?;

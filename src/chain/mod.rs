@@ -66,7 +66,8 @@ mod statement;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(crate) use electorate::Electorate;
+pub use electorate::Role;
+pub(crate) use electorate::{Electorate, Writers};
 pub(crate) use statement::{
     Ballot, Certificate, Checkpoint, Digest, Prepare, Promise, Proposal, Stated, Vote,
 };
@@ -236,8 +237,10 @@ impl Chain {
     }
 
     /// Starts an attempt to make `body` the next checkpoint, with
-    /// `electorate` deciding the one after. Only an elector can, and the
-    /// attempt may end up carrying someone else's checkpoint instead.
+    /// `electorate` deciding the one after. Anyone with a role can,
+    /// whether or not it has a say: an attempt decides nothing without
+    /// a quorum's votes. It may end up carrying someone else's
+    /// checkpoint instead.
     pub(crate) fn propose(
         &mut self,
         identity: &Identity,
@@ -245,7 +248,7 @@ impl Chain {
         body: Vec<u8>,
     ) -> bool {
         let me = identity.peer();
-        if !self.tip().electorate.includes(me) || electorate.is_empty() {
+        if !self.tip().electorate.has(me) || !electorate.is_viable() {
             return false;
         }
 
@@ -295,13 +298,17 @@ impl Chain {
         grew |= keep(&mut slot.prepares, gossip.prepares, &tip, |it, author| {
             proposer(&it.ballot, author)
         });
-        grew |= keep(&mut slot.promises, gossip.promises, &tip, |it, _| {
-            it.accepted.iter().all(|(_, voted)| voted.extends(&tip))
+        grew |= keep(&mut slot.promises, gossip.promises, &tip, |it, author| {
+            let extends = |(_, voted): &(Ballot, Checkpoint)| voted.extends(&tip);
+
+            tip.electorate.includes(author) && it.accepted.iter().all(extends)
         });
         grew |= keep(&mut slot.proposals, gossip.proposals, &tip, |it, author| {
             proposer(&it.ballot, author) && it.checkpoint.extends(&tip)
         });
-        grew |= keep(&mut slot.votes, gossip.votes, &tip, |_, _| true);
+        grew |= keep(&mut slot.votes, gossip.votes, &tip, |_, author| {
+            tip.electorate.includes(author)
+        });
 
         grew
     }
@@ -398,9 +405,15 @@ impl Chain {
         };
         let ballot = proposal.ballot;
         let voted = self.slot.accepted.as_ref().map(|(ballot, _)| *ballot);
-        if !self.tip().electorate.includes(me)
+        // Changing who has a say is for those who have one. Anyone with
+        // a role can start an attempt, so the vote is where that's held.
+        let electorate = &self.tip().electorate;
+        let entitled =
+            proposal.checkpoint.electorate == *electorate || electorate.includes(ballot.proposer);
+        if !electorate.includes(me)
             || self.slot.promised > Some(ballot)
             || voted >= Some(ballot)
+            || !entitled
             || !valid(&proposal.checkpoint)
         {
             return false;
@@ -519,7 +532,7 @@ impl Slot {
     }
 }
 
-/// Keeps each elector's latest statement about the slot after `tip`, if
+/// Keeps each member's latest statement about the slot after `tip`, if
 /// it's `valid`. Returns whether anything was new.
 fn keep<T: Stated + Signable>(
     held: &mut BTreeMap<Peer, Verified<T>>,
@@ -530,7 +543,7 @@ fn keep<T: Stated + Signable>(
     let mut grew = false;
     for statement in verify_all(heard) {
         let (author, said) = (statement.author(), statement.payload());
-        let current = said.slot() == tip.digest() && tip.electorate.includes(author);
+        let current = said.slot() == tip.digest() && tip.electorate.has(author);
         let newer = held
             .get(&author)
             .is_none_or(|it| it.payload().ballot() < said.ballot());

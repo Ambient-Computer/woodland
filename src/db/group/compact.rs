@@ -260,7 +260,7 @@ impl Group {
         let ids: Vec<ClockId> = self.clocks.keys().copied().collect();
         for id in ids {
             let entries = self.clocks[&id].history.uncommitted.values();
-            let void = entries.filter(|entry| !self.standing(entry.author, entry.under));
+            let void = entries.filter(|entry| !self.standing(entry.author, id, entry.under));
             let void: BTreeSet<Peer> = void.map(|entry| entry.author).collect();
             for author in void {
                 self.clock(id).void(author, step);

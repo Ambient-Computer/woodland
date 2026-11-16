@@ -11,22 +11,48 @@ const KEYS: [&str; 3] = ["a", "b", "c"];
 
 #[derive(Clone, Debug)]
 enum Action {
-    Set { device: usize, key: usize },
-    Claim { device: usize, key: usize },
-    Expect { device: usize, key: usize },
-    Tick { device: usize },
-    Deliver { messages: usize },
-    Connect { a: usize, b: usize },
-    Disconnect { a: usize, b: usize },
-    Restart { device: usize },
-    Compact { device: usize },
-    Reconfigure { device: usize, members: Vec<usize> },
+    Set {
+        device: usize,
+        key: usize,
+    },
+    Claim {
+        device: usize,
+        key: usize,
+    },
+    Expect {
+        device: usize,
+        key: usize,
+    },
+    Tick {
+        device: usize,
+    },
+    Deliver {
+        messages: usize,
+    },
+    Connect {
+        a: usize,
+        b: usize,
+    },
+    Disconnect {
+        a: usize,
+        b: usize,
+    },
+    Restart {
+        device: usize,
+    },
+    Compact {
+        device: usize,
+    },
+    Reconfigure {
+        device: usize,
+        members: Vec<(usize, usize)>,
+    },
 }
 
 fn action() -> impl Strategy<Value = Action> {
     let device = || 0..DEVICES;
     let key = || 0..KEYS.len();
-    let members = proptest::collection::vec(0..DEVICES, 1..=DEVICES);
+    let members = proptest::collection::vec((0..DEVICES, 0..6_usize), 1..=DEVICES);
 
     prop_oneof![
         6 => (device(), key()).prop_map(|(device, key)| Action::Set { device, key }),
@@ -120,7 +146,18 @@ impl Run {
             Action::Restart { device } => sim.restart(device),
             Action::Compact { device } => sim.compact(device, group),
             Action::Reconfigure { device, members } => {
-                let weights: Vec<_> = members.iter().map(|&it| (sim.id(it), 1)).collect();
+                // Mostly contributors to everything. Now and then a
+                // witness, a contributor to one clock, or one with no say.
+                let role = |kind: usize| match kind {
+                    0 => Role::witness(1),
+                    1 => Role::contributor(1).only([clock_of(group, 0)]),
+                    2 => Role::contributor(0).only([clock_of(group, KEYS.len() - 1)]),
+                    _ => Role::contributor(1),
+                };
+                let weights: Vec<_> = members
+                    .iter()
+                    .map(|&(it, kind)| (sim.id(it), role(kind)))
+                    .collect();
                 match block_on(sim.devices[device].reconfigure(group, weights)) {
                     Ok(outputs) => sim.absorb(device, outputs),
                     Err(Error::NotAContributor) => {}

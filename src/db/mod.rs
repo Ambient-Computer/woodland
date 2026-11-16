@@ -26,7 +26,7 @@ use std::fmt;
 use ed25519_dalek::VerifyingKey;
 
 use crate::actor::{Identity, Peer};
-use crate::chain::{Checkpoint, Electorate};
+use crate::chain::{Checkpoint, Electorate, Role};
 use crate::encoding;
 use crate::model::Query;
 use crate::store::{Store, StoreError};
@@ -209,8 +209,8 @@ impl<S: Store> Database<S> {
     ///
     /// # Errors
     ///
-    /// If this device isn't a contributor to `group`, the transaction
-    /// writes to more than one clock, or the store fails.
+    /// If this device may not write to the transaction's clock, the
+    /// transaction writes to more than one, or the store fails.
     pub async fn write(
         &mut self,
         group: GroupId,
@@ -230,21 +230,21 @@ impl<S: Store> Database<S> {
         self.finish(step).await
     }
 
-    /// Asks the group to give these peers these weights from the next
+    /// Asks the group to give these peers these roles from the next
     /// checkpoint on. Anyone left out is removed; anyone new is added.
     /// It happens when a checkpoint carries it.
     ///
     /// # Errors
     ///
-    /// If this device isn't a contributor to `group`, nobody would be
-    /// left with a say, or the store fails.
+    /// If this device has no say in `group`, nobody would be left with
+    /// one, or the store fails.
     pub async fn reconfigure(
         &mut self,
         group: GroupId,
-        weights: impl IntoIterator<Item = (VerifyingKey, u32)>,
+        roles: impl IntoIterator<Item = (VerifyingKey, Role)>,
     ) -> Result<Outputs, Error> {
-        let weights = weights.into_iter();
-        let electorate = Electorate::new(weights.map(|(peer, weight)| (Peer::from(peer), weight)));
+        let roles = roles.into_iter();
+        let electorate = Electorate::of(roles.map(|(peer, role)| (Peer::from(peer), role)));
         let mut step = self.begin()?;
         let held = self.groups.get_mut(&group).ok_or(Error::UnknownGroup)?;
         let asked = held

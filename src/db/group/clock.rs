@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use crate::actor::{Identity, Peer};
-use crate::chain::{Checkpoint, Electorate};
+use crate::chain::{Checkpoint, Writers};
 use crate::clock::Stamp;
 use crate::db::{ClockId, GroupId, keys};
 use crate::encoding;
@@ -277,7 +277,7 @@ impl Clock {
     /// anyone `writers` leaves out. That's the whole of removal: a
     /// removed contributor's history ends at the checkpoint that
     /// removed it.
-    pub(super) fn cut<V: View>(&mut self, writers: &Electorate, step: &mut Step<V>) {
+    pub(super) fn cut<V: View>(&mut self, writers: Writers<'_>, step: &mut Step<V>) {
         let authors = self.history.uncommitted.values().map(|entry| entry.author);
         let removed = authors.filter(|&author| !writers.includes(author));
         let removed: BTreeSet<Peer> = removed.collect();
@@ -294,7 +294,7 @@ impl Clock {
             clock = ?self.id,
             ?author,
             entries = entries.len(),
-            "dropped what a removed contributor wrote after its last checkpoint"
+            "dropped what a contributor wrote after the checkpoint that stopped it writing here"
         );
         for entry in entries {
             step.delete(keys::log(self.group, self.id, author, entry.link.seq));

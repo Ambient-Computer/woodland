@@ -12,13 +12,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::actor::Identity;
+use crate::actor::{Identity, Peer};
 use crate::chain::Checkpoint;
 use crate::db::ClockId;
 use crate::encoding;
 use crate::store::{StoreError, View};
 
-use super::super::entry::Frontier;
+use super::super::entry::{Frontier, Link, reach};
 use super::super::step::Step;
 use super::Group;
 use super::clock::Clock;
@@ -64,16 +64,53 @@ impl Group {
     /// yet. A vote is a claim to hold everything the checkpoint covers,
     /// and to have reached the state it names by committing it, so this
     /// device votes for nothing it hasn't worked out for itself.
-    pub(super) async fn vet<V: View>(&mut self, step: &Step<V>) -> Result<(), StoreError> {
+    ///
+    /// A witness is the exception. It holds nothing to check against,
+    /// so it vouches only for the chain's shape.
+    pub(super) async fn vet<V: View>(
+        &mut self,
+        me: Peer,
+        step: &Step<V>,
+    ) -> Result<(), StoreError> {
+        let witness = self.chain.tip().electorate.is_witness(me);
         let proposed: Vec<Checkpoint> = self.chain.proposed().cloned().collect();
         for checkpoint in proposed {
             let digest = checkpoint.digest();
-            if !self.sound.contains(&digest) && self.checks_out(&checkpoint, step).await? {
+            // Nothing could follow a checkpoint whose electorate has
+            // nobody to vote, or nobody to work out what to vote for.
+            if self.sound.contains(&digest) || !checkpoint.electorate.is_viable() {
+                continue;
+            }
+
+            let sound = if witness {
+                self.keeps_going(&checkpoint)
+            } else {
+                self.checks_out(&checkpoint, step).await?
+            };
+            if sound {
                 self.sound.insert(digest);
             }
         }
 
         Ok(())
+    }
+
+    /// Whether `checkpoint` covers at least what the tip does, in every
+    /// clock the tip names.
+    fn keeps_going(&self, checkpoint: &Checkpoint) -> bool {
+        let before = covers_of(self.chain.tip()).unwrap_or_default();
+        let Some(covers) = covers_of(checkpoint) else {
+            return false;
+        };
+
+        let kept = |(&id, covered): (&ClockId, &Covered)| {
+            let frontier = covers.frontier(id);
+            let reaches = |(&author, link): (&Peer, &Link)| reach(&frontier, author) >= link.seq;
+
+            covers.clocks.contains_key(&id) && covered.frontier.iter().all(reaches)
+        };
+
+        before.clocks.iter().all(kept)
     }
 
     async fn checks_out<V: View>(
@@ -98,7 +135,10 @@ impl Group {
         for (&id, covered) in &covers.clocks {
             let unheard = Clock::new(self.id, id);
             let clock = self.clocks.get(&id).unwrap_or(&unheard);
-            if !clock.history.supports(&covered.frontier, &tip.electorate) {
+            if !clock
+                .history
+                .supports(&covered.frontier, tip.electorate.writers(id))
+            {
                 return Ok(false);
             }
 
@@ -130,18 +170,23 @@ impl Group {
     ) -> Result<(), StoreError> {
         let tip = self.chain.tip();
         let me = identity.peer();
-        let Some(rank) = tip.electorate.peers().position(|peer| peer == me) else {
+        let Some(rank) = tip.electorate.members().position(|peer| peer == me) else {
             return Ok(());
         };
+
+        // A witness has no state to commit to, so it starts no attempt.
+        if tip.electorate.is_witness(me) {
+            return Ok(());
+        }
 
         let patience = 2 + u64::try_from(rank).unwrap_or(u64::MAX - 2);
         let free = self.chain.attempt().is_none() || self.stalled > patience;
         let unsettled = |clock: &Clock| !clock.history.uncommitted.is_empty();
         let pending = self.clocks.values().any(unsettled) || self.wanted.is_some();
         let closed = |clock: &Clock| {
-            clock
-                .history
-                .supports(&clock.history.heads, &tip.electorate)
+            let writers = tip.electorate.writers(clock.id);
+
+            clock.history.supports(&clock.history.heads, writers)
         };
         let sound = self.folded == tip.height && self.clocks.values().all(closed);
         if !(free && pending && sound) {
@@ -226,7 +271,7 @@ impl Group {
             }
 
             clock.commit(&frontier, settled, step);
-            clock.cut(&checkpoint.electorate, step);
+            clock.cut(checkpoint.electorate.writers(id), step);
         }
 
         self.folded = checkpoint.height;

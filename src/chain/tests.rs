@@ -101,6 +101,59 @@ fn cast() -> Vec<Replica> {
         .into()
 }
 
+/// The NAS decides alone. The friend writes, and has no say.
+fn guests() -> Electorate {
+    Electorate::of([(nas(), Role::witness(1)), (friend(), Role::contributor(0))])
+}
+
+fn hosted() -> Vec<Replica> {
+    let founding = Checkpoint::founding([7; 32], guests());
+
+    [nas(), friend()]
+        .map(|peer| Replica::founded(peer, founding.clone()))
+        .into()
+}
+
+#[test]
+fn a_member_with_no_say_can_start_an_attempt() {
+    let mut replicas = hosted();
+
+    assert!(replicas[1].propose(guests(), b"from the friend"));
+    assert_eq!(replicas[1].height(), 0, "its own word decides nothing");
+
+    converse(&mut replicas, 0, 1);
+
+    for replica in &replicas {
+        assert_eq!(replica.height(), 1);
+        assert_eq!(replica.body(), b"from the friend");
+    }
+}
+
+#[test]
+fn a_member_with_no_say_cant_give_itself_one() {
+    let mut replicas = hosted();
+    let coup = Electorate::of([(friend(), Role::contributor(1))]);
+
+    assert!(replicas[1].propose(coup, b"from the friend"));
+    converse(&mut replicas, 0, 1);
+
+    for replica in &replicas {
+        assert_eq!(replica.height(), 0);
+    }
+}
+
+#[test]
+fn an_electorate_nothing_could_follow_is_never_proposed() {
+    let mut replica = Replica::new(nas());
+    let nobody = Electorate::new([]);
+    let only_witnesses = Electorate::of([(nas(), Role::witness(1))]);
+    let no_say = Electorate::of([(nas(), Role::contributor(0))]);
+
+    for dead in [nobody, only_witnesses, no_say] {
+        assert!(!replica.propose(dead, b"the end"));
+    }
+}
+
 #[test]
 fn a_founder_alone_decides_by_itself() {
     let alone = Electorate::new([(phone(), 1)]);

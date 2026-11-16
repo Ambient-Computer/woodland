@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 use crate::actor::{Identity, Peer};
-use crate::chain::Gossip;
+use crate::chain::{Electorate, Gossip};
 use crate::db::ClockId;
 use crate::store::{StoreError, View};
 
@@ -99,7 +99,8 @@ impl Group {
 
         let check = |entry: Entry| {
             let entry = entry.check(self.id)?;
-            let standing = self.standing(entry.author(), entry.header().under.height);
+            let header = entry.header();
+            let standing = self.standing(entry.author(), header.clock, header.under.height);
 
             Some((entry, standing))
         };
@@ -113,7 +114,10 @@ impl Group {
                 let unheard = Clock::new(self.id, id);
                 let clock = self.clocks.get(&id).unwrap_or(&unheard);
                 let decided = decided.frontier(id);
-                if clock.history.accepts(&entry, standing, &writers, &decided) {
+                if clock
+                    .history
+                    .accepts(&entry, standing, writers.writers(id), &decided)
+                {
                     self.clock(id).integrate(&entry, step);
                 } else {
                     unfit.push((entry, standing));
@@ -138,13 +142,15 @@ impl Group {
         self.progress(identity, owed, step).await
     }
 
-    /// Whether `author` has been a contributor ever since the checkpoint
-    /// at `height`. If not, whatever it wrote under that checkpoint was
-    /// cut when it was removed, and coming back doesn't bring it back.
-    pub(super) fn standing(&self, author: Peer, height: u64) -> bool {
+    /// Whether `author` has been allowed to write to `clock` ever since
+    /// the checkpoint at `height`. If not, whatever it wrote there under
+    /// that checkpoint was cut when it was stopped, and being let back
+    /// in doesn't bring it back.
+    pub(super) fn standing(&self, author: Peer, clock: ClockId, height: u64) -> bool {
         let mut electorates = self.chain.electorates_since(height);
+        let wrote = |it: &Electorate| it.writers(clock).includes(author);
 
-        height <= self.chain.tip().height && electorates.all(|it| it.includes(author))
+        height <= self.chain.tip().height && electorates.all(wrote)
     }
 
     /// Sends `peer` what it's thought to lack. With `always`, sends even

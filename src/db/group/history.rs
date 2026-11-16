@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use crate::actor::Peer;
-use crate::chain::Electorate;
+use crate::chain::Writers;
 use crate::clock::Stamp;
 
 use super::super::entry::{Checked, Frontier, Hash, Link, Outline, reach};
@@ -61,7 +61,7 @@ impl History {
         &self,
         entry: &Checked,
         standing: bool,
-        writers: &Electorate,
+        writers: Writers<'_>,
         decided: &Frontier,
     ) -> bool {
         let (author, header) = (entry.author(), entry.header());
@@ -107,7 +107,7 @@ impl History {
     /// at least as far as what's committed, this device holds every
     /// entry it names, and nothing it covers was written on top of
     /// something it leaves out.
-    pub(super) fn supports(&self, frontier: &Frontier, writers: &Electorate) -> bool {
+    pub(super) fn supports(&self, frontier: &Frontier, writers: Writers<'_>) -> bool {
         let keeps = |(author, link): (&Peer, &Link)| {
             frontier.get(author).is_some_and(|it| it.seq >= link.seq)
         };

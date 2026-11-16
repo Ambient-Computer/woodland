@@ -9,6 +9,7 @@ mod compaction;
 mod guards;
 mod membership;
 mod random;
+mod roles;
 mod single;
 mod sync;
 mod tables;
@@ -23,6 +24,7 @@ use crate::store::{MemoryStore, Store, Write};
 use crate::testing::block_on;
 
 use super::{Database, Error, Outputs, Transaction};
+use crate::chain::Role;
 
 const PHONE: usize = 0;
 const LAPTOP: usize = 1;
@@ -212,9 +214,24 @@ impl Sim {
     ) {
         let weights: Vec<_> = contributors
             .into_iter()
-            .map(|it| (self.id(it), 1))
+            .map(|it| (self.id(it), Role::contributor(1)))
             .collect();
         let outputs = block_on(self.devices[device].reconfigure(group, weights));
+        self.absorb(device, outputs.expect("asked"));
+    }
+
+    /// Asks for exactly these roles.
+    fn assign(
+        &mut self,
+        device: usize,
+        group: GroupId,
+        roles: impl IntoIterator<Item = (usize, Role)>,
+    ) {
+        let roles: Vec<_> = roles
+            .into_iter()
+            .map(|(it, role)| (self.id(it), role))
+            .collect();
+        let outputs = block_on(self.devices[device].reconfigure(group, roles));
         self.absorb(device, outputs.expect("asked"));
     }
 

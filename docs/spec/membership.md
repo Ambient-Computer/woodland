@@ -10,11 +10,13 @@ A configuration says which [peers](peers.md) hold a role in a [group](groups.md)
 - Weights are the application's choice. A device that is reliably reachable and reliably durable deserves more than one that is neither.
 - A configuration where one peer holds more than half the weight makes that peer an arbiter. One where every peer is needed makes finality unanimous. Neither is a special case.
 - A founder alone is a valid configuration, and commits by itself.
-- A configuration with no weight is never valid: nothing could follow it.
+- A contributor's weight may be zero. It writes, and has no say in what is committed or in who the members are.
+- A configuration with no weight, or with no contributor, is never valid: nothing could follow it. Nobody votes for a checkpoint that carries one.
 
 ## Changing it
 
-- A change is proposed by a contributor and takes effect when a checkpoint carries it.
+- A change is proposed by a member that holds weight, and takes effect when a checkpoint carries it.
+- A checkpoint that changes the configuration is voted for only in an attempt started by a member that holds weight. A writer confined to a [clock](peers.md) cannot vote itself out of it.
 - The checkpoint that carries a change is signed by a quorum of the configuration it replaces.
 - Checkpoints after it are signed by a quorum of the new configuration.
 - Two configurations are never in force at once. Each decides exactly one checkpoint: the next.
