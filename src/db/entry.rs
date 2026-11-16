@@ -10,7 +10,7 @@
 //! entries at one position apart, and a contributor that signs two is
 //! exactly what has to be noticed.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -19,7 +19,7 @@ use crate::chain::Digest;
 use crate::clock::Stamp;
 use crate::db::{ClockId, GroupId};
 use crate::encoding;
-use crate::model::{Declaration, Operation};
+use crate::model::{Declaration, ModelId, Operation};
 
 /// Names an entry, or a payload, by its content.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -187,6 +187,7 @@ impl Checked {
 
     pub(crate) fn outline(&self) -> Outline {
         let operations = self.operations.iter();
+        let waits = operations.clone().filter(|it| it.waits().is_some());
 
         Outline {
             author: self.author(),
@@ -194,6 +195,7 @@ impl Checked {
             after: self.header().after.clone(),
             under: self.header().under.height,
             declared: operations.flat_map(Operation::declares).collect(),
+            waits: waits.map(|it| it.model).collect(),
         }
     }
 }
@@ -209,6 +211,9 @@ pub(crate) struct Outline {
     /// The height of the checkpoint it was written under.
     pub(crate) under: u64,
     pub(crate) declared: Vec<Declaration>,
+    /// The models it has changes for that wait to be committed. Those
+    /// declare nothing.
+    pub(crate) waits: BTreeSet<ModelId>,
 }
 
 impl Outline {

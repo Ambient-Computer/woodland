@@ -15,6 +15,7 @@ mod group;
 mod id;
 pub(crate) mod keys;
 mod message;
+mod pending;
 mod proof;
 mod step;
 #[cfg(test)]
@@ -36,6 +37,7 @@ pub use changed::Changed;
 use group::{Group, Invitation};
 pub use id::{ClockId, GroupId};
 use message::Message;
+pub use pending::{Pending, Waiting};
 use step::Step;
 pub use transaction::Transaction;
 
@@ -410,6 +412,22 @@ impl<S: Store> Database<S> {
         }
 
         Ok(query.results(&scanned))
+    }
+
+    /// The changes in `group` that are waiting to be committed before
+    /// they do anything, in the order they'll be tried. Only those
+    /// whose transactions count for now are included.
+    ///
+    /// A [`Changed::Pending`] says when to ask again.
+    ///
+    /// # Errors
+    ///
+    /// If this device doesn't hold `group`, or the store fails.
+    pub async fn pending(&self, group: GroupId) -> Result<Vec<Pending>, Error> {
+        let held = self.groups.get(&group).ok_or(Error::UnknownGroup)?;
+        let step = Step::new(self.store.view());
+
+        Ok(held.pending(&step).await?)
     }
 
     fn begin(&self) -> Result<Step<S::View>, Error> {

@@ -27,6 +27,12 @@ pub enum Changed {
         /// Whether it's committed reads that changed, or optimistic ones.
         committed: bool,
     },
+    /// What's [pending] for a table: a change that waits to be
+    /// committed was written, was committed, or stopped counting. No
+    /// read is different because of it.
+    ///
+    /// [pending]: crate::Database::pending
+    Pending { group: GroupId, model: ModelId },
     /// Anything in the group, for either kind of read. The device
     /// caught up from a snapshot, or dropped writes that were discarded.
     Everything { group: GroupId },

@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::actor::{Identity, Peer};
 use crate::chain::{Certificate, Chain, Checkpoint, Digest, Electorate, Saved};
-use crate::db::{ClockId, GroupId, keys};
+use crate::db::{ClockId, GroupId, Pending, keys};
 use crate::model::Operation;
 use crate::store::{StoreError, View};
 
@@ -163,6 +163,19 @@ impl Group {
     #[cfg(test)]
     pub(crate) fn folded(&self) -> u64 {
         self.folded
+    }
+
+    /// Every change waiting to be committed, clock by clock.
+    pub(crate) async fn pending<V: View>(
+        &self,
+        step: &Step<V>,
+    ) -> Result<Vec<Pending>, StoreError> {
+        let mut pending = Vec::new();
+        for clock in self.clocks.values() {
+            pending.extend(clock.pending(step).await?);
+        }
+
+        Ok(pending)
     }
 
     /// Whether `peer` has a role in the group, as far as this device

@@ -186,6 +186,7 @@ impl Query {
     pub fn is_affected_by(&self, change: &Changed) -> bool {
         match change {
             Changed::Everything { group } => *group == self.group,
+            Changed::Pending { .. } => false,
             Changed::Key {
                 group,
                 model,

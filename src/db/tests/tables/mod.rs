@@ -8,6 +8,7 @@ mod removals;
 mod schema;
 mod sweeps;
 pub(super) mod unique;
+mod waiting;
 
 use super::*;
 use crate::model::{ColumnId, Row, Table, Value};

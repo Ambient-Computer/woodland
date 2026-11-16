@@ -213,6 +213,10 @@ pub(super) async fn write<V: View>(
 
 /// Tells readers that whatever `entry` touches may read differently.
 pub(super) fn notify<V: View>(id: GroupId, entry: &Outline, committed: bool, step: &mut Step<V>) {
+    for &model in &entry.waits {
+        step.changed(Changed::Pending { group: id, model });
+    }
+
     for declaration in &entry.declared {
         match &declaration.effect {
             Effect::Write { key, .. } => step.changed(Changed::Key {

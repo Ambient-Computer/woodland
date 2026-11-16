@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::actor::{Identity, Peer};
 use crate::chain::{Checkpoint, Writers};
 use crate::clock::Stamp;
-use crate::db::{Changed, ClockId, GroupId, keys};
+use crate::db::{Changed, ClockId, GroupId, Pending, keys};
 use crate::encoding;
 use crate::model::{ModelId, Operation};
 use crate::store::{StoreError, View};
@@ -156,6 +156,33 @@ impl Clock {
         step.save(key, &entry.entry);
         self.history.add(entry.outline());
         self.stale = true;
+    }
+
+    /// The changes waiting to be committed, of the entries that
+    /// happen, in timeline order.
+    pub(super) async fn pending<V: View>(
+        &self,
+        step: &Step<V>,
+    ) -> Result<Vec<Pending>, StoreError> {
+        let mut pending = Vec::new();
+        for stamp in &self.live {
+            let entry = self.history.uncommitted.get(stamp);
+            let Some(entry) = entry.filter(|entry| !entry.waits.is_empty()) else {
+                continue;
+            };
+
+            for operation in self.operations(entry, step).await? {
+                if let Some(deferred) = operation.waits() {
+                    pending.push(Pending {
+                        model: operation.model,
+                        author: entry.author.id(),
+                        change: deferred.into(),
+                    });
+                }
+            }
+        }
+
+        Ok(pending)
     }
 
     /// Which uncommitted entries happen.
