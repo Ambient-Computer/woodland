@@ -226,7 +226,7 @@ mod tests {
     #[test]
     fn every_place_parses() {
         let column = ColumnId::from_bytes([3; 8]);
-        let indexed = ColumnId::text(crate::model::ModelId::from_bytes([0; 32]), [1; 32]).indexed();
+        let indexed = ColumnId::text(crate::model::ModelId::from_bytes([0; 64]), [1; 32]).indexed();
         let places = [
             Place::Table,
             Place::Column(column),

@@ -4,6 +4,7 @@
 //! asks to send, in an order the test controls, and nothing else moves.
 
 mod checkpoints;
+mod clocks;
 mod compaction;
 mod guards;
 mod membership;
@@ -16,7 +17,7 @@ use std::collections::{BTreeSet, VecDeque};
 
 use ed25519_dalek::VerifyingKey;
 
-use crate::db::{Changed, GroupId, keys};
+use crate::db::{Changed, ClockId, GroupId, keys};
 use crate::model::{ModelId, Query};
 use crate::store::{MemoryStore, Store, Write};
 use crate::testing::block_on;

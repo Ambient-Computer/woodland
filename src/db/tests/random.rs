@@ -42,6 +42,24 @@ fn action() -> impl Strategy<Value = Action> {
     ]
 }
 
+/// The last key lives in a clock of its own, so every run has two
+/// histories under one chain.
+fn clock_of(group: GroupId, key: usize) -> ClockId {
+    if key + 1 == KEYS.len() {
+        ClockId::new(group, [9; 32])
+    } else {
+        group.into()
+    }
+}
+
+fn notes_of(group: GroupId, key: usize) -> ModelId {
+    ModelId::kv(clock_of(group, key), [1; 32])
+}
+
+fn names_of(group: GroupId, key: usize) -> ModelId {
+    ModelId::claims(clock_of(group, key), [2; 32])
+}
+
 /// Who holds each claim for good, as far as any device has said.
 type Claims = BTreeMap<&'static str, String>;
 
@@ -67,25 +85,25 @@ impl Run {
         let value = format!("{}", self.written);
         match action {
             Action::Set { device, key } => {
-                self.attempt(device, set(notes(group), KEYS[key], &value));
+                self.attempt(device, set(notes_of(group, key), KEYS[key], &value));
             }
 
             Action::Claim { device, key } => {
                 let wins = Transaction::new()
-                    .claim(names(group), KEYS[key], value.as_str())
-                    .set(notes(group), KEYS[key], value.as_str());
+                    .claim(names_of(group, key), KEYS[key], value.as_str())
+                    .set(notes_of(group, key), KEYS[key], value.as_str());
                 self.attempt(device, wins);
             }
 
             Action::Expect { device, key } => {
-                let seen = sim.shown(device, group, notes(group), KEYS[key]);
+                let seen = sim.shown(device, group, notes_of(group, key), KEYS[key]);
                 let transaction = match seen {
-                    Some(seen) => Transaction::new().expect(notes(group), KEYS[key], seen),
-                    None => Transaction::new().expect_absent(notes(group), KEYS[key]),
+                    Some(seen) => Transaction::new().expect(notes_of(group, key), KEYS[key], seen),
+                    None => Transaction::new().expect_absent(notes_of(group, key), KEYS[key]),
                 };
                 self.attempt(
                     device,
-                    transaction.set(notes(group), KEYS[key], value.as_str()),
+                    transaction.set(notes_of(group, key), KEYS[key], value.as_str()),
                 );
             }
 
@@ -116,10 +134,9 @@ impl Run {
     /// same value, on every device, from then on.
     fn check_finality(&mut self) -> Result<(), TestCaseError> {
         for device in 0..DEVICES {
-            for key in KEYS {
-                let held = self
-                    .sim
-                    .committed(device, self.group, names(self.group), key);
+            for (index, key) in KEYS.into_iter().enumerate() {
+                let names = names_of(self.group, index);
+                let held = self.sim.committed(device, self.group, names, key);
                 let Some(held) = held else {
                     let known = self.claims.get(key);
                     prop_assert!(
@@ -173,7 +190,13 @@ proptest! {
         }
 
         let everything = |device: usize, committed: bool| {
-            let models = [notes(group), names(group)];
+            let last = KEYS.len() - 1;
+            let models = [
+                notes_of(group, 0),
+                names_of(group, 0),
+                notes_of(group, last),
+                names_of(group, last),
+            ];
             let read = |model: ModelId| {
                 let query = Query::prefix(group, model, b"");
                 let query = if committed { query.committed() } else { query };

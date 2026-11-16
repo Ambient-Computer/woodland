@@ -1,11 +1,11 @@
 //! What peers say to each other.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
 use crate::chain::Gossip;
-use crate::db::GroupId;
+use crate::db::{ClockId, GroupId};
 use crate::model::ModelId;
 
 use super::entry::{Entry, Frontier};
@@ -31,8 +31,8 @@ pub(crate) struct Summary {
     /// The snapshot it's part of the way through receiving: the height
     /// it's for, and the last key it has.
     pub(crate) staged: Option<(u64, Option<Vec<u8>>)>,
-    /// The last entry it holds of each author's chain.
-    pub(crate) heads: Frontier,
+    /// The last entry it holds of each author's chain, in each clock.
+    pub(crate) heads: BTreeMap<ClockId, Frontier>,
 }
 
 /// Part of a snapshot: committed values, in key order.
@@ -42,7 +42,8 @@ pub(crate) struct Piece {
     pub(crate) height: u64,
     /// The key this piece comes after. `None` for the first.
     pub(crate) start: Option<Vec<u8>>,
-    /// Each key is a model and then the model's own key.
+    /// Each key is a model and then the model's own key, so a clock's
+    /// values come together.
     pub(crate) values: Vec<(Vec<u8>, Vec<u8>)>,
     /// With the last piece: every model that's been dropped.
     pub(crate) end: Option<BTreeSet<ModelId>>,

@@ -210,7 +210,7 @@ impl ColumnId {
     }
 
     fn new(kind: Type, table: ModelId, nonce: [u8; 32]) -> Self {
-        let hash = encoding::hash("woodland/column", &(table.as_bytes(), nonce));
+        let hash = encoding::hash("woodland/column", &(table, nonce));
         let mut id = [0; 8];
         id.copy_from_slice(&hash[..8]);
         id[0] = kind as u8;

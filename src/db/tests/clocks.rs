@@ -1,0 +1,195 @@
+//! A group with more than one clock: separate histories, one chain.
+
+use super::*;
+
+fn photos(group: GroupId) -> ClockId {
+    ClockId::new(group, [7; 32])
+}
+
+/// A model with the same nonce as [`notes`], in another clock.
+fn captions(group: GroupId) -> ModelId {
+    ModelId::kv(photos(group), [1; 32])
+}
+
+fn tags(group: GroupId) -> ModelId {
+    ModelId::claims(photos(group), [2; 32])
+}
+
+#[test]
+fn a_clock_exists_once_its_written_to() {
+    let (mut sim, group) = Sim::group(3, 3);
+    sim.write_to(PHONE, group, set(captions(group), "beach", "sunset"));
+    sim.write_to(LAPTOP, group, set(notes(group), "todo", "milk"));
+    sim.settle();
+
+    for device in [PHONE, LAPTOP, NAS] {
+        assert_eq!(
+            sim.committed(device, group, captions(group), "beach")
+                .as_deref(),
+            Some("sunset")
+        );
+        assert_eq!(
+            sim.committed(device, group, notes(group), "todo")
+                .as_deref(),
+            Some("milk")
+        );
+    }
+}
+
+#[test]
+fn models_in_different_clocks_are_different_models() {
+    let (mut sim, group) = Sim::group(2, 2);
+    assert_ne!(captions(group), notes(group));
+
+    sim.write_to(PHONE, group, set(notes(group), "beach", "a note"));
+    sim.write_to(PHONE, group, set(captions(group), "beach", "a caption"));
+    sim.settle();
+
+    assert_eq!(
+        sim.committed(LAPTOP, group, notes(group), "beach")
+            .as_deref(),
+        Some("a note")
+    );
+    assert_eq!(
+        sim.committed(LAPTOP, group, captions(group), "beach")
+            .as_deref(),
+        Some("a caption")
+    );
+}
+
+#[test]
+fn a_transaction_stays_within_one_clock() {
+    let (mut sim, group) = Sim::group(1, 1);
+    let both = Transaction::new().set(notes(group), "todo", "milk").set(
+        captions(group),
+        "beach",
+        "sunset",
+    );
+
+    let refused = block_on(sim.devices[PHONE].write(group, both));
+
+    assert!(matches!(refused, Err(Error::ManyClocks)));
+    sim.settle();
+    assert_eq!(sim.shown(PHONE, group, notes(group), "todo"), None);
+    assert_eq!(sim.shown(PHONE, group, captions(group), "beach"), None);
+}
+
+/// Each clock has its own timeline. A device that has been busy in one
+/// doesn't sort late in another because of it.
+#[test]
+fn being_busy_in_one_clock_doesnt_win_races_in_another() {
+    let (mut sim, group) = Sim::group(2, 2);
+    sim.disconnect_all();
+    for round in 0..5 {
+        sim.write_to(LAPTOP, group, set(notes(group), "busy", &round.to_string()));
+    }
+    sim.write_to(PHONE, group, claim(tags(group), "beach", "phone"));
+    sim.write_to(LAPTOP, group, claim(tags(group), "beach", "laptop"));
+    sim.connect_all();
+    sim.settle();
+
+    // Both claims are their authors' first entries in the clock, so the
+    // tie goes to whichever key sorts first, however much either wrote
+    // elsewhere.
+    let first = sim.id(PHONE).as_bytes() < sim.id(LAPTOP).as_bytes();
+    let winner = if first { "phone" } else { "laptop" };
+    for device in [PHONE, LAPTOP] {
+        assert_eq!(
+            sim.committed(device, group, tags(group), "beach")
+                .as_deref(),
+            Some(winner)
+        );
+    }
+}
+
+#[test]
+fn every_clock_comes_back_after_a_restart() {
+    let (mut sim, group) = Sim::group(2, 2);
+    sim.write_to(PHONE, group, set(captions(group), "beach", "sunset"));
+    sim.settle();
+    sim.isolate(PHONE);
+    sim.write_to(PHONE, group, set(captions(group), "hill", "fog"));
+    sim.write_to(PHONE, group, set(notes(group), "todo", "milk"));
+
+    sim.restart(PHONE);
+
+    assert_eq!(
+        sim.committed(PHONE, group, captions(group), "beach")
+            .as_deref(),
+        Some("sunset")
+    );
+    assert_eq!(
+        sim.shown(PHONE, group, captions(group), "hill").as_deref(),
+        Some("fog")
+    );
+
+    sim.connect_all();
+    sim.settle();
+
+    for model in [captions(group), notes(group)] {
+        let query = Query::prefix(group, model, b"");
+        assert_eq!(sim.read(LAPTOP, &query), sim.read(PHONE, &query));
+        assert_eq!(
+            sim.read(LAPTOP, &query.clone().committed()),
+            sim.read(PHONE, &query)
+        );
+    }
+}
+
+#[test]
+fn a_snapshot_carries_every_clock() {
+    let (mut sim, group) = Sim::group(3, 3);
+    sim.isolate(NAS);
+    for photo in 0..300 {
+        let name = format!("photo {photo:04}");
+        sim.write_to(PHONE, group, set(captions(group), &name, "untitled"));
+        sim.write_to(PHONE, group, set(notes(group), &name, "seen"));
+        if photo % 100 == 0 {
+            sim.settle();
+        }
+    }
+    sim.write_to(PHONE, group, Transaction::new().drop_model(tags(group)));
+    sim.settle();
+    sim.compact(PHONE, group);
+    sim.compact(LAPTOP, group);
+
+    sim.connect(NAS, PHONE);
+    sim.run();
+
+    for model in [captions(group), notes(group)] {
+        let query = Query::prefix(group, model, b"").committed();
+        assert_eq!(sim.read(NAS, &query).len(), 300);
+        assert_eq!(sim.read(NAS, &query), sim.read(PHONE, &query));
+    }
+
+    // It can vouch for the next checkpoint: its roots are the others'.
+    sim.isolate(LAPTOP);
+    sim.connect(NAS, PHONE);
+    sim.write_to(NAS, group, set(captions(group), "late", "arrival"));
+    sim.settle();
+
+    assert_eq!(
+        sim.committed(PHONE, group, captions(group), "late")
+            .as_deref(),
+        Some("arrival")
+    );
+}
+
+/// A removed contributor's work is cut in every clock it wrote to.
+#[test]
+fn removal_cuts_every_clock() {
+    let (mut sim, group) = Sim::group(3, 3);
+    sim.isolate(NAS);
+    sim.write_to(NAS, group, set(captions(group), "beach", "from the nas"));
+    sim.write_to(NAS, group, set(notes(group), "todo", "from the nas"));
+    sim.reconfigure(PHONE, group, [PHONE, LAPTOP]);
+    sim.settle();
+
+    sim.connect_all();
+    sim.settle();
+
+    for device in [PHONE, LAPTOP, NAS] {
+        assert_eq!(sim.shown(device, group, captions(group), "beach"), None);
+        assert_eq!(sim.shown(device, group, notes(group), "todo"), None);
+    }
+}

@@ -10,21 +10,19 @@
 //! to one side, adds them up as they arrive, and reads none of it until
 //! the sum is the one named by a checkpoint it has verified.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
 use crate::actor::Peer;
-use crate::db::{Changed, keys};
+use crate::db::{Changed, ClockId, keys};
 use crate::model::ModelId;
 use crate::store::{StoreError, View};
 
-use super::super::entry::{Frontier, Outline, reach};
 use super::super::message::Piece;
 use super::super::step::Step;
 use super::Group;
-use super::commit::covers_of;
-use super::judge;
+use super::commit::{Covers, covers_of};
 use super::root::Accumulator;
 use super::sync::Remote;
 
@@ -38,8 +36,8 @@ pub(super) struct Staging {
     pub(super) height: u64,
     /// The last key received.
     pub(super) after: Option<Vec<u8>>,
-    /// The sum of what's been received.
-    sum: Vec<u8>,
+    /// The sum of what's been received, for each clock.
+    sums: BTreeMap<ClockId, Vec<u8>>,
 }
 
 /// A snapshot on its way out to one peer.
@@ -54,31 +52,13 @@ impl Group {
     /// Sheds every entry a checkpoint covers, and every checkpoint that
     /// isn't needed to prove a later one.
     pub(crate) async fn compact<V: View>(&mut self, step: &mut Step<V>) -> Result<(), StoreError> {
-        let committed = self.history.committed.clone();
-        self.shed_through(&committed, step).await?;
+        for clock in self.clocks.values_mut() {
+            let committed = clock.history.committed.clone();
+            clock.shed_through(&committed, step).await?;
+        }
         self.base = self.folded;
         self.chain.compact(self.folded);
         self.said = true;
-
-        Ok(())
-    }
-
-    async fn shed_through<V: View>(
-        &mut self,
-        frontier: &Frontier,
-        step: &mut Step<V>,
-    ) -> Result<(), StoreError> {
-        for (&author, link) in frontier {
-            let from = reach(&self.shed, author) + 1;
-            let start = keys::log(self.id, author, from);
-            let end = keys::log(self.id, author, link.seq + 1);
-            for (key, _) in step.scan(&start, &end).await? {
-                step.delete(key);
-            }
-            if from <= link.seq {
-                self.shed.insert(author, *link);
-            }
-        }
 
         Ok(())
     }
@@ -119,11 +99,12 @@ impl Group {
             upto: last.or_else(|| start.clone()),
             done,
         };
+        let dropped = self.clocks.values().flat_map(|clock| &clock.dropped);
         let piece = Piece {
             height,
             start,
             values,
-            end: done.then(|| self.dropped.clone()),
+            end: done.then(|| dropped.copied().collect()),
         };
 
         Ok(Some((piece, sending)))
@@ -152,7 +133,7 @@ impl Group {
                 Staging {
                     height: piece.height,
                     after: None,
-                    sum: Accumulator::default().to_bytes(),
+                    sums: BTreeMap::new(),
                 }
             }
 
@@ -164,33 +145,54 @@ impl Group {
             }
         };
 
-        let Some(mut sum) = Accumulator::from_bytes(&staging.sum) else {
-            return self.unstage(step).await;
-        };
+        let mut sums = BTreeMap::new();
+        for (&clock, sum) in &staging.sums {
+            let Some(sum) = Accumulator::from_bytes(sum) else {
+                return self.unstage(step).await;
+            };
+            sums.insert(clock, sum);
+        }
+
         for (key, value) in piece.values {
-            let Some((model, rest)) = key.split_first_chunk::<32>() else {
+            let Some((model, rest)) = key.split_first_chunk::<64>() else {
                 return self.unstage(step).await;
             };
             if staging.after.as_ref().is_some_and(|after| *after >= key) {
                 return self.unstage(step).await;
             }
 
-            sum.hold(ModelId::from_bytes(*model), rest, &value);
+            let model = ModelId::from_bytes(*model);
+            let sum: &mut Accumulator = sums.entry(model.clock()).or_default();
+            sum.hold(model, rest, &value);
             step.put(keys::staged_value(self.id, &key), value);
             staging.after = Some(key);
         }
 
         let Some(dropped) = piece.end else {
-            staging.sum = sum.to_bytes();
+            let bytes = |(&clock, sum): (&ClockId, &Accumulator)| (clock, sum.to_bytes());
+            staging.sums = sums.iter().map(bytes).collect();
             self.staging = Some(staging);
             return Ok(());
         };
 
         for &model in &dropped {
-            sum.drop(model);
+            sums.entry(model.clock()).or_default().drop(model);
         }
+
+        // Every clock adds up to what the checkpoint names for it, and
+        // there's nothing in a clock the checkpoint doesn't name.
+        let nothing = Accumulator::default();
         let covers = self.chain.at(staging.height).and_then(covers_of);
-        let Some(covers) = covers.filter(|covers| covers.state == sum.root()) else {
+        let matches = |covers: &Covers| {
+            let named = |(id, covered): (&ClockId, _)| {
+                let covered: &super::commit::Covered = covered;
+
+                sums.get(id).unwrap_or(&nothing).root() == covered.state
+            };
+
+            covers.clocks.iter().all(named) && sums.keys().all(|id| covers.clocks.contains_key(id))
+        };
+        let Some(covers) = covers.filter(matches) else {
             tracing::warn!(
                 group = ?self.id,
                 height = staging.height,
@@ -199,7 +201,7 @@ impl Group {
             return self.unstage(step).await;
         };
 
-        self.install(staging.height, &covers.frontier, dropped, &sum, step)
+        self.install(staging.height, &covers, &dropped, &sums, step)
             .await
     }
 
@@ -220,9 +222,9 @@ impl Group {
     async fn install<V: View>(
         &mut self,
         height: u64,
-        frontier: &Frontier,
-        dropped: BTreeSet<ModelId>,
-        sum: &Accumulator,
+        covers: &Covers,
+        dropped: &BTreeSet<ModelId>,
+        sums: &BTreeMap<ClockId, Accumulator>,
         step: &mut Step<V>,
     ) -> Result<(), StoreError> {
         let (start, end) = keys::range(keys::committed(self.id));
@@ -237,34 +239,34 @@ impl Group {
             step.put(committed, value);
             step.delete(key);
         }
-        step.put(keys::state(self.id), sum.to_bytes());
-        self.dropped = dropped;
 
-        let covered = self.history.covered(frontier);
-        let covered: Vec<_> = covered.map(Outline::stamp).collect();
-        for stamp in covered {
-            if let Some(entry) = self.history.forget(stamp) {
-                judge::hide(self.id, &entry, step);
-                self.live.remove(&stamp);
-            }
+        let nothing = Accumulator::default();
+        for (&id, covered) in &covers.clocks {
+            let sum = sums.get(&id).unwrap_or(&nothing);
+            step.put(keys::state(self.id, id), sum.to_bytes());
+            let theirs = dropped.iter().filter(|model| model.clock() == id);
+            let theirs = theirs.copied().collect();
+            self.clock(id)
+                .adopt(&covered.frontier, theirs, step)
+                .await?;
         }
 
-        self.shed_through(frontier, step).await?;
-        self.history.adopt(frontier);
         self.folded = height;
         self.base = height;
         self.sound.clear();
         self.staging = None;
 
         // Catching up can skip the checkpoint that removed someone.
-        let entries = self.history.uncommitted.values();
-        let void = entries.filter(|entry| !self.standing(entry.author, entry.under));
-        let void: BTreeSet<Peer> = void.map(|entry| entry.author).collect();
-        for author in void {
-            self.void(author, step);
+        let ids: Vec<ClockId> = self.clocks.keys().copied().collect();
+        for id in ids {
+            let entries = self.clocks[&id].history.uncommitted.values();
+            let void = entries.filter(|entry| !self.standing(entry.author, entry.under));
+            let void: BTreeSet<Peer> = void.map(|entry| entry.author).collect();
+            for author in void {
+                self.clock(id).void(author, step);
+            }
         }
 
-        self.stale = true;
         step.changed(Changed::Everything { group: self.id });
         tracing::info!(group = ?self.id, height, "caught up from a snapshot");
 

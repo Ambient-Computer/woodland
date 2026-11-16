@@ -89,7 +89,7 @@ fn row(kind: u8, model: ModelId, key: &[u8], value: &[u8]) -> Vec<u16> {
     let length = |bytes: &[u8]| u64::try_from(bytes.len()).unwrap_or(u64::MAX).to_le_bytes();
     let mut hasher = blake3::Hasher::new_derive_key("woodland/state/row");
     hasher.update(&[kind]);
-    hasher.update(model.as_bytes());
+    hasher.update(&model.as_bytes());
     hasher.update(&length(key));
     hasher.update(key);
     hasher.update(&length(value));

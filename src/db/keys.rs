@@ -6,13 +6,16 @@
 //! [FOUNDING][group]                             → the group's first checkpoint
 //! [GROUP][group][PROTOCOL][CHAIN]               → the checkpoint chain
 //! [GROUP][group][PROTOCOL][META]                → what's held, what's committed
-//! [GROUP][group][PROTOCOL][LOG][author][seq]    → an entry
-//! [GROUP][group][PROTOCOL][STATE]               → the sum the state root is the hash of
+//! [GROUP][group][PROTOCOL][LOG][clock][author][seq] → an entry
+//! [GROUP][group][PROTOCOL][STATE][clock]        → the sum the clock's state root is the hash of
 //! [GROUP][group][COMMITTED][model][key…]        → the key's committed value
 //! [GROUP][group][UNCOMMITTED][model][key…][stamp] → a version: a value, or none
 //! [GROUP][group][DROPPED][model][stamp]         → the model was dropped, uncommitted
 //! [GROUP][group][STAGED][model][key…]           → a value from a snapshot not yet checked
 //! ```
+//!
+//! A model's ID starts with its clock's, so everything a clock owns is
+//! one range within each of the last four.
 //!
 //! Identifiers are fixed width and counters are big-endian, so byte order
 //! matches logical order. The application's key bytes are the only part
@@ -40,7 +43,7 @@
 
 use crate::actor::Peer;
 use crate::clock::Stamp;
-use crate::db::GroupId;
+use crate::db::{ClockId, GroupId};
 use crate::model::ModelId;
 
 const FOUNDING: u8 = 1;
@@ -113,9 +116,9 @@ pub(crate) fn meta(id: GroupId) -> Vec<u8> {
     [protocol(id), vec![META]].concat()
 }
 
-/// The running sum of everything committed.
-pub(crate) fn state(id: GroupId) -> Vec<u8> {
-    [protocol(id), vec![STATE]].concat()
+/// The running sum of everything committed in a clock.
+pub(crate) fn state(id: GroupId, clock: ClockId) -> Vec<u8> {
+    [protocol(id), vec![STATE], clock.as_bytes().to_vec()].concat()
 }
 
 /// Every entry held.
@@ -123,10 +126,11 @@ pub(crate) fn logs(id: GroupId) -> Vec<u8> {
     [protocol(id), vec![LOG]].concat()
 }
 
-pub(crate) fn log(id: GroupId, author: Peer, seq: u64) -> Vec<u8> {
+pub(crate) fn log(id: GroupId, clock: ClockId, author: Peer, seq: u64) -> Vec<u8> {
+    let clock = clock.as_bytes().to_vec();
     let author = author.as_bytes().to_vec();
 
-    [logs(id), author, seq.to_be_bytes().to_vec()].concat()
+    [logs(id), clock, author, seq.to_be_bytes().to_vec()].concat()
 }
 
 /// Every key that starts with `prefix`, as a key range. The prefix must
@@ -212,8 +216,8 @@ pub(crate) fn parse(key: &[u8]) -> Option<Record> {
     let (group, rest) = take_id(rest)?;
     let group = GroupId::from_bytes(group);
     let (&part, rest) = rest.split_first()?;
-    let (model, key) = take_id(rest)?;
-    let model = ModelId::from_bytes(model);
+    let (model, key) = rest.split_first_chunk::<64>()?;
+    let model = ModelId::from_bytes(*model);
     if space != GROUP {
         return None;
     }
@@ -290,7 +294,7 @@ mod tests {
             parse(&drop(id(), model, stamp(3, phone()))),
             Some(Record::Dropped { group: id(), model }),
         );
-        assert_eq!(parse(&log(id(), phone(), 9)), None);
+        assert_eq!(parse(&log(id(), id().into(), phone(), 9)), None);
         assert_eq!(parse(&founding(id())), None);
     }
 
@@ -298,7 +302,7 @@ mod tests {
     fn protocol_state_and_each_kind_of_model_data_are_separate_ranges() {
         let model = ModelId::kv(id(), [2; 32]);
 
-        for key in [chain(id()), meta(id()), log(id(), phone(), 1)] {
+        for key in [chain(id()), meta(id()), log(id(), id().into(), phone(), 1)] {
             assert!(key.starts_with(&protocol(id())));
         }
 
@@ -342,8 +346,8 @@ mod tests {
         let model = ModelId::kv(id(), [2; 32]);
         let (start, end) = range(logs(id()));
 
-        assert!(start <= log(id(), phone(), 0));
-        assert!(log(id(), laptop(), u64::MAX) < end);
+        assert!(start <= log(id(), id().into(), phone(), 0));
+        assert!(log(id(), id().into(), laptop(), u64::MAX) < end);
         assert!(meta(id()) < start);
         assert!(end < committed_value(id(), model, b""));
         assert!(end < versions(id(), model, b""));
@@ -351,7 +355,7 @@ mod tests {
 
     #[test]
     fn log_keys_sort_by_sequence() {
-        assert!(log(id(), phone(), 255) < log(id(), phone(), 256));
-        assert!(log(id(), phone(), 256) < log(id(), phone(), 257));
+        assert!(log(id(), id().into(), phone(), 255) < log(id(), id().into(), phone(), 256));
+        assert!(log(id(), id().into(), phone(), 256) < log(id(), id().into(), phone(), 257));
     }
 }

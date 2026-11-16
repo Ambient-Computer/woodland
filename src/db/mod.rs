@@ -33,7 +33,7 @@ use crate::store::{Store, StoreError};
 
 pub use changed::Changed;
 use group::Group;
-pub use id::GroupId;
+pub use id::{ClockId, GroupId};
 use message::Message;
 use step::Step;
 pub use transaction::Transaction;
@@ -72,6 +72,8 @@ pub enum Error {
     NotAContributor,
     /// The invitation couldn't be read.
     BadInvitation,
+    /// The transaction writes to models of more than one clock.
+    ManyClocks,
 }
 
 impl fmt::Display for Error {
@@ -82,6 +84,7 @@ impl fmt::Display for Error {
             Self::UnknownGroup => formatter.write_str("this device doesn't hold that group"),
             Self::NotAContributor => formatter.write_str("this device isn't a contributor"),
             Self::BadInvitation => formatter.write_str("the invitation couldn't be read"),
+            Self::ManyClocks => formatter.write_str("a transaction writes to one clock's models"),
         }
     }
 }
@@ -206,7 +209,8 @@ impl<S: Store> Database<S> {
     ///
     /// # Errors
     ///
-    /// If this device isn't a contributor to `group`, or the store fails.
+    /// If this device isn't a contributor to `group`, the transaction
+    /// writes to more than one clock, or the store fails.
     pub async fn write(
         &mut self,
         group: GroupId,
@@ -214,8 +218,10 @@ impl<S: Store> Database<S> {
     ) -> Result<Outputs, Error> {
         let mut step = self.begin()?;
         let held = self.groups.get_mut(&group).ok_or(Error::UnknownGroup)?;
+        let clock = transaction.clock(group.into());
+        let clock = clock.ok_or(Error::ManyClocks)?;
         let written = held
-            .write(&self.identity, transaction.operations, &mut step)
+            .write(&self.identity, clock, transaction.operations, &mut step)
             .await;
         if !self.guard(written)? {
             return Err(Error::NotAContributor);

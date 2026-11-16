@@ -8,6 +8,7 @@ A checkpoint is a quorum's signed statement that a stretch of history is final. 
 - It carries the [configuration](membership.md) in force after it.
 - It carries a frontier: for each [clock](groups.md), how far along each contributor's [chain](log.md) it covers.
 - A frontier is causally closed, and never behind the previous checkpoint's.
+- It names every clock that has committed state, whether or not it covers anything new there. Any one checkpoint is then enough to check a [snapshot](compaction.md) of any clock.
 - For each clock it commits to the history root of each chain at the frontier, and to a root of the clock's state after everything covered.
 - It is valid when signed by a quorum of the configuration its predecessor carries.
 

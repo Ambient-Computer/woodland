@@ -5,17 +5,18 @@
 //! peer is thought to hold only ever grows, so nothing is sent to it
 //! twice, and two peers with the same things have nothing to say.
 
+use std::collections::BTreeMap;
+
 use crate::actor::{Identity, Peer};
 use crate::chain::Gossip;
-use crate::clock::Stamp;
-use crate::db::keys;
-use crate::encoding;
+use crate::db::ClockId;
 use crate::store::{StoreError, View};
 
 use super::super::entry::{Checked, Entry, Frontier, Link, reach};
 use super::super::message::{Message, Summary};
 use super::super::step::Step;
 use super::Group;
+use super::clock::Clock;
 use super::commit::covers_of;
 use super::compact::Sending;
 
@@ -30,7 +31,7 @@ pub(super) struct Remote {
     height: u64,
     /// The height of the latest checkpoint it has committed.
     folded: u64,
-    heads: Frontier,
+    heads: BTreeMap<ClockId, Frontier>,
     /// How far it says it has got with a snapshot.
     pub(super) staged: Option<(u64, Option<Vec<u8>>)>,
     /// The snapshot this device is sending it.
@@ -38,9 +39,10 @@ pub(super) struct Remote {
 }
 
 impl Remote {
-    fn holds(&mut self, author: Peer, link: Link) {
-        if reach(&self.heads, author) <= link.seq {
-            self.heads.insert(author, link);
+    fn holds(&mut self, clock: ClockId, author: Peer, link: Link) {
+        let heads = self.heads.entry(clock).or_default();
+        if reach(heads, author) <= link.seq {
+            heads.insert(author, link);
         }
     }
 }
@@ -72,19 +74,20 @@ impl Group {
         remote.height = remote.height.max(message.summary.height);
         remote.folded = remote.folded.max(message.summary.folded);
         remote.staged = message.summary.staged;
-        for (&author, &link) in &message.summary.heads {
-            remote.holds(author, link);
+        for (&clock, heads) in &message.summary.heads {
+            for (&author, &link) in heads {
+                remote.holds(clock, author, link);
+            }
         }
         for entry in &message.entries {
-            remote.holds(entry.header.author(), entry.link());
+            let clock = entry.header.payload().clock;
+            remote.holds(clock, entry.header.author(), entry.link());
         }
 
         self.said |= self.chain.receive(message.chain);
         let tip = self.chain.tip();
         let writers = tip.electorate.clone();
-        let decided = covers_of(tip)
-            .map(|covers| covers.frontier)
-            .unwrap_or_default();
+        let decided = covers_of(tip).unwrap_or_default();
 
         // A peer that sent entries, or part of a snapshot, is waiting to
         // hear how far they got.
@@ -106,8 +109,12 @@ impl Group {
             let before = waiting.len();
             let mut unfit = Vec::new();
             for (entry, standing) in waiting {
-                if self.history.accepts(&entry, standing, &writers, &decided) {
-                    self.integrate(&entry, step);
+                let id = entry.header().clock;
+                let unheard = Clock::new(self.id, id);
+                let clock = self.clocks.get(&id).unwrap_or(&unheard);
+                let decided = decided.frontier(id);
+                if clock.history.accepts(&entry, standing, &writers, &decided) {
+                    self.clock(id).integrate(&entry, step);
                 } else {
                     unfit.push((entry, standing));
                 }
@@ -195,7 +202,8 @@ impl Group {
                 remote.sending = sending;
             }
             for entry in &message.entries {
-                remote.holds(entry.header.author(), entry.link());
+                let clock = entry.header.payload().clock;
+                remote.holds(clock, entry.header.author(), entry.link());
             }
         }
 
@@ -210,7 +218,11 @@ impl Group {
                 .staging
                 .as_ref()
                 .map(|it| (it.height, it.after.clone())),
-            heads: self.history.heads.clone(),
+            heads: self
+                .clocks
+                .iter()
+                .map(|(&id, clock)| (id, clock.history.heads.clone()))
+                .collect(),
         }
     }
 
@@ -223,24 +235,11 @@ impl Group {
         step: &Step<V>,
     ) -> Result<Vec<Entry>, StoreError> {
         let page = u64::try_from(PAGE).unwrap_or(u64::MAX);
-        let mut missing: Vec<(Stamp, Entry)> = Vec::new();
-        for (&author, head) in &self.history.heads {
-            let held = self.history.shared(author, remote.heads.get(&author));
-            if held >= head.seq {
-                continue;
-            }
-
-            let last = head.seq.min(held.saturating_add(page));
-            let start = keys::log(self.id, author, held + 1);
-            let end = keys::log(self.id, author, last + 1);
-            for (_, stored) in step.scan(&start, &end).await? {
-                let Some(entry) = encoding::decode::<Entry>(&stored) else {
-                    return Err(StoreError::new("a stored entry is unreadable"));
-                };
-
-                let lamport = entry.header.payload().lamport;
-                missing.push((Stamp { lamport, author }, entry));
-            }
+        let nothing = Frontier::new();
+        let mut missing = Vec::new();
+        for (id, clock) in &self.clocks {
+            let theirs = remote.heads.get(id).unwrap_or(&nothing);
+            missing.extend(clock.missing(theirs, page, step).await?);
         }
 
         missing.sort_by_key(|(stamp, _)| *stamp);

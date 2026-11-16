@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::actor::{Identity, Peer, Signable, Signed, verify_all};
 use crate::chain::Digest;
 use crate::clock::Stamp;
-use crate::db::GroupId;
+use crate::db::{ClockId, GroupId};
 use crate::encoding;
 use crate::model::{Declaration, Operation};
 
@@ -46,6 +46,8 @@ pub(crate) fn reach(frontier: &Frontier, author: Peer) -> u64 {
 pub(crate) struct Header {
     /// So a signed entry can never be replayed into another group.
     pub(crate) group: GroupId,
+    /// The clock it's part of. Its author has one chain in each.
+    pub(crate) clock: ClockId,
     /// Its place in its author's chain, counting from one.
     pub(crate) seq: u64,
     /// The entry before it in its author's chain.
@@ -105,13 +107,15 @@ impl Entry {
     }
 
     /// Checks everything that can be checked without knowing anything
-    /// else: the signature, the group, and that the payload is the one
-    /// the header was signed over.
+    /// else: the signature, the group, that the payload is the one the
+    /// header was signed over, and that it stays within its clock.
     pub(crate) fn check(self, group: GroupId) -> Option<Checked> {
         let header = verify_all(vec![self.header.clone()]).pop()?;
         let said = header.payload();
         let intact = said.group == group && said.payload == Hash::of_payload(&self.payload);
-        let operations = encoding::decode(&self.payload)?;
+        let operations: Vec<Operation> = encoding::decode(&self.payload)?;
+        let within = |operation: &Operation| operation.model.clock() == said.clock;
+        let intact = intact && operations.iter().all(within);
         let hash = Hash::of_header(header.author(), said);
 
         intact.then_some(Checked {
@@ -213,5 +217,54 @@ impl Outline {
             lamport: self.link.lamport,
             author: self.author,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::chain::{Checkpoint, Electorate};
+    use crate::model::ModelId;
+
+    fn entry(clock: ClockId, model: ModelId) -> (GroupId, Entry) {
+        let identity = Identity::from_secret_key([1; 32]);
+        let founding = Checkpoint::founding([2; 32], Electorate::new([(identity.peer(), 1)]));
+        let group = GroupId::from_bytes(*founding.digest().as_bytes());
+        let header = Header {
+            group,
+            clock,
+            seq: 1,
+            previous: None,
+            after: Frontier::new(),
+            lamport: 1,
+            under: Under {
+                height: 0,
+                checkpoint: founding.digest(),
+            },
+            payload: Hash::NONE,
+        };
+        let operations = vec![Operation::set(model, b"key".to_vec(), b"value".to_vec())];
+
+        (group, Entry::author(&identity, header, operations).entry)
+    }
+
+    #[test]
+    fn an_entry_writes_only_to_its_own_clock() {
+        let clock = ClockId::from_bytes([3; 32]);
+        let other = ClockId::from_bytes([4; 32]);
+
+        let (group, within) = entry(clock, ModelId::kv(clock, [5; 32]));
+        assert!(within.check(group).is_some());
+
+        let (group, outside) = entry(clock, ModelId::kv(other, [5; 32]));
+        assert!(outside.check(group).is_none());
+    }
+
+    #[test]
+    fn an_entry_is_no_good_in_another_group() {
+        let clock = ClockId::from_bytes([3; 32]);
+        let (_, entry) = entry(clock, ModelId::kv(clock, [5; 32]));
+
+        assert!(entry.check(GroupId::from_bytes([9; 32])).is_none());
     }
 }

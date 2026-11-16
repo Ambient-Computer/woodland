@@ -1,6 +1,7 @@
 //! One group, as one device holds it: its checkpoint chain, everyone's
 //! entries, and which of them have happened.
 
+mod clock;
 mod commit;
 mod compact;
 mod history;
@@ -14,37 +15,29 @@ use serde::{Deserialize, Serialize};
 
 use crate::actor::{Identity, Peer};
 use crate::chain::{Chain, Checkpoint, Digest, Electorate, Saved};
-use crate::clock::Stamp;
-use crate::db::{GroupId, keys};
-use crate::encoding;
-use crate::model::{ModelId, Operation};
+use crate::db::{ClockId, GroupId, keys};
+use crate::model::Operation;
 use crate::store::{StoreError, View};
 
-use super::entry::{Checked, Entry, Frontier, Hash, Header, Outline, Under, reach};
 use super::step::Step;
+use clock::{Clock, Kept};
 use compact::Staging;
-use history::History;
-use judge::Written;
 use sync::Remote;
 
 #[derive(Debug)]
 pub(crate) struct Group {
     id: GroupId,
     chain: Chain,
-    history: History,
+    /// Every clock anything has been written to, as far as this device
+    /// has heard.
+    clocks: BTreeMap<ClockId, Clock>,
     /// The height of the last checkpoint whose entries are committed
     /// here. Behind the chain's tip while those entries are on their way.
     folded: u64,
     /// The height below which history has been shed.
     base: u64,
-    /// The last entry of each author's chain that's been shed.
-    shed: Frontier,
     /// A snapshot that's part of the way in.
     staging: Option<Staging>,
-    /// Models dropped by committed entries.
-    dropped: BTreeSet<ModelId>,
-    /// The uncommitted entries that happen, as storage shows them.
-    live: BTreeSet<Stamp>,
     /// What each connected peer is thought to hold.
     remotes: BTreeMap<Peer, Remote>,
     /// The electorate this device has been asked to bring about.
@@ -56,20 +49,15 @@ pub(crate) struct Group {
     stalled: u64,
     /// Whether the chain has anything peers haven't been told.
     said: bool,
-    /// Whether verdicts need working out again.
-    stale: bool,
 }
 
 /// What's kept of a group besides its chain and its entries.
 #[derive(Debug, Serialize, Deserialize)]
 struct Meta {
-    heads: Frontier,
-    committed: Frontier,
+    clocks: BTreeMap<ClockId, Kept>,
     folded: u64,
     base: u64,
-    shed: Frontier,
     staging: Option<Staging>,
-    dropped: BTreeSet<ModelId>,
     wanted: Option<Electorate>,
 }
 
@@ -83,19 +71,15 @@ impl Group {
         Self {
             id,
             chain,
-            history: History::default(),
+            clocks: BTreeMap::new(),
             folded: 0,
             base: 0,
-            shed: Frontier::new(),
             staging: None,
-            dropped: BTreeSet::new(),
-            live: BTreeSet::new(),
             remotes: BTreeMap::new(),
             wanted: None,
             sound: BTreeSet::new(),
             stalled: 0,
             said: false,
-            stale: false,
         }
     }
 
@@ -124,27 +108,12 @@ impl Group {
         let mut group = Self::new(id, Chain::restore(saved));
         group.folded = meta.folded;
         group.base = meta.base;
-        group.shed = meta.shed;
         group.staging = meta.staging;
-        group.dropped = meta.dropped;
         group.wanted = meta.wanted;
-        group.history = History::resume(meta.heads, meta.committed);
-        for (author, head) in group.history.heads.clone() {
-            let from = reach(&group.history.committed, author) + 1;
-            let (start, end) = (
-                keys::log(id, author, from),
-                keys::log(id, author, head.seq + 1),
-            );
-            for (_, stored) in step.scan(&start, &end).await? {
-                let entry = encoding::decode::<Entry>(&stored).and_then(Entry::trusted);
-                let entry = entry.ok_or_else(|| StoreError::new("a stored entry is unreadable"))?;
-                group.history.remember(entry.outline());
-            }
+        for (clock, kept) in meta.clocks {
+            let held = Clock::load(id, clock, kept, step).await?;
+            group.clocks.insert(clock, held);
         }
-
-        // Storage already shows these: verdicts depend on nothing but
-        // what was stored along with them.
-        group.live = group.judged(step).await?;
 
         Ok(Some(group))
     }
@@ -160,14 +129,12 @@ impl Group {
     }
 
     fn persist<V: View>(&self, step: &mut Step<V>) {
+        let clocks = self.clocks.iter();
         let meta = Meta {
-            heads: self.history.heads.clone(),
-            committed: self.history.committed.clone(),
+            clocks: clocks.map(|(&id, clock)| (id, clock.kept())).collect(),
             folded: self.folded,
             base: self.base,
-            shed: self.shed.clone(),
             staging: self.staging.clone(),
-            dropped: self.dropped.clone(),
             wanted: self.wanted.clone(),
         };
         step.save(keys::meta(self.id), &meta);
@@ -176,44 +143,33 @@ impl Group {
         }
     }
 
-    /// Appends an entry to this device's own chain. Returns whether it
-    /// may: only a contributor writes.
+    /// Appends an entry to this device's own chain in `clock`. Returns
+    /// whether it may: only a contributor writes.
     pub(crate) async fn write<V: View>(
         &mut self,
         identity: &Identity,
-        mut operations: Vec<Operation>,
+        clock: ClockId,
+        operations: Vec<Operation>,
         step: &mut Step<V>,
     ) -> Result<bool, StoreError> {
-        let me = identity.peer();
-        let tip = self.chain.tip();
-        if !tip.electorate.includes(me) {
+        let tip = self.chain.tip().clone();
+        if !tip.electorate.includes(identity.peer()) {
             return Ok(false);
         }
 
-        let seq = reach(&self.history.heads, me) + 1;
-        for (index, operation) in operations.iter_mut().enumerate() {
-            operation.seal(me, seq, index);
-        }
-
-        let mut after = self.history.heads.clone();
-        after.remove(&me);
-        let header = Header {
-            group: self.id,
-            seq,
-            previous: self.history.hash_of_head(me),
-            after,
-            lamport: self.history.lamport() + 1,
-            under: Under {
-                height: tip.height,
-                checkpoint: tip.digest(),
-            },
-            payload: Hash::NONE,
-        };
-        let entry = Entry::author(identity, header, operations);
-        self.integrate(&entry, step);
+        self.clock(clock).write(identity, &tip, operations, step);
         self.progress(identity, None, step).await?;
 
         Ok(true)
+    }
+
+    /// The clock named `id`, which exists from the moment it's needed.
+    fn clock(&mut self, id: ClockId) -> &mut Clock {
+        let group = self.id;
+
+        self.clocks
+            .entry(id)
+            .or_insert_with(|| Clock::new(group, id))
     }
 
     /// Asks for `electorate` to decide checkpoints from the next one on.
@@ -264,13 +220,6 @@ impl Group {
         self.progress(identity, None, step).await
     }
 
-    fn integrate<V: View>(&mut self, entry: &Checked, step: &mut Step<V>) {
-        let key = keys::log(self.id, entry.author(), entry.header().seq);
-        step.save(key, &entry.entry);
-        self.history.add(entry.outline());
-        self.stale = true;
-    }
-
     /// Does everything that follows from what's now held: decides and
     /// commits what it can, works out what happens, and tells peers.
     /// `owed` is a peer that gets an answer even if there's no news.
@@ -290,9 +239,9 @@ impl Group {
             }
         }
 
-        if self.stale {
-            self.rejudge(step).await?;
-            self.stale = false;
+        self.clocks.retain(|_, clock| !clock.is_empty());
+        for clock in self.clocks.values_mut() {
+            clock.rejudge(step).await?;
         }
 
         self.persist(step);
@@ -303,56 +252,5 @@ impl Group {
         self.said = false;
 
         Ok(())
-    }
-
-    /// Which uncommitted entries happen.
-    async fn judged<V: View>(&self, step: &Step<V>) -> Result<BTreeSet<Stamp>, StoreError> {
-        let mut written = Written::on(&self.dropped);
-        let mut live = BTreeSet::new();
-        for (&stamp, entry) in &self.history.uncommitted {
-            if judge::weigh(self.id, entry, &written, step).await? {
-                written.apply(&entry.declared);
-                live.insert(stamp);
-            }
-        }
-
-        Ok(live)
-    }
-
-    /// Works out every uncommitted verdict again, and makes storage show
-    /// exactly the entries that happen.
-    async fn rejudge<V: View>(&mut self, step: &mut Step<V>) -> Result<(), StoreError> {
-        let live = self.judged(step).await?;
-        for stamp in live.symmetric_difference(&self.live) {
-            let Some(entry) = self.history.uncommitted.get(stamp) else {
-                continue;
-            };
-
-            if live.contains(stamp) {
-                let operations = self.operations(entry, step).await?;
-                judge::show(self.id, *stamp, &operations, step);
-            } else {
-                judge::hide(self.id, entry, step);
-            }
-            judge::notify(self.id, entry, false, step);
-        }
-        self.live = live;
-
-        Ok(())
-    }
-
-    /// Reads back what an entry does. Only its outline is kept in memory.
-    async fn operations<V: View>(
-        &self,
-        entry: &Outline,
-        step: &Step<V>,
-    ) -> Result<Vec<Operation>, StoreError> {
-        let key = keys::log(self.id, entry.author, entry.link.seq);
-        let stored = step.load::<Entry>(&key).await?;
-        let stored = stored.and_then(Entry::trusted);
-
-        stored
-            .map(|entry| entry.operations)
-            .ok_or_else(|| StoreError::new("an entry is missing from the store"))
     }
 }

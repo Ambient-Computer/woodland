@@ -12,8 +12,10 @@
 //!    [`Store`]. The application hands it what happens (a write, a
 //!    message, the passing of time) and gets back what to send and what
 //!    changed. Each call is one step, and one atomic batch.
-//! 2. `db/group/`: one group. Everyone's entries, which of them are
-//!    committed, which of the rest happen, and what each peer lacks.
+//! 2. `db/group/`: one group. Its chain, its clocks, and what each
+//!    peer lacks. A [clock] (`db/group/clock.rs`) is one history:
+//!    everyone's entries, which of them are committed, and which of
+//!    the rest happen.
 //! 3. `chain/`: the checkpoint chain. One decision at a time, each made
 //!    by the electorate the one before it named.
 //! 4. `model/`: what operations write and what they require. A
@@ -24,6 +26,7 @@
 //!    stamps that order entries, and how things become bytes.
 //!
 //! [group]: GroupId
+//! [clock]: ClockId
 
 mod actor;
 mod chain;
@@ -36,6 +39,6 @@ mod store;
 mod testing;
 
 pub use actor::Identity;
-pub use db::{Changed, Database, Error, GroupId, Outputs, Transaction};
+pub use db::{Changed, ClockId, Database, Error, GroupId, Outputs, Transaction};
 pub use model::{ColumnId, ModelId, Query, Row, Table, Value};
 pub use store::{Entry, MemoryStore, MemoryView, Order, Store, StoreError, View, Write};

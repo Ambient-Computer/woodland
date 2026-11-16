@@ -1,3 +1,4 @@
+use crate::db::ClockId;
 use crate::model::{ColumnId, Fingerprint, ModelId, Operation, Requirement, Row, Value};
 
 /// A set of changes that happen together, or not at all.
@@ -13,6 +14,15 @@ pub struct Transaction {
 impl Transaction {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The clock whose models this writes to, or `fallback` if it
+    /// writes nothing. `None` if it writes to more than one.
+    pub(crate) fn clock(&self, fallback: ClockId) -> Option<ClockId> {
+        let mut clocks = self.operations.iter().map(|it| it.model.clock());
+        let first = clocks.next().unwrap_or(fallback);
+
+        clocks.all(|clock| clock == first).then_some(first)
     }
 
     /// Sets `key` in a key-value or threshold model. Naming a new model

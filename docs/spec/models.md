@@ -13,6 +13,7 @@ A model is one kind of data inside a [clock](groups.md): a namespace of keys and
 ## Lifetime
 
 - A model comes into existence with the first operation that names it; creating one needs no agreement.
+- A model's name includes its clock's. The same name under another clock is another model, and an operation on it belongs in that clock.
 - A model's identity includes its kind. An operation of another kind is not valid in it.
 - Dropping a model is an operation at a place in the timeline. After it the model is gone for good, and transactions that name it are pruned.
 

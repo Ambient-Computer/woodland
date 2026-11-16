@@ -85,7 +85,7 @@ pub use query::Query;
 pub use table::{ColumnId, Row, Table, Value};
 
 use crate::actor::Peer;
-use crate::db::GroupId;
+use crate::db::ClockId;
 use crate::encoding;
 
 /// One step of a transaction: a change to one model.
@@ -358,28 +358,36 @@ pub(crate) struct Write {
     pub(crate) value: Option<Vec<u8>>,
 }
 
-/// Names a model within a group: its kind, then the BLAKE3 hash of
-/// the group's ID and a nonce.
+/// Names a model: the clock that owns it, then its kind and the BLAKE3
+/// hash of the clock's ID and a nonce.
 ///
 /// Like a group ID, it's derived from how the model began, so models
 /// created independently on different devices never collide. The model's
 /// initial state is always empty, so the nonce is the only input that varies.
+///
+/// A group's first clock is named after the group, so a model can be
+/// made from a [`GroupId`] alone.
+///
+/// [`GroupId`]: crate::GroupId
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct ModelId([u8; 32]);
+pub struct ModelId {
+    clock: ClockId,
+    id: [u8; 32],
+}
 
 impl ModelId {
     /// A key-value map: the last write to a key wins. The application
     /// supplies the nonce: random bytes.
     #[must_use]
-    pub fn kv(group: GroupId, nonce: [u8; 32]) -> Self {
-        Self::new(Kind::Kv, group, nonce)
+    pub fn kv(clock: impl Into<ClockId>, nonce: [u8; 32]) -> Self {
+        Self::new(Kind::Kv, clock.into(), nonce)
     }
 
     /// A map of claims: the first claim on a key wins, and a transaction
     /// that loses one doesn't happen at all.
     #[must_use]
-    pub fn claims(group: GroupId, nonce: [u8; 32]) -> Self {
-        Self::new(Kind::Claims, group, nonce)
+    pub fn claims(clock: impl Into<ClockId>, nonce: [u8; 32]) -> Self {
+        Self::new(Kind::Claims, clock.into(), nonce)
     }
 
     /// A key-value map that only shows what is committed: values every
@@ -388,8 +396,8 @@ impl ModelId {
     ///
     /// [key-value]: ModelId::kv
     #[must_use]
-    pub fn threshold(group: GroupId, nonce: [u8; 32]) -> Self {
-        Self::new(Kind::Threshold, group, nonce)
+    pub fn threshold(clock: impl Into<ClockId>, nonce: [u8; 32]) -> Self {
+        Self::new(Kind::Threshold, clock.into(), nonce)
     }
 
     /// A table: rows of typed cells, in columns that are themselves
@@ -397,37 +405,58 @@ impl ModelId {
     ///
     /// [creates]: crate::Transaction::create_table
     #[must_use]
-    pub fn table(group: GroupId, nonce: [u8; 32]) -> Self {
-        Self::new(Kind::Table, group, nonce)
+    pub fn table(clock: impl Into<ClockId>, nonce: [u8; 32]) -> Self {
+        Self::new(Kind::Table, clock.into(), nonce)
     }
 
     /// `None` for an ID this version of the library didn't make.
     pub(crate) fn kind(&self) -> Option<Kind> {
         [Kind::Kv, Kind::Claims, Kind::Threshold, Kind::Table]
             .into_iter()
-            .find(|&kind| kind as u8 == self.0[0])
+            .find(|&kind| kind as u8 == self.id[0])
     }
 
-    fn new(kind: Kind, group: GroupId, nonce: [u8; 32]) -> Self {
-        let mut id = encoding::hash("woodland/model", &(group.as_bytes(), nonce));
+    /// The clock the model belongs to. A transaction writes to the
+    /// models of one clock.
+    #[must_use]
+    pub fn clock(&self) -> ClockId {
+        self.clock
+    }
+
+    fn new(kind: Kind, clock: ClockId, nonce: [u8; 32]) -> Self {
+        let mut id = encoding::hash("woodland/model", &(clock.as_bytes(), nonce));
         id[0] = kind as u8;
 
-        Self(id)
+        Self { clock, id }
     }
 
-    pub(crate) fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
+    /// The clock, then the model within it: a clock's models are one
+    /// range of keys.
+    pub(crate) fn as_bytes(&self) -> [u8; 64] {
+        let mut bytes = [0; 64];
+        bytes[..32].copy_from_slice(self.clock.as_bytes());
+        bytes[32..].copy_from_slice(&self.id);
+
+        bytes
     }
 
-    pub(crate) fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
+    pub(crate) fn from_bytes(bytes: [u8; 64]) -> Self {
+        let mut clock = [0; 32];
+        let mut id = [0; 32];
+        clock.copy_from_slice(&bytes[..32]);
+        id.copy_from_slice(&bytes[32..]);
+
+        Self {
+            clock: ClockId::from_bytes(clock),
+            id,
+        }
     }
 }
 
 /// Abbreviated, like a git hash.
 impl std::fmt::Debug for ModelId {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for byte in &self.0[..4] {
+        for byte in &self.id[..4] {
             write!(formatter, "{byte:02x}")?;
         }
 

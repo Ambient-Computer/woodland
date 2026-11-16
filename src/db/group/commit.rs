@@ -1,33 +1,39 @@
 //! Checkpoints: proposing them, voting on them, and committing what
 //! they cover.
 //!
-//! A checkpoint's body names the last entry of each author's chain that
-//! it covers. Everything it covers and the checkpoint before it didn't
-//! is committed in timeline order, after everything committed earlier.
+//! A checkpoint's body names, for each clock, the last entry of each
+//! author's chain that it covers. Everything it covers and the
+//! checkpoint before it didn't is committed, clock by clock, in
+//! timeline order, after everything committed earlier.
 //! Whatever is left sorts after that, wherever its stamps would have put
 //! it: committed work is never reordered by work that arrives late.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::actor::{Identity, Peer};
+use crate::actor::Identity;
 use crate::chain::Checkpoint;
-use crate::clock::Stamp;
-use crate::db::keys;
+use crate::db::ClockId;
 use crate::encoding;
-use crate::model::{ModelId, Operation};
 use crate::store::{StoreError, View};
 
 use super::super::entry::Frontier;
 use super::super::step::Step;
 use super::Group;
-use super::judge::{self, Written};
-use super::root::{Accumulator, Root};
+use super::clock::Clock;
+use super::root::Root;
 
-/// What a checkpoint makes final: its body.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// What a checkpoint makes final: its body. It names every clock that
+/// has anything committed, changed by this checkpoint or not.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub(super) struct Covers {
+    pub(super) clocks: BTreeMap<ClockId, Covered>,
+}
+
+/// What a checkpoint makes final in one clock.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) struct Covered {
     /// The last entry of each author's chain that it covers. An entry
     /// names the one before it, so this names every entry covered.
     pub(super) frontier: Frontier,
@@ -35,21 +41,19 @@ pub(super) struct Covers {
     pub(super) state: Root,
 }
 
-/// What committing a checkpoint's entries comes to.
-struct Settled {
-    state: Root,
-    dropped: BTreeSet<ModelId>,
-    /// The covered entries, in timeline order, and whether each happens.
-    verdicts: Vec<(Stamp, bool)>,
+impl Covers {
+    /// What's covered of `clock`. Nothing, if it isn't named.
+    pub(super) fn frontier(&self, clock: ClockId) -> Frontier {
+        let covered = self.clocks.get(&clock);
+
+        covered.map(|it| it.frontier.clone()).unwrap_or_default()
+    }
 }
 
 /// What `checkpoint` covers. The first checkpoint covers nothing.
 pub(super) fn covers_of(checkpoint: &Checkpoint) -> Option<Covers> {
     if checkpoint.height == 0 {
-        return Some(Covers {
-            frontier: Frontier::new(),
-            state: Accumulator::default().root(),
-        });
+        return Some(Covers::default());
     }
 
     encoding::decode(&checkpoint.body)
@@ -81,13 +85,30 @@ impl Group {
         let Some(covers) = covers_of(checkpoint) else {
             return Ok(false);
         };
-        if self.folded != tip.height || !self.history.supports(&covers.frontier, &tip.electorate) {
+
+        // A clock with anything committed stays named from then on.
+        let kept = |(id, clock): (&ClockId, &Clock)| {
+            clock.history.committed.is_empty() || covers.clocks.contains_key(id)
+        };
+        if self.folded != tip.height || !self.clocks.iter().all(kept) {
             return Ok(false);
         }
 
-        let settled = self.settle(&covers.frontier, &mut step.fork()).await?;
+        let mut trial = step.fork();
+        for (&id, covered) in &covers.clocks {
+            let unheard = Clock::new(self.id, id);
+            let clock = self.clocks.get(&id).unwrap_or(&unheard);
+            if !clock.history.supports(&covered.frontier, &tip.electorate) {
+                return Ok(false);
+            }
 
-        Ok(settled.state == covers.state)
+            let settled = clock.settle(&covered.frontier, &mut trial).await?;
+            if settled.state != covered.state {
+                return Ok(false);
+            }
+        }
+
+        Ok(true)
     }
 
     /// Moves the chain along as far as what's held allows.
@@ -115,15 +136,26 @@ impl Group {
 
         let patience = 2 + u64::try_from(rank).unwrap_or(u64::MAX - 2);
         let free = self.chain.attempt().is_none() || self.stalled > patience;
-        let pending = !self.history.uncommitted.is_empty() || self.wanted.is_some();
-        let frontier = self.history.heads.clone();
-        let sound = self.folded == tip.height && self.history.supports(&frontier, &tip.electorate);
+        let unsettled = |clock: &Clock| !clock.history.uncommitted.is_empty();
+        let pending = self.clocks.values().any(unsettled) || self.wanted.is_some();
+        let closed = |clock: &Clock| {
+            clock
+                .history
+                .supports(&clock.history.heads, &tip.electorate)
+        };
+        let sound = self.folded == tip.height && self.clocks.values().all(closed);
         if !(free && pending && sound) {
             return Ok(());
         }
 
-        let state = self.settle(&frontier, &mut step.fork()).await?.state;
-        let covers = Covers { frontier, state };
+        let mut trial = step.fork();
+        let mut covers = Covers::default();
+        for (&id, clock) in &self.clocks {
+            let frontier = clock.history.heads.clone();
+            let state = clock.settle(&frontier, &mut trial).await?.state;
+            covers.clocks.insert(id, Covered { frontier, state });
+        }
+
         let electorate = self.wanted.clone();
         let electorate = electorate.unwrap_or_else(|| tip.electorate.clone());
         if self
@@ -137,40 +169,6 @@ impl Group {
         Ok(())
     }
 
-    /// Commits, in `step`, every uncommitted entry `frontier` covers:
-    /// each is judged against committed state alone, which by then
-    /// includes every entry before it. Nothing in memory changes, so a
-    /// step that's thrown away leaves no trace.
-    async fn settle<V: View>(
-        &self,
-        frontier: &Frontier,
-        step: &mut Step<V>,
-    ) -> Result<Settled, StoreError> {
-        let stored = step.get(&keys::state(self.id)).await?;
-        let stored = stored.and_then(|bytes| Accumulator::from_bytes(&bytes));
-        let mut state = stored.unwrap_or_default();
-        let mut dropped = self.dropped.clone();
-        let mut verdicts = Vec::new();
-        for entry in self.history.covered(frontier) {
-            let happens = judge::weigh(self.id, entry, &Written::on(&dropped), step).await?;
-            if happens {
-                let operations = self.operations(entry, step).await?;
-                judge::commit(self.id, &operations, &mut state, step).await?;
-                let drops = operations.iter().filter(|it| it.drops());
-                dropped.extend(drops.map(|it: &Operation| it.model));
-            }
-            verdicts.push((entry.stamp(), happens));
-        }
-
-        step.put(keys::state(self.id), state.to_bytes());
-
-        Ok(Settled {
-            state: state.root(),
-            dropped,
-            verdicts,
-        })
-    }
-
     /// Commits what the next decided checkpoint covers, once all of it
     /// is held. Returns whether it did.
     pub(super) async fn fold<V: View>(&mut self, step: &mut Step<V>) -> Result<bool, StoreError> {
@@ -180,86 +178,66 @@ impl Group {
             return Ok(false);
         };
 
-        let covers = covers_of(&checkpoint);
-        let named = covers.as_ref().map(|covers| covers.state);
-        let frontier = covers.map(|covers| covers.frontier);
-        let frontier = frontier.unwrap_or_else(|| self.history.committed.clone());
-        if self.history.contradicts(&frontier) {
-            tracing::error!(
-                group = ?self.id,
-                height = checkpoint.height,
-                "holding an entry its author replaced, can't commit"
-            );
-            return Ok(false);
-        }
-        if !self.history.holds(&frontier) {
-            return Ok(false);
-        }
-
-        let settled = self.settle(&frontier, step).await?;
-        if named != Some(settled.state) {
-            tracing::error!(
-                group = ?self.id,
-                height = checkpoint.height,
-                "a quorum committed a state this device didn't reach"
-            );
-        }
-
-        self.dropped = settled.dropped;
-        for (stamp, happened) in settled.verdicts {
-            let Some(entry) = self.history.forget(stamp) else {
+        // Every clock held, and every clock named: a clock that isn't
+        // named stays as it is.
+        let covers = covers_of(&checkpoint).unwrap_or_default();
+        let ids = self.clocks.keys().chain(covers.clocks.keys());
+        let ids: BTreeSet<ClockId> = ids.copied().collect();
+        let mut plan = Vec::new();
+        for id in ids {
+            let covered = covers.clocks.get(&id);
+            let Some(clock) = self.clocks.get(&id) else {
+                if covered.is_some_and(|it| !it.frontier.is_empty()) {
+                    return Ok(false);
+                }
                 continue;
             };
 
-            if happened {
-                judge::notify(self.id, &entry, true, step);
+            let frontier = covered.map(|it| it.frontier.clone());
+            let frontier = frontier.unwrap_or_else(|| clock.history.committed.clone());
+            if clock.history.contradicts(&frontier) {
+                tracing::error!(
+                    group = ?self.id,
+                    clock = ?id,
+                    height = checkpoint.height,
+                    "holding an entry its author replaced, can't commit"
+                );
+                return Ok(false);
             }
-            judge::hide(self.id, &entry, step);
-            judge::notify(self.id, &entry, false, step);
-            self.live.remove(&stamp);
+            if !clock.history.holds(&frontier) {
+                return Ok(false);
+            }
+            plan.push((id, frontier, covered.map(|it| it.state)));
         }
 
-        self.history.commit(&frontier);
+        for (id, frontier, named) in plan {
+            let Some(clock) = self.clocks.get_mut(&id) else {
+                continue;
+            };
+
+            let settled = clock.settle(&frontier, step).await?;
+            if named.is_some_and(|named| named != settled.state) {
+                tracing::error!(
+                    group = ?self.id,
+                    clock = ?id,
+                    height = checkpoint.height,
+                    "a quorum committed a state this device didn't reach"
+                );
+            }
+
+            clock.commit(&frontier, settled, step);
+            clock.cut(&checkpoint.electorate, step);
+        }
+
         self.folded = checkpoint.height;
         self.sound.clear();
-        self.cut(&checkpoint, step);
 
         // A request to reconfigure was made of the electorate as it was.
         // Once that changes, however it changes, the request is spent.
         if checkpoint.electorate != before {
             self.wanted = None;
         }
-        self.stale = true;
 
         Ok(true)
-    }
-
-    /// Lets go of whatever was written, past this checkpoint, by anyone
-    /// it leaves without a say. That's the whole of removal: a removed
-    /// contributor's history ends at the checkpoint that removed it.
-    fn cut<V: View>(&mut self, checkpoint: &Checkpoint, step: &mut Step<V>) {
-        let authors = self.history.uncommitted.values().map(|entry| entry.author);
-        let removed = authors.filter(|&author| !checkpoint.electorate.includes(author));
-        let removed: BTreeSet<Peer> = removed.collect();
-        for author in removed {
-            self.void(author, step);
-        }
-    }
-
-    /// Drops everything `author` wrote that isn't committed.
-    pub(super) fn void<V: View>(&mut self, author: Peer, step: &mut Step<V>) {
-        let entries = self.history.cut(author);
-        tracing::info!(
-            group = ?self.id,
-            ?author,
-            entries = entries.len(),
-            "dropped what a removed contributor wrote after its last checkpoint"
-        );
-        for entry in entries {
-            step.delete(keys::log(self.id, author, entry.link.seq));
-            judge::hide(self.id, &entry, step);
-            judge::notify(self.id, &entry, false, step);
-            self.live.remove(&entry.stamp());
-        }
     }
 }
