@@ -156,14 +156,7 @@ impl Group {
         step: &Step<V>,
     ) -> Result<Option<Proof>, StoreError> {
         let header = entry.header();
-        let dropped = self.clocks.get(&header.clock);
-        let dropped = dropped.is_some_and(|clock| clock.is_condemned(entry.author(), header.seq));
         let key = keys::log(self.id, header.clock, entry.author(), header.seq);
-        if dropped {
-            // What's stored there is on its way out: its author was
-            // made to start again.
-            return Ok(None);
-        }
         let Some(held) = step.load::<Entry>(&key).await? else {
             return Ok(None);
         };

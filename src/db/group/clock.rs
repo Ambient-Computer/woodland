@@ -463,12 +463,6 @@ impl Clock {
         self.condemned.keys().copied().collect()
     }
 
-    /// Whether what's stored at this place in `author`'s chain is an
-    /// entry that was dropped.
-    pub(super) fn is_condemned(&self, author: Peer, seq: u64) -> bool {
-        self.condemned.contains_key(&(author, seq))
-    }
-
     /// Deletes an entry that was dropped, and what it wrote.
     fn inter<V: View>(&self, entry: &Outline, step: &mut Step<V>) {
         step.delete(keys::log(self.group, self.id, entry.author, entry.link.seq));

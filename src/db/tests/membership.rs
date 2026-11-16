@@ -463,3 +463,61 @@ fn a_snapshot_arrives_over_entries_still_being_deleted() {
     sim.settle();
     only_what_was_kept_shows(&sim, FRIEND, group, 10 * MANY);
 }
+
+/// A contributor let back in writes where its dropped entries were.
+/// A device still deleting those may be handed a new entry out of
+/// turn, and find an old one stored in its place. That isn't two
+/// entries signed for one place: the old one stopped counting when
+/// its author was cut, and the author did nothing wrong.
+#[test]
+fn an_entry_on_its_way_out_isnt_evidence_of_a_fork() {
+    let (mut sim, group) = Sim::group(4, 3);
+    let lost = 10 * MANY;
+    sim.disconnect_all();
+    sim.connect(NAS, FRIEND);
+    for note in 0..lost {
+        sim.write_to(NAS, group, set(notes(group), &format!("lost {note}"), "x"));
+    }
+    sim.run();
+    sim.disconnect_all();
+    sim.connect(PHONE, LAPTOP);
+    sim.reconfigure(PHONE, group, [PHONE, LAPTOP]);
+    sim.settle();
+    sim.reconfigure(PHONE, group, [PHONE, LAPTOP, NAS]);
+    sim.settle();
+    sim.connect(FRIEND, PHONE);
+    let folded = |sim: &Sim, device: usize| sim.devices[device].groups[&group].folded();
+    while folded(&sim, FRIEND) < folded(&sim, PHONE) {
+        assert!(sim.deliver(), "the reader never caught up");
+    }
+    sim.isolate(FRIEND);
+    sim.connect(NAS, PHONE);
+    sim.connect(NAS, LAPTOP);
+    settle_without(&mut sim, FRIEND, group);
+
+    // The nas writes to the reader alone, and the last of it arrives
+    // first.
+    sim.isolate(NAS);
+    sim.connect(NAS, FRIEND);
+    while sim.deliver() {}
+    for note in 0..MANY {
+        sim.write_to(NAS, group, set(notes(group), &format!("kept {note}"), "y"));
+    }
+    let to_reader = |&(from, to, _): &(usize, usize, Vec<u8>)| (from, to) == (NAS, FRIEND);
+    let newest = sim.queue.iter().rposition(to_reader);
+    sim.reorder(newest.expect("something for the reader"), 0);
+    // The old entry in that place is still stored.
+    let left = sim.devices[FRIEND].groups[&group].burying();
+    assert!(left > lost - MANY, "{left} left of {lost}");
+    assert!(sim.deliver());
+
+    sim.connect_all();
+    sim.settle();
+    sim.write_to(NAS, group, set(notes(group), "after", "z"));
+    sim.settle();
+    for device in [PHONE, FRIEND] {
+        let after = sim.committed(device, group, notes(group), "after");
+        assert_eq!(after.as_deref(), Some("z"), "device {device}");
+    }
+    only_what_was_kept_shows(&sim, FRIEND, group, MANY);
+}
