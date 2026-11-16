@@ -271,6 +271,8 @@ impl<S: Store> Database<S> {
         let mut step = self.begin()?;
         if !self.groups.contains_key(&id) {
             let mut group = Group::start(chain, &mut step).ok_or(Error::BadInvitation)?;
+            let unlocked = group.unlock(&self.identity, &mut step).await;
+            self.guard(unlocked)?;
             if let Some(secret) = secret {
                 group.hold(&self.identity, 0, secret, &mut step);
             }

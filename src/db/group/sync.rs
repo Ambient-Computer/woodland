@@ -18,7 +18,7 @@ use crate::db::ClockId;
 use crate::store::{StoreError, View};
 
 use super::super::entry::{Checked, Entry, Frontier, Link, reach};
-use super::super::message::{Message, Summary};
+use super::super::message::{Message, Piece, Summary};
 use super::super::step::Step;
 use super::Group;
 use super::clock::Clock;
@@ -71,6 +71,21 @@ impl Remote {
         if reach(sent, author) <= link.seq {
             sent.insert(author, link);
         }
+    }
+
+    /// What it was last sent of a snapshot of the state at `height`.
+    pub(super) fn sent_of(&self, height: u64) -> Option<&Sending> {
+        self.sending.as_ref().filter(|it| it.height == height)
+    }
+
+    /// Whether it's ready for the next piece of that snapshot: it has
+    /// been sent none, or says it took the last one and there's more.
+    pub(super) fn ready_for(&self, height: u64) -> bool {
+        self.sent_of(height).is_none_or(|sent| {
+            let wanted = Some((height, sent.upto.clone()));
+
+            !sent.done && self.staged == wanted
+        })
     }
 
     /// The clocks it wants, if not all.
@@ -155,7 +170,9 @@ impl Group {
 
         // A peer that sent entries, or part of a snapshot, is waiting to
         // hear how far they got.
-        let took = self.mend(message.links) | self.take_back(message.restored, step);
+        let first = message.snapshot.as_ref().filter(|it| it.start.is_none());
+        let leading = first.map(|it| it.height);
+        let took = self.mend(message.links, leading) | self.take_back(message.restored, step);
         let sent = !message.entries.is_empty() || message.snapshot.is_some() || took || handing;
         let owed = sent.then_some(from);
         if let Some(piece) = message.snapshot {
@@ -307,9 +324,7 @@ impl Group {
         // and then the rest.
         let behind =
             remote.folded < self.shed_below(remote) || (remote.gap && remote.folded < self.folded);
-        // What a sealed group commits is sent to those it lets read.
-        let reads = !self.is_sealed() || self.chain.tip().electorate.key_of(peer).is_some();
-        let snapshot = if behind && remote.heard && reads {
+        let snapshot = if behind && remote.heard {
             self.piece(remote, step).await?
         } else {
             None
@@ -320,9 +335,21 @@ impl Group {
             self.missing(remote, step).await?
         };
         let restored = self.older(remote, step).await?;
-        let links = self.links(remote);
-        let (snapshot, sending) = snapshot.unzip();
+        let (snapshot, sending): (Option<Piece>, Option<_>) = snapshot.unzip();
         let height = self.chain.tip().height;
+
+        // State from before the latest checkpoint is no use without
+        // the checkpoints since: the peer commits its way forward
+        // through each. They go with the first piece.
+        let first = snapshot.as_ref().filter(|it| it.start.is_none());
+        let lead = first.filter(|it| it.height < height).map(|first| {
+            let mut since = self.chain.older(height - 1, usize::MAX);
+            since.retain(|link| link.checkpoint.height >= first.height);
+
+            since
+        });
+        let unasked = lead.is_some();
+        let links = lead.unwrap_or_else(|| self.links(remote));
         let chain = if statements || remote.height < height {
             self.chain.gossip(remote.height)
         } else {
@@ -375,7 +402,8 @@ impl Group {
                 remote.sending = sending;
             }
             remote.told.extend(accused);
-            remote.gave_back(&message.restored, &message.links);
+            let asked = if unasked { &[][..] } else { &message.links[..] };
+            remote.gave_back(&message.restored, asked);
             for entry in &message.entries {
                 let clock = entry.header.payload().clock;
                 remote.sent(clock, entry.header.author(), entry.link());
@@ -390,10 +418,7 @@ impl Group {
             height: self.chain.tip().height,
             folded: self.folded,
             gap: self.gap(),
-            staged: self
-                .staging
-                .as_ref()
-                .map(|it| (it.height, it.after.clone())),
+            staged: self.staging.as_ref().map(|it| (it.height, it.upto.clone())),
             heads: self
                 .clocks
                 .iter()

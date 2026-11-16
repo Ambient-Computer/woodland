@@ -14,6 +14,7 @@ A sealed [group](groups.md) encrypts what its contributors write, so that peers 
 - An [entry](log.md)'s payload is encrypted. Its header is not, and commits to the encrypted payload.
 - A peer without keys therefore verifies every signature, link, and checkpoint, and relays a sealed group as faithfully as an open one.
 - Committed state travels encrypted. A peer without keys cannot check it against a checkpoint, and does not need to in order to carry it.
+- A peer without keys keeps committed state as it was handed it, and the history since. It sheds history only when handed newer state.
 - The state root in a checkpoint commits to contents without revealing them, even contents that are easy to guess. It does not change when keys do.
 
 ## Epochs

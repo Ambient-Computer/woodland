@@ -1,6 +1,7 @@
 //! One group, as one device holds it: its checkpoint chain, everyone's
 //! entries, and which of them have happened.
 
+mod carry;
 mod clock;
 mod commit;
 mod compact;
@@ -73,6 +74,9 @@ pub(crate) struct Group {
     mending: bool,
     /// What this device can read of the group.
     keys: Keyring,
+    /// The height of the sealed snapshot this device keeps without
+    /// being able to read it.
+    carrying: Option<u64>,
 }
 
 /// What's kept of a group besides its chain and its entries.
@@ -87,6 +91,7 @@ struct Meta {
     passed: bool,
     mending: bool,
     keys: Keyring,
+    carrying: Option<u64>,
 }
 
 /// What came of trying to write.
@@ -150,6 +155,7 @@ impl Group {
             passed: false,
             mending: false,
             keys,
+            carrying: None,
         }
     }
 
@@ -195,6 +201,7 @@ impl Group {
         group.passed = meta.passed;
         group.mending = meta.mending;
         group.keys = meta.keys;
+        group.carrying = meta.carrying;
         group.recall(step).await?;
         for (clock, kept) in meta.clocks {
             let held = Clock::load(id, clock, kept, group.keys.clone(), step).await?;
@@ -284,6 +291,7 @@ impl Group {
             passed: self.passed,
             mending: self.mending,
             keys: self.keys.clone(),
+            carrying: self.carrying,
         };
         step.save(keys::meta(self.id), &meta);
         if self.said {

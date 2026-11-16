@@ -12,6 +12,7 @@
 //! [GROUP][group][COMMITTED][model][key…]        → the key's committed value
 //! [GROUP][group][UNCOMMITTED][model][key…][stamp] → a version: a value, or none
 //! [GROUP][group][STAGED][model][key…]           → a value from a snapshot not yet checked
+//! [GROUP][group][SEALED][cursor]                → a piece of a snapshot this device can't read
 //! ```
 //!
 //! A model's ID starts with its clock's, so everything a clock owns is
@@ -51,6 +52,7 @@ const PROTOCOL: u8 = 1;
 const COMMITTED: u8 = 2;
 const UNCOMMITTED: u8 = 3;
 const STAGED: u8 = 5;
+const SEALED: u8 = 6;
 
 const CHAIN: u8 = 1;
 const META: u8 = 2;
@@ -185,6 +187,12 @@ pub(crate) fn version(id: GroupId, model: ModelId, key: &[u8], stamp: Stamp) -> 
 /// Every value of a snapshot that's still arriving.
 pub(crate) fn staged(id: GroupId) -> Vec<u8> {
     [group(id), vec![STAGED]].concat()
+}
+
+/// A snapshot of a sealed group, as a device that can't read it
+/// keeps it: in the pieces it came in.
+pub(crate) fn sealed(id: GroupId) -> Vec<u8> {
+    [group(id), vec![SEALED]].concat()
 }
 
 /// A value of a snapshot that's still arriving. `key` is a model and

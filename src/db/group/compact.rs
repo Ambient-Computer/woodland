@@ -22,6 +22,7 @@ use crate::store::{StoreError, View};
 use super::super::message::Piece;
 use super::super::step::Step;
 use super::Group;
+use super::carry::Unsealed;
 use super::commit::{Covers, covers_of};
 use super::root::Accumulator;
 use super::sync::Remote;
@@ -36,16 +37,23 @@ pub(super) struct Staging {
     pub(super) height: u64,
     /// The last key received.
     pub(super) after: Option<Vec<u8>>,
+    /// Where the last piece said it got to, as the sender put it. The
+    /// next piece starts there.
+    pub(super) upto: Option<Vec<u8>>,
     /// The sum of what's been received, for each clock.
-    sums: BTreeMap<ClockId, Vec<u8>>,
+    pub(super) sums: BTreeMap<ClockId, Vec<u8>>,
 }
 
 /// A snapshot on its way out to one peer.
 #[derive(Debug)]
 pub(super) struct Sending {
-    height: u64,
-    upto: Option<Vec<u8>>,
-    done: bool,
+    pub(super) height: u64,
+    /// Where the last piece got to, as the peer was told.
+    pub(super) upto: Option<Vec<u8>>,
+    /// The last key that piece got to. A device passing on pieces it
+    /// can't read doesn't know.
+    pub(super) at: Option<Vec<u8>>,
+    pub(super) done: bool,
 }
 
 impl Group {
@@ -57,6 +65,13 @@ impl Group {
         only: Option<ClockId>,
         step: &mut Step<V>,
     ) -> Result<(), StoreError> {
+        // A device that can't read the group has no state to stand in
+        // for history. It sheds what it's handed newer sealed state
+        // for, and nothing else.
+        if self.carries() {
+            return Ok(());
+        }
+
         let folded = self.folded;
         let chosen = |id: &ClockId| only.is_none_or(|only| only == *id);
         for (_, clock) in self.clocks.iter_mut().filter(|(id, _)| chosen(id)) {
@@ -86,6 +101,10 @@ impl Group {
         remote: &Remote,
         step: &Step<V>,
     ) -> Result<Option<(Piece, Sending)>, StoreError> {
+        if self.carries() {
+            return self.carried_piece(remote, step).await;
+        }
+
         // A device that holds only some clocks has the whole state of
         // nothing but those.
         if !self.serves(remote) {
@@ -93,18 +112,12 @@ impl Group {
         }
 
         let height = self.folded;
-        let start = match &remote.sending {
-            Some(sent) if sent.height == height => {
-                let wanted = Some((height, sent.upto.clone()));
-                if sent.done || remote.staged != wanted {
-                    return Ok(None);
-                }
-
-                sent.upto.clone()
-            }
-
-            _ => None,
-        };
+        if !remote.ready_for(height) {
+            return Ok(None);
+        }
+        let sent = remote.sent_of(height);
+        let told = sent.and_then(|it| it.upto.clone());
+        let start = sent.and_then(|it| it.at.clone());
 
         let prefix = keys::committed(self.id);
         let (first, end) = keys::range(prefix.clone());
@@ -117,11 +130,6 @@ impl Group {
         let values: Vec<_> = page.into_iter().map(value).collect();
         let last = values.last().map(|(key, _)| key.clone());
         let upto = last.or_else(|| start.clone());
-        let sending = Sending {
-            height,
-            upto: upto.clone(),
-            done,
-        };
 
         // A value's key starts with its model's ID, and that with its
         // clock's.
@@ -134,10 +142,20 @@ impl Group {
         let dropped = self.clocks.values().flat_map(|clock| &clock.dropped);
         let piece = Piece {
             height,
-            start,
+            start: if self.is_sealed() { told } else { start },
             values,
-            upto,
+            upto: upto.clone(),
             end: done.then(|| dropped.copied().collect()),
+            sealed: None,
+        };
+        let Some(piece) = self.seal_piece(piece) else {
+            return Ok(None);
+        };
+        let sending = Sending {
+            height,
+            upto: piece.upto.clone(),
+            at: upto,
+            done,
         };
 
         Ok(Some((piece, sending)))
@@ -154,28 +172,13 @@ impl Group {
         if piece.height <= self.folded {
             return Ok(());
         }
-
-        let staging = self.staging.take();
-        let continues =
-            |staging: &&Staging| staging.height == piece.height && staging.after == piece.start;
-        let mut staging = match staging.as_ref().filter(continues) {
-            Some(staging) => staging.clone(),
-            None if piece.start.is_none() => {
-                self.unstage(step).await?;
-
-                Staging {
-                    height: piece.height,
-                    after: None,
-                    sums: BTreeMap::new(),
-                }
-            }
-
-            // Not the piece that comes next. The sender will hear where
-            // this device has got to, and carry on from there.
-            None => {
-                self.staging = staging;
-                return Ok(());
-            }
+        let piece = match self.open_piece(piece) {
+            Unsealed::Read(piece) => piece,
+            Unsealed::Carried(piece) => return self.carry(piece, step).await,
+            Unsealed::Refused => return Ok(()),
+        };
+        let Some(mut staging) = self.next_piece(&piece, step).await? else {
+            return Ok(());
         };
 
         let mut sums = BTreeMap::new();
@@ -202,9 +205,7 @@ impl Group {
             }
             staging.after = Some(key);
         }
-        if piece.upto > staging.after {
-            staging.after = piece.upto;
-        }
+        staging.upto = piece.upto;
 
         let Some(dropped) = piece.end else {
             let bytes = |(&clock, sum): (&ClockId, &Accumulator)| (clock, sum.to_bytes());
@@ -244,8 +245,39 @@ impl Group {
             .await
     }
 
+    /// Where a snapshot on its way in stands once `piece` is taken, if
+    /// `piece` is the one that comes next.
+    pub(super) async fn next_piece<V: View>(
+        &mut self,
+        piece: &Piece,
+        step: &mut Step<V>,
+    ) -> Result<Option<Staging>, StoreError> {
+        let staging = self.staging.take();
+        let continues =
+            |staging: &&Staging| staging.height == piece.height && staging.upto == piece.start;
+        if let Some(staging) = staging.as_ref().filter(continues) {
+            return Ok(Some(staging.clone()));
+        }
+
+        // Not the piece that comes next. The sender will hear where
+        // this device has got to, and carry on from there.
+        if piece.start.is_some() {
+            self.staging = staging;
+            return Ok(None);
+        }
+
+        self.unstage(step).await?;
+
+        Ok(Some(Staging {
+            height: piece.height,
+            after: None,
+            upto: None,
+            sums: BTreeMap::new(),
+        }))
+    }
+
     /// Throws away whatever part of a snapshot has been received.
-    async fn unstage<V: View>(&mut self, step: &mut Step<V>) -> Result<(), StoreError> {
+    pub(super) async fn unstage<V: View>(&mut self, step: &mut Step<V>) -> Result<(), StoreError> {
         let (start, end) = keys::range(keys::staged(self.id));
         for (key, _) in step.scan(&start, &end).await? {
             step.delete(key);
@@ -295,6 +327,14 @@ impl Group {
                 .await?;
         }
 
+        self.caught_up(height, step);
+
+        Ok(())
+    }
+
+    /// Carries on from the checkpoint at `height`, now that what it
+    /// covers is in place.
+    pub(super) fn caught_up<V: View>(&mut self, height: u64, step: &mut Step<V>) {
         self.folded = height;
         self.base = height;
         self.sound.clear();
@@ -313,7 +353,5 @@ impl Group {
 
         step.changed(Changed::Everything { group: self.id });
         tracing::info!(group = ?self.id, height, "caught up from a snapshot");
-
-        Ok(())
     }
 }

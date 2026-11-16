@@ -140,11 +140,13 @@ impl Group {
     }
 
     /// Keeps whichever of `links` are checkpoints this device shed
-    /// and asked for. Returns whether any were.
-    pub(super) fn mend(&mut self, links: Vec<Certificate>) -> bool {
+    /// and asked for, or that lead up from a snapshot at `leading`
+    /// that came with them. Returns whether any were.
+    pub(super) fn mend(&mut self, links: Vec<Certificate>, leading: Option<u64>) -> bool {
         let mut mended = false;
         for link in links {
-            mended |= self.mending && self.chain.fill(link);
+            let leads = leading.is_some_and(|height| link.checkpoint.height >= height);
+            mended |= (self.mending || leads) && self.chain.fill(link);
         }
         self.mending &= self.chain.lacks().is_some();
         self.said |= mended;

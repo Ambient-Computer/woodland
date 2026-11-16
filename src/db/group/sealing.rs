@@ -148,6 +148,21 @@ impl Group {
         self.keys.secret(now.epoch).is_some()
     }
 
+    /// The secret in force under the checkpoint at `height`, if this
+    /// device holds both.
+    pub(super) fn secret_at(&self, height: u64) -> Option<&Secret> {
+        let sealing = self.chain.at(height).and_then(sealing_of)?;
+
+        self.keys.secret(sealing.epoch)
+    }
+
+    /// Whether this device holds the group without ever having been
+    /// able to read it: it has no state, only what it's handed to
+    /// pass on.
+    pub(super) fn carries(&self) -> bool {
+        self.is_sealed() && self.keys.blind().is_none()
+    }
+
     /// What the latest checkpoint says about the secret.
     fn sealing(&self) -> Option<Sealing> {
         sealing_of(self.chain.tip())
@@ -374,12 +389,13 @@ impl Group {
     /// lets it read what it couldn't, it starts over from nothing and
     /// is sent the group again: what it kept, it kept without knowing
     /// what any of it did.
-    pub(super) async fn unlock<V: View>(
+    pub(crate) async fn unlock<V: View>(
         &mut self,
         identity: &Identity,
         step: &mut Step<V>,
     ) -> Result<(), StoreError> {
         let before = self.keys.clone();
+        let behind = self.is_blind() || self.carries();
         let took = self.take_secrets(identity);
         if self.keys != before {
             self.rekey(step);
@@ -389,7 +405,7 @@ impl Group {
         }
 
         tracing::info!(group = ?self.id, "given a secret of the group's");
-        if self.is_blind() {
+        if behind {
             self.relearn(step).await?;
         }
 
@@ -440,8 +456,9 @@ impl Group {
             return Ok(());
         };
 
+        let behind = self.is_blind() || self.carries();
         self.hold(identity, handed.epoch, secret, step);
-        if self.is_blind() {
+        if behind {
             self.relearn(step).await?;
         }
 
@@ -456,6 +473,7 @@ impl Group {
             keys::uncommitted(self.id),
             keys::logs(self.id),
             keys::staged(self.id),
+            keys::sealed(self.id),
         ];
         ranges.extend(clocks.into_iter().map(|id| keys::state(self.id, id)));
         for prefix in ranges {
@@ -469,6 +487,7 @@ impl Group {
         self.folded = 0;
         self.base = 0;
         self.staging = None;
+        self.carrying = None;
         self.sound.clear();
         self.said = true;
         step.changed(Changed::Everything { group: self.id });

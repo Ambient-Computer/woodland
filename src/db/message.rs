@@ -79,4 +79,17 @@ pub(crate) struct Piece {
     pub(crate) upto: Option<Vec<u8>>,
     /// With the last piece: every model that's been dropped.
     pub(crate) end: Option<BTreeSet<ModelId>>,
+    /// In a sealed group, all of the above that says anything, as
+    /// only its readers can read it.
+    pub(crate) sealed: Option<SealedPiece>,
+}
+
+/// A piece of a sealed group's snapshot. Its values and what the
+/// state has dropped are encrypted, and where it starts and ends are
+/// names that mean something only to whoever made it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SealedPiece {
+    pub(crate) body: Vec<u8>,
+    /// Whether it's the last piece.
+    pub(crate) last: bool,
 }

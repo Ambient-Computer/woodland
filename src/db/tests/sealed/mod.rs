@@ -10,6 +10,7 @@ use crate::db::group::Sealing;
 use crate::seal::Secret;
 
 mod rotation;
+mod snapshots;
 
 const GUEST: usize = 4;
 
@@ -218,33 +219,6 @@ fn a_sealed_group_survives_a_restart() {
     }
     assert!(!sim.devices[GUEST].reads(group));
     assert_eq!(read_note(&sim, GUEST, group, "cake"), None);
-}
-
-/// Once history is shed, what's left to send a newcomer is state. It
-/// goes to those the group lets read, and to nobody else.
-#[test]
-fn committed_state_goes_only_to_those_who_read() {
-    let (mut sim, group) = sealed();
-    sim.write_to(PHONE, group, set(notes(group), "plan", NEEDLE));
-    sim.settle();
-    for device in [PHONE, LAPTOP] {
-        sim.compact(device, group);
-    }
-    sim.disconnect_all();
-
-    for device in [FRIEND, GUEST] {
-        sim.rejoin(device, group, PHONE);
-        sim.connect(device, PHONE);
-    }
-    let told = sent(&mut sim, NEEDLE);
-    sim.settle();
-
-    assert_eq!(told, BTreeSet::from([FRIEND]));
-    assert_eq!(
-        read_note(&sim, FRIEND, group, "plan").as_deref(),
-        Some(NEEDLE)
-    );
-    assert!(!stores(&sim, GUEST, group, NEEDLE));
 }
 
 #[test]
