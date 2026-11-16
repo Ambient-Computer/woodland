@@ -453,6 +453,29 @@ impl<S: Store> Database<S> {
         self.finish(step).await
     }
 
+    /// Has this device catch up on `group` by being sent what's
+    /// committed, in place of every transaction that led to it. It's
+    /// the same state either way, and less to send and to check for a
+    /// device that's a long way behind. What isn't committed yet still
+    /// arrives as transactions.
+    ///
+    /// It holds until the device has caught up once. The history
+    /// skipped isn't kept here: see [`restore`].
+    ///
+    /// [`restore`]: Self::restore
+    ///
+    /// # Errors
+    ///
+    /// If this device doesn't hold `group`, or the store fails.
+    pub async fn skip_ahead(&mut self, group: GroupId) -> Result<Outputs, Error> {
+        let mut step = self.begin()?;
+        let held = self.groups.get_mut(&group).ok_or(Error::UnknownGroup)?;
+        let skipping = held.skip(&self.identity, &mut step).await;
+        self.guard(skipping)?;
+
+        self.finish(step).await
+    }
+
     /// Whether this device holds every entry of `clock` that was ever
     /// committed, and every checkpoint: it shed none, or has them all
     /// back. Such a device can bring a peer up to date entry by entry,

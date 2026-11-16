@@ -481,7 +481,7 @@ impl Group {
         Summary {
             height: self.chain.tip().height,
             folded: self.folded,
-            gap: self.gap(),
+            gap: self.gap() || self.skipping.is_some(),
             unfounded: self.is_unfounded(),
             staged: self.staging.as_ref().map(|it| (it.height, it.upto.clone())),
             heads: self

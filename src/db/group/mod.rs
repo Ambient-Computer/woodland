@@ -126,6 +126,10 @@ pub(crate) struct Group {
     /// the checkpoint at this height. Once another is in force, it's
     /// done.
     renewing: Option<u64>,
+    /// The height this device had committed to when it asked to be
+    /// sent state rather than history. Once it's past that and has
+    /// caught up, it's done.
+    skipping: Option<u64>,
     /// How many kinds of model the library had when this was last
     /// saved.
     spoke: u8,
@@ -152,6 +156,7 @@ struct Meta {
     keys: Keyring,
     carrying: Option<u64>,
     renewing: Option<u64>,
+    skipping: Option<u64>,
     /// How many kinds of model the library had when this was saved.
     spoke: u8,
     /// The kinds the application had added.
@@ -234,6 +239,7 @@ impl Group {
             keys,
             carrying: None,
             renewing: None,
+            skipping: None,
             spoke: crate::model::vocabulary(),
             extended: crate::model::extension::numbers(),
         }
@@ -300,6 +306,7 @@ impl Group {
         group.keys = meta.keys;
         group.carrying = meta.carrying;
         group.renewing = meta.renewing;
+        group.skipping = meta.skipping;
         group.spoke = meta.spoke;
         group.extended = meta.extended;
         group.recall(step).await?;
@@ -433,6 +440,7 @@ impl Group {
             keys: self.keys.clone(),
             carrying: self.carrying,
             renewing: self.renewing,
+            skipping: self.skipping,
             spoke: crate::model::vocabulary(),
             extended: self.extended.clone(),
         };
@@ -617,6 +625,13 @@ impl Group {
         }
         self.look_back(step).await?;
         self.bury(step);
+        let caught_up = self.folded == self.chain.tip().height;
+        if self
+            .skipping
+            .is_some_and(|from| self.folded > from && caught_up)
+        {
+            self.skipping = None;
+        }
 
         self.clocks
             .retain(|_, clock| !clock.is_empty() || clock.is_unswept());

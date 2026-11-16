@@ -345,3 +345,79 @@ fn shed_history_is_deleted_a_few_entries_at_a_time() {
     assert_eq!(sim.entries_kept(PHONE, group), 0);
     assert_eq!(all_notes(&sim, PHONE, group, true), before);
 }
+
+/// How many entries the device stores.
+fn entries_stored(sim: &Sim, device: usize, group: GroupId) -> usize {
+    let view = sim.devices[device].store.view();
+    let (start, end) = keys::range(keys::logs(group));
+
+    block_on(crate::db::step::scan(&view, &start, &end))
+        .expect("scanned")
+        .len()
+}
+
+/// A device that's behind may take what's committed instead of the
+/// history that led to it, though the history is there to be had. It
+/// ends up with the same state. Once it has caught up, it's sent
+/// transactions again.
+#[test]
+fn a_device_may_take_state_though_history_is_to_be_had() {
+    const BEHIND: usize = 20;
+    let behind = |skip: bool| {
+        let (mut sim, group) = Sim::group(3, 2);
+        sim.isolate(NAS);
+        for note in 0..BEHIND {
+            sim.write(PHONE, set(notes(group), &format!("note {note}"), "x"));
+            sim.settle();
+        }
+        if skip {
+            let outputs = block_on(sim.devices[NAS].skip_ahead(group)).expect("asked");
+            sim.absorb(NAS, outputs);
+        }
+        sim.connect_all();
+        sim.settle();
+
+        (sim, group)
+    };
+    let all = |sim: &Sim, group: GroupId| {
+        sim.read(NAS, &Query::prefix(group, notes(group), b"").committed())
+    };
+
+    let (mut sim, group) = behind(true);
+    let (slow, _) = behind(false);
+    assert_eq!(all(&sim, group).len(), BEHIND);
+    assert_eq!(all(&sim, group), all(&slow, group));
+    assert_eq!(entries_stored(&slow, NAS, group), BEHIND);
+    assert_eq!(entries_stored(&sim, NAS, group), 0);
+    let folded = |sim: &Sim, device: usize| sim.devices[device].groups[&group].folded();
+    assert_eq!(folded(&sim, NAS), folded(&sim, PHONE));
+
+    // It asked once. From here on it's sent what's written.
+    sim.restart(NAS);
+    sim.connect_all();
+    sim.write(PHONE, set(notes(group), "after", "y"));
+    sim.settle();
+    assert_eq!(all(&sim, group).len(), BEHIND + 1);
+    assert_eq!(entries_stored(&sim, NAS, group), 1);
+}
+
+/// Asking for state when there's nothing to catch up on changes
+/// nothing, until there is.
+#[test]
+fn asking_for_state_waits_until_theres_some_to_take() {
+    let (mut sim, group) = Sim::group(3, 2);
+    let outputs = block_on(sim.devices[NAS].skip_ahead(group)).expect("asked");
+    sim.absorb(NAS, outputs);
+    sim.settle();
+    sim.restart(NAS);
+
+    for note in 0..3 {
+        sim.write(PHONE, set(notes(group), &format!("note {note}"), "x"));
+    }
+    sim.settle();
+    sim.connect_all();
+    sim.settle();
+    let all = sim.read(NAS, &Query::prefix(group, notes(group), b"").committed());
+    assert_eq!(all.len(), 3);
+    assert_eq!(entries_stored(&sim, NAS, group), 0);
+}

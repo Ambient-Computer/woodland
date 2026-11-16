@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::actor::Peer;
+use crate::actor::{Identity, Peer};
 use crate::db::{Changed, ClockId, keys};
 use crate::model::ModelId;
 use crate::store::{StoreError, View};
@@ -110,6 +110,23 @@ impl Group {
         let bases = self.clocks.values().map(|clock| clock.base.max(self.base));
         self.chain.compact(bases.min().unwrap_or(self.base));
         self.said = true;
+    }
+
+    /// Has this device brought up to date with committed state rather
+    /// than the entries that led to it, the next time it's behind.
+    pub(crate) async fn skip<V: View>(
+        &mut self,
+        identity: &Identity,
+        step: &mut Step<V>,
+    ) -> Result<(), StoreError> {
+        self.skipping = Some(self.folded);
+        self.progress(identity, None, step).await?;
+        let peers: Vec<_> = self.remotes.keys().copied().collect();
+        for peer in peers {
+            self.push(peer, true, false, step).await?;
+        }
+
+        Ok(())
     }
 
     /// Deletes some more of the entries that were dropped: the first
