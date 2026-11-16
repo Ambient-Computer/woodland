@@ -131,6 +131,30 @@ impl Chain {
         }
     }
 
+    /// A chain that starts further along: `founding`, and then `proof`
+    /// that some later checkpoint follows from it. `None` unless every
+    /// link of the proof holds.
+    pub(crate) fn anchored(founding: Checkpoint, proof: Vec<Certificate>) -> Option<Self> {
+        let mut chain = Self::new(founding);
+        let holds = proof.into_iter().all(|link| chain.adopt(link));
+
+        holds.then_some(chain)
+    }
+
+    /// The least that proves the tip to someone who trusts the
+    /// founding: every checkpoint that changed the electorate, and the
+    /// tip.
+    pub(crate) fn anchor(&self) -> Vec<Certificate> {
+        let mut sparse = Self {
+            founding: self.founding.clone(),
+            decided: self.decided.clone(),
+            slot: Slot::default(),
+        };
+        sparse.compact(self.tip().height);
+
+        sparse.decided
+    }
+
     /// The latest checkpoint this device knows to be final.
     pub(crate) fn tip(&self) -> &Checkpoint {
         self.decided

@@ -72,10 +72,13 @@ impl History {
         let allowed = standing || header.seq <= reach(decided, author);
 
         // Whatever a removed author wrote past its last checkpoint is
-        // void, so nothing waits for it.
+        // void, so nothing waits for it. The same goes for an entry a
+        // checkpoint passed over for another in its place: it's named
+        // where something else was committed.
         let held = |(&other, link): (&Peer, &Link)| {
             let known = self.link_at(other, link.seq);
-            let same = known.is_none_or(|known| known.hash == link.hash);
+            let settled = reach(&self.committed, other) >= link.seq;
+            let same = settled || known.is_none_or(|known| known.hash == link.hash);
             let held = reach(&self.heads, other) >= link.seq && same;
 
             other != author && link.lamport < header.lamport && (held || !writers.includes(other))
@@ -135,13 +138,21 @@ impl History {
     /// Whether an entry this device holds isn't the one `frontier` names
     /// for its place: its author signed two.
     pub(super) fn contradicts(&self, frontier: &Frontier) -> bool {
+        !self.replaced(frontier).is_empty()
+    }
+
+    /// The authors of whom this device holds an entry other than the
+    /// one `frontier` names for its place.
+    pub(super) fn replaced(&self, frontier: &Frontier) -> Vec<Peer> {
         let differs = |(&author, link): (&Peer, &Link)| {
             let known = self.link_at(author, link.seq);
 
             known.is_some_and(|known| known.hash != link.hash)
         };
 
-        frontier.iter().any(differs)
+        let replaced = frontier.iter().filter(|&it| differs(it));
+
+        replaced.map(|(&author, _)| author).collect()
     }
 
     /// The uncommitted entries `frontier` covers, in timeline order.

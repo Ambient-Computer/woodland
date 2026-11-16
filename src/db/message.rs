@@ -33,6 +33,10 @@ pub(crate) struct Summary {
     pub(crate) height: u64,
     /// The height of the latest checkpoint it has committed.
     pub(crate) folded: u64,
+    /// Whether it can't commit its way forward entry by entry: it
+    /// doesn't hold the checkpoint after the last one it committed.
+    /// It joined partway along, and needs the state instead.
+    pub(crate) gap: bool,
     /// The snapshot it's part of the way through receiving: the height
     /// it's for, and the last key it has.
     pub(crate) staged: Option<(u64, Option<Vec<u8>>)>,

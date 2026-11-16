@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::actor::{Identity, Peer};
-use crate::chain::{Chain, Checkpoint, Digest, Electorate, Saved};
+use crate::chain::{Certificate, Chain, Checkpoint, Digest, Electorate, Saved};
 use crate::db::{ClockId, GroupId, keys};
 use crate::model::Operation;
 use crate::store::{StoreError, View};
@@ -65,6 +65,29 @@ struct Meta {
     wanted: Option<Electorate>,
 }
 
+/// What one device hands another so it can hold a group.
+///
+/// The founding names the group. The anchor is the latest checkpoint
+/// the inviter held, with proof that it follows from the founding. The
+/// newcomer takes the group to be at least that far along, on the
+/// inviter's word and the proof's, and nothing that doesn't follow from
+/// the anchor can move it: not even the keys that founded the group,
+/// if they've since been removed, lost, or stolen.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct Invitation {
+    founding: Checkpoint,
+    anchor: Vec<Certificate>,
+}
+
+impl Invitation {
+    /// The chain it describes, if its proof holds.
+    pub(crate) fn chain(self) -> Option<Chain> {
+        let genuine = self.founding.height == 0;
+
+        Chain::anchored(self.founding, self.anchor).filter(|_| genuine)
+    }
+}
+
 /// A group is named by the checkpoint it starts from.
 pub(crate) fn id_of(founding: &Checkpoint) -> GroupId {
     GroupId::from_bytes(*founding.digest().as_bytes())
@@ -88,15 +111,26 @@ impl Group {
         }
     }
 
-    /// Starts holding a group, from its first checkpoint.
-    pub(crate) fn start<V: View>(founding: Checkpoint, step: &mut Step<V>) -> Self {
-        let id = id_of(&founding);
-        step.save(keys::founding(id), &founding);
-        let mut group = Self::new(id, Chain::new(founding));
+    /// Starts holding a group, from as much of its chain as this
+    /// device was given.
+    pub(crate) fn start<V: View>(chain: Chain, step: &mut Step<V>) -> Option<Self> {
+        let founding = chain.checkpoints().next()?;
+        let id = id_of(founding);
+        step.save(keys::founding(id), founding);
+        let mut group = Self::new(id, chain);
         group.said = true;
         group.persist(step);
 
-        group
+        Some(group)
+    }
+
+    /// What another device needs to start holding this group: where it
+    /// began, and proof of where it has got to.
+    pub(crate) fn invitation(&self) -> Option<Invitation> {
+        Some(Invitation {
+            founding: self.chain.checkpoints().next()?.clone(),
+            anchor: self.chain.anchor(),
+        })
     }
 
     /// Picks a group up from storage.
@@ -128,10 +162,6 @@ impl Group {
     #[cfg(test)]
     pub(crate) fn folded(&self) -> u64 {
         self.folded
-    }
-
-    pub(crate) fn founding(&self) -> Option<&Checkpoint> {
-        self.chain.checkpoints().next()
     }
 
     fn persist<V: View>(&self, step: &mut Step<V>) {

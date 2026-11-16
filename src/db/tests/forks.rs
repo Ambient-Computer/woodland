@@ -173,3 +173,82 @@ fn a_proof_is_relayed() {
     sim.run();
     assert_eq!(sim.shown(FRIEND, group, notes(group), "more"), None);
 }
+
+/// A device that lost its store and wrote before catching up has
+/// written over its own history. Once it's handed the state everyone
+/// else reached, it carries on from there and not from what it wrote.
+#[test]
+fn a_device_that_wrote_over_its_own_history_carries_on_from_the_real_one() {
+    let (mut sim, group) = Sim::group(3, 3);
+    sim.write_to(NAS, group, set(notes(group), "from the nas", "before"));
+    sim.settle();
+    sim.compact(PHONE, group);
+    sim.compact(LAPTOP, group);
+
+    sim.forget(NAS, group);
+    sim.write_to(NAS, group, set(notes(group), "from the nas", "after"));
+    sim.connect_all();
+    sim.settle();
+
+    for device in [PHONE, LAPTOP, NAS] {
+        assert_eq!(
+            sim.shown(device, group, notes(group), "from the nas")
+                .as_deref(),
+            Some("before")
+        );
+    }
+
+    sim.write_to(NAS, group, set(notes(group), "from the nas", "again"));
+    sim.settle();
+
+    for device in [PHONE, LAPTOP, NAS] {
+        assert_eq!(
+            sim.committed(device, group, notes(group), "from the nas")
+                .as_deref(),
+            Some("again")
+        );
+    }
+}
+
+/// The friend lost its store and wrote its first entry twice. The NAS
+/// wrote on top of the one that a checkpoint then passed over. What the
+/// NAS wrote still counts: nothing waits for an entry that never will.
+#[test]
+fn what_was_written_on_top_of_a_passed_over_entry_still_counts() {
+    let (mut sim, group) = Sim::group(4, 3);
+    let roles = (0..4).map(|it| (it, Role::contributor(u32::from(it < 3))));
+    sim.assign(PHONE, group, roles);
+    sim.settle();
+
+    sim.isolate(FRIEND);
+    sim.isolate(NAS);
+    sim.connect(FRIEND, NAS);
+    sim.write_to(FRIEND, group, set(notes(group), "friend", "first"));
+    sim.run();
+    sim.write_to(NAS, group, set(notes(group), "nas", "on top"));
+
+    sim.rejoin(FRIEND, group, PHONE);
+    sim.write_to(FRIEND, group, set(notes(group), "friend", "second"));
+    sim.connect(FRIEND, PHONE);
+    sim.connect(PHONE, LAPTOP);
+    sim.settle();
+    assert_eq!(
+        sim.committed(LAPTOP, group, notes(group), "friend")
+            .as_deref(),
+        Some("second")
+    );
+
+    // With the entry shed, nobody can show the NAS both of them, so
+    // nobody can prove the friend wrote two.
+    for device in [PHONE, LAPTOP, FRIEND] {
+        sim.compact(device, group);
+    }
+    sim.connect_all();
+    sim.settle();
+
+    for device in [PHONE, LAPTOP, NAS, FRIEND] {
+        let committed = |key| sim.committed(device, group, notes(group), key);
+        assert_eq!(committed("friend").as_deref(), Some("second"));
+        assert_eq!(committed("nas").as_deref(), Some("on top"));
+    }
+}

@@ -288,7 +288,7 @@ impl Group {
             }
 
             clock.commit(&frontier, settled, step);
-            clock.cut(checkpoint.electorate.writers(id), step);
+            clock.cut(checkpoint.electorate.writers(id), checkpoint.height, step);
         }
 
         self.folded = checkpoint.height;

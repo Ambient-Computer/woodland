@@ -35,6 +35,8 @@ pub(super) struct Remote {
     height: u64,
     /// The height of the latest checkpoint it has committed.
     folded: u64,
+    /// Whether it lacks the checkpoint after that one.
+    gap: bool,
     /// The last entry of each chain it last said it holds.
     said: BTreeMap<ClockId, Frontier>,
     /// The last entry of each chain it's been sent since the last tick.
@@ -90,6 +92,7 @@ impl Group {
         let remote = self.remotes.entry(from).or_default();
         remote.height = remote.height.max(message.summary.height);
         remote.folded = remote.folded.max(message.summary.folded);
+        remote.gap = message.summary.gap;
         remote.staged = message.summary.staged;
         remote.said.clone_from(&message.summary.heads);
         remote.proven.clone_from(&message.summary.proven);
@@ -172,7 +175,7 @@ impl Group {
                     self.standing(author, id, header.under.height) && !proven.contains(&author);
                 let unheard = Clock::new(self.id, id);
                 let clock = self.clocks.get(&id).unwrap_or(&unheard);
-                let spoken = self.spoken_for(id);
+                let spoken = self.within_reach(id);
                 let writers = writers.writers(id).except(&proven);
                 if clock.history.accepts(&entry, standing, writers, &spoken) {
                     self.clock(id).integrate(&entry, step);
@@ -186,6 +189,36 @@ impl Group {
                 return waiting;
             }
         }
+    }
+
+    /// How far along each chain of `clock` this device could commit
+    /// with the checkpoints it holds, one after another. An entry that
+    /// far along is taken from an author that has no standing now,
+    /// because it had some then.
+    ///
+    /// A device that joined partway along lacks the checkpoints in
+    /// between, gets what they covered as state, and takes no such
+    /// entry: it couldn't tell one from something its author made up
+    /// after being removed.
+    fn within_reach(&self, clock: ClockId) -> Frontier {
+        let tip = self.chain.tip().height;
+        let mut height = self.folded;
+        while height < tip && self.chain.at(height + 1).is_some() {
+            height += 1;
+        }
+        if height == tip {
+            return self.spoken_for(clock);
+        }
+
+        let covers = self.chain.at(height).and_then(covers_of);
+
+        covers.unwrap_or_default().frontier(clock)
+    }
+
+    /// Whether this device can't commit its way forward entry by entry:
+    /// it doesn't hold the checkpoint after the last one it committed.
+    fn gap(&self) -> bool {
+        self.folded < self.chain.tip().height && self.chain.at(self.folded + 1).is_none()
     }
 
     /// Whether `author` has been allowed to write to `clock` ever since
@@ -214,8 +247,10 @@ impl Group {
         };
 
         // A peer behind what's been shed here can't be sent the entries
-        // it lacks. It gets committed state instead, and then the rest.
-        let behind = remote.folded < self.base;
+        // it lacks, and one that joined partway along can't commit them
+        // one checkpoint at a time. Either gets committed state instead,
+        // and then the rest.
+        let behind = remote.folded < self.base || (remote.gap && remote.folded < self.folded);
         let snapshot = if behind {
             self.piece(remote, step).await?
         } else {
@@ -281,6 +316,7 @@ impl Group {
         Summary {
             height: self.chain.tip().height,
             folded: self.folded,
+            gap: self.gap(),
             staged: self
                 .staging
                 .as_ref()

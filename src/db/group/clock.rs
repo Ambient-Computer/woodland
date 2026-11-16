@@ -277,8 +277,13 @@ impl Clock {
     /// anyone `writers` leaves out. That's the whole of removal: a
     /// removed contributor's history ends at the checkpoint that
     /// removed it.
-    pub(super) fn cut<V: View>(&mut self, writers: Writers<'_>, step: &mut Step<V>) {
-        let authors = self.history.uncommitted.values().map(|entry| entry.author);
+    pub(super) fn cut<V: View>(&mut self, writers: Writers<'_>, height: u64, step: &mut Step<V>) {
+        // An entry written under a later checkpoint was written by
+        // someone let back in since. This device is only now catching
+        // up to where they were stopped.
+        let earlier = self.history.uncommitted.values();
+        let earlier = earlier.filter(|entry| entry.under <= height);
+        let authors = earlier.map(|entry| entry.author);
         let removed = authors.filter(|&author| !writers.includes(author));
         let removed: BTreeSet<Peer> = removed.collect();
         for author in removed {
@@ -338,6 +343,13 @@ impl Clock {
         dropped: BTreeSet<ModelId>,
         step: &mut Step<V>,
     ) -> Result<(), StoreError> {
+        // Whatever is held in place of an entry the checkpoint names
+        // was never going to count, and neither was anything written
+        // on top of it.
+        for author in self.history.replaced(frontier) {
+            self.void(author, 0, step);
+        }
+
         self.dropped = dropped;
         let covered = self.history.covered(frontier);
         let covered: Vec<_> = covered.map(Outline::stamp).collect();

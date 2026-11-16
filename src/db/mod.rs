@@ -27,13 +27,13 @@ use std::fmt;
 use ed25519_dalek::VerifyingKey;
 
 use crate::actor::{Identity, Peer};
-use crate::chain::{Checkpoint, Electorate, Role};
+use crate::chain::{Chain, Checkpoint, Electorate, Role};
 use crate::encoding;
 use crate::model::Query;
 use crate::store::{Store, StoreError};
 
 pub use changed::Changed;
-use group::Group;
+use group::{Group, Invitation};
 pub use id::{ClockId, GroupId};
 use message::Message;
 use step::Step;
@@ -161,39 +161,47 @@ impl<S: Store> Database<S> {
         let me = self.identity.peer();
         let founding = Checkpoint::founding(seed, Electorate::new([(me, 1)]));
 
-        self.hold(founding).await
+        self.hold(Chain::new(founding)).await
     }
 
-    /// What another device needs to [join] a group this one holds.
+    /// What another device needs to [join] a group this one holds:
+    /// where the group began, and proof of how far it has got. Give it
+    /// only to a device that should trust this one about that.
     ///
     /// [join]: Self::join
     pub fn invite(&self, group: GroupId) -> Option<Vec<u8>> {
-        let founding = self.groups.get(&group)?.founding()?;
+        let invitation = self.groups.get(&group)?.invitation()?;
 
-        Some(encoding::encode(founding))
+        Some(encoding::encode(&invitation))
     }
 
     /// Starts holding a group another device [invited] this one to. It
     /// can read and relay at once. It can write when the group's
     /// contributors make it one.
     ///
+    /// The group is taken to be at least as far along as the inviter
+    /// said. Nothing that contradicts that is believed afterwards, so
+    /// an invitation is only as good as whoever gave it.
+    ///
     /// [invited]: Self::invite
     ///
     /// # Errors
     ///
-    /// If the invitation is unreadable, or the store fails.
+    /// If the invitation is unreadable or doesn't prove what it claims,
+    /// or the store fails.
     pub async fn join(&mut self, invitation: &[u8]) -> Result<(GroupId, Outputs), Error> {
-        let founding = encoding::decode::<Checkpoint>(invitation);
-        let founding = founding.filter(|it| it.height == 0);
+        let invitation = encoding::decode::<Invitation>(invitation);
+        let chain = invitation.and_then(Invitation::chain);
 
-        self.hold(founding.ok_or(Error::BadInvitation)?).await
+        self.hold(chain.ok_or(Error::BadInvitation)?).await
     }
 
-    async fn hold(&mut self, founding: Checkpoint) -> Result<(GroupId, Outputs), Error> {
-        let id = group::id_of(&founding);
+    async fn hold(&mut self, chain: Chain) -> Result<(GroupId, Outputs), Error> {
+        let founding = chain.checkpoints().next().ok_or(Error::BadInvitation)?;
+        let id = group::id_of(founding);
         let mut step = self.begin()?;
         if !self.groups.contains_key(&id) {
-            let mut group = Group::start(founding, &mut step);
+            let mut group = Group::start(chain, &mut step).ok_or(Error::BadInvitation)?;
             let peers: Vec<Peer> = self.peers.iter().copied().collect();
             for peer in peers {
                 let greeted = group.connected(peer, &mut step).await;

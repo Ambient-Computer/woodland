@@ -8,6 +8,7 @@ mod clocks;
 mod compaction;
 mod forks;
 mod guards;
+mod joining;
 mod membership;
 mod random;
 mod roles;
@@ -261,10 +262,15 @@ impl Sim {
     }
 
     /// The device loses its store, and comes back under the same key
-    /// with nothing but an invitation.
+    /// with nothing but an invitation from the phone.
     fn forget(&mut self, device: usize, group: GroupId) {
+        self.rejoin(device, group, PHONE);
+    }
+
+    /// The device loses its store, and is invited back by `inviter`.
+    fn rejoin(&mut self, device: usize, group: GroupId, inviter: usize) {
         self.isolate(device);
-        let invitation = self.devices[PHONE].invite(group).expect("held");
+        let invitation = self.devices[inviter].invite(group).expect("held");
         let reopened = block_on(Database::open(MemoryStore::default(), secret(device)));
         self.devices[device] = reopened.expect("opened");
         let (_, outputs) = block_on(self.devices[device].join(&invitation)).expect("joined");

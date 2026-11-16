@@ -28,6 +28,7 @@ Compaction is how a peer sheds history it no longer needs. It is safe at any tim
 ## Snapshots
 
 - A snapshot is committed state for one [clock](groups.md), offered to a peer that is behind the sender's checkpoint.
+- A peer that takes a snapshot lets go of any entry it holds in place of one the checkpoint names, and of whatever was written on top of it.
 - It is verified against the state root in a checkpoint the receiver has verified. A snapshot is never taken on its sender's word by a peer that will read it.
 - The state root is kept current by adding and removing single values, so what a checkpoint costs follows what it changed and not what the clock holds.
 - A root of that kind vouches for a whole state and not for a part. A snapshot may arrive in pieces, and is read only once all of it has been checked.

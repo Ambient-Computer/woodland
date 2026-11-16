@@ -26,6 +26,10 @@ A configuration says which [peers](peers.md) hold a role in a [group](groups.md)
 
 - A peer joins by being told the group's founding and a recent checkpoint by a peer it trusts, then observing.
 - That checkpoint is the joiner's anchor. A removed contributor's key can still sign a plausible alternative past, and the anchor is what rules it out.
+- The anchor comes with the checkpoints that changed the configuration on the way to it, so the joiner verifies it from the founding and not on the inviter's word alone.
+- What the inviter is trusted for is that the anchor is on the group's real chain. A joiner believes whoever invited it.
+- A joiner does not replay history up to its anchor. It takes the committed state there as a [snapshot](compaction.md), from any peer, and checks it against the anchor.
+- Until it has that state, a joiner accepts no entry from an author the anchor's configuration leaves out.
 - A new contributor writes once it holds the checkpoint that admits it, and builds on that checkpoint.
 - Adding an observer needs nothing from the group.
 
@@ -35,6 +39,7 @@ A configuration says which [peers](peers.md) hold a role in a [group](groups.md)
 - The checkpoint that removes a contributor is the cut. What it covers of the contributor's chains counts; nothing else of them ever will.
 - A removed contributor cannot place work before the cut, whatever time or position it claims.
 - An entry names the latest [checkpoint](checkpoints.md) its author held. If any checkpoint from that one on leaves the author out, the entry is void, wherever and whenever it is received.
+- The cut takes what was written before the removing checkpoint. Work written under a later one, by a contributor since added back, survives a peer that folds the removal late.
 - A contributor that is added back continues its chains from the cut. Positions past the cut are reused, and a void entry at one is not a [fork](log.md).
 - A lost or stolen device is removed the same way as a retired one.
 - Removal is how a group stops waiting on a contributor that will not return.
