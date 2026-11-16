@@ -6,6 +6,7 @@
 mod checkpoints;
 mod clocks;
 mod compaction;
+mod conflicts;
 mod forks;
 mod guards;
 mod joining;

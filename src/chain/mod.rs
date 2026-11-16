@@ -62,12 +62,14 @@
 //!   not without signing two statements that prove it.
 
 mod electorate;
+mod evidence;
 mod statement;
 
 use std::collections::{BTreeMap, BTreeSet};
 
 pub use electorate::Role;
 pub(crate) use electorate::{Electorate, Writers};
+pub(crate) use evidence::{Conflict, Evidence};
 pub(crate) use statement::{
     Ballot, Certificate, Checkpoint, Digest, Prepare, Promise, Proposal, Stated, Vote,
 };
@@ -84,6 +86,9 @@ pub(crate) struct Chain {
     decided: Vec<Certificate>,
     /// What's been said about the link after the tip.
     slot: Slot,
+    /// Statements heard that their signer couldn't both have made,
+    /// until someone [asks](Self::evidence).
+    evidence: Vec<Evidence>,
 }
 
 /// The slot after the tip: what this device has promised, and the latest
@@ -128,7 +133,28 @@ impl Chain {
             founding,
             decided: Vec::new(),
             slot: Slot::default(),
+            evidence: Vec::new(),
         }
+    }
+
+    /// Hands over whatever's been heard that convicts its signer.
+    pub(crate) fn evidence(&mut self) -> Vec<Evidence> {
+        std::mem::take(&mut self.evidence)
+    }
+
+    /// Whether a conflict is about this chain, and about someone whose
+    /// statements counted: a slot this device holds, where the signer
+    /// had the part its statements claim. `None` if the slot isn't
+    /// held, and there's no telling.
+    pub(crate) fn concerns(&self, conflict: &Conflict) -> Option<bool> {
+        let slot = self.checkpoints().find(|it| it.digest() == conflict.slot)?;
+        let electorate = &slot.electorate;
+
+        Some(if conflict.voter {
+            electorate.includes(conflict.author)
+        } else {
+            electorate.has(conflict.author)
+        })
     }
 
     /// A chain that starts further along: `founding`, and then `proof`
@@ -149,6 +175,7 @@ impl Chain {
             founding: self.founding.clone(),
             decided: self.decided.clone(),
             slot: Slot::default(),
+            evidence: Vec::new(),
         };
         sparse.compact(self.tip().height);
 
@@ -263,6 +290,7 @@ impl Chain {
         Self {
             founding: saved.founding,
             decided,
+            evidence: Vec::new(),
             slot: Slot {
                 promised: saved.promised,
                 accepted: saved.accepted,
@@ -330,6 +358,13 @@ impl Chain {
         for link in gossip.decided {
             grew |= self.adopt(link);
         }
+
+        // Before the latest of each replaces the one held: that's the
+        // only moment both are in hand.
+        let found = self
+            .slot
+            .conflicts(&gossip.promises, &gossip.proposals, &gossip.votes);
+        self.evidence.extend(found);
 
         let tip = self.tip().clone();
         let slot = &mut self.slot;
@@ -539,6 +574,30 @@ impl Chain {
 }
 
 impl Slot {
+    /// Statements in `gossip` that their signer couldn't have made
+    /// along with another there, or one held.
+    fn conflicts(
+        &self,
+        promises: &[Signed<Promise>],
+        proposals: &[Signed<Proposal>],
+        votes: &[Signed<Vote>],
+    ) -> Vec<Evidence> {
+        fn all<'a, T>(
+            held: &'a BTreeMap<Peer, Verified<T>>,
+            heard: &'a [Signed<T>],
+        ) -> Vec<&'a Signed<T>> {
+            let held = held.values().map(Verified::signed);
+
+            held.chain(heard).collect()
+        }
+
+        evidence::find(
+            &all(&self.promises, promises),
+            &all(&self.proposals, proposals),
+            &all(&self.votes, votes),
+        )
+    }
+
     /// The highest round anyone has mentioned, so a new attempt can
     /// outrank all of them.
     fn highest_round(&self) -> u64 {

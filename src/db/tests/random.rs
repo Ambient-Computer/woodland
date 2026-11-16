@@ -90,8 +90,10 @@ fn names_of(group: GroupId, key: usize) -> ModelId {
     ModelId::claims(clock_of(group, key), [2; 32])
 }
 
-/// Who holds each claim for good, as far as any device has said.
-type Claims = BTreeMap<&'static str, String>;
+/// Who holds each claim for good, as far as any device has said, and
+/// how many checkpoints that device had committed when it said so. The
+/// device may since have lost its store, and be the only one that knew.
+type Claims = BTreeMap<&'static str, (String, u64)>;
 
 struct Run {
     sim: Sim,
@@ -189,16 +191,18 @@ impl Run {
             for (index, key) in KEYS.into_iter().enumerate() {
                 let names = names_of(self.group, index);
                 let held = self.sim.committed(device, self.group, names, key);
+                let folded = self.folded(device);
                 let Some(held) = held else {
                     let known = self.claims.get(key);
                     prop_assert!(
-                        known.is_none() || !self.caught_up(device),
+                        known.is_none_or(|(_, since)| folded < *since),
                         "device {device} lost the committed claim on {key}"
                     );
                     continue;
                 };
 
-                let first = self.claims.entry(key).or_insert_with(|| held.clone());
+                let first = self.claims.entry(key);
+                let (first, _) = first.or_insert_with(|| (held.clone(), folded));
                 prop_assert_eq!(&*first, &held, "the committed claim on {} changed", key);
             }
         }
@@ -206,17 +210,9 @@ impl Run {
         Ok(())
     }
 
-    /// Whether `device` has committed as much as anyone.
-    fn caught_up(&self, device: usize) -> bool {
-        let folded = |device: usize| {
-            let groups = &self.sim.devices[device].groups;
-
-            groups
-                .get(&self.group)
-                .map(super::super::group::Group::folded)
-        };
-
-        (0..DEVICES).all(|other| folded(other) <= folded(device))
+    /// How many checkpoints `device` has committed.
+    fn folded(&self, device: usize) -> u64 {
+        self.sim.devices[device].groups[&self.group].folded()
     }
 }
 
@@ -269,5 +265,12 @@ proptest! {
             prop_assert_eq!(everything(device, true), everything(0, true), "device {} committed something else", device);
         }
         prop_assert_eq!(everything(0, false), everything(0, true), "something was never committed");
+
+        // Nobody with a say lost its store, so nobody went back on its
+        // word, and nothing honest should look as if it had.
+        for device in 0..DEVICES {
+            let caught = run.sim.devices[device].groups[&group].caught_a_conflict();
+            prop_assert!(!caught, "device {} convicted an honest member", device);
+        }
     }
 }

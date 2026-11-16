@@ -98,6 +98,7 @@ impl Group {
         remote.proven.clone_from(&message.summary.proven);
 
         self.said |= self.chain.receive(message.chain);
+        self.overhear(step);
         for proof in message.proofs {
             self.accuse(proof, step);
         }
@@ -269,11 +270,13 @@ impl Group {
             Gossip::default()
         };
 
+        // Proof against someone who's gone already changes nothing.
+        let members = &self.chain.tip().electorate;
         let known = |author: &&Peer| remote.proven.contains(author) || remote.told.contains(author);
         let accused: Vec<Peer> = self
             .proofs
             .keys()
-            .filter(|it| !known(it))
+            .filter(|it| !known(it) && members.has(**it))
             .copied()
             .collect();
         let proofs = accused.iter().filter_map(|author| self.proofs.get(author));

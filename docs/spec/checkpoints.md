@@ -31,6 +31,9 @@ A checkpoint is a quorum's signed statement that a stretch of history is final. 
 - Any signer can finish an attempt another started, by outranking it and inheriting what it gathered.
 - A signer persists a promise or a vote before anyone can hear it. A signer that forgets one can break agreement; see [storage](storage.md).
 - Two statements from one signer that a correct signer could not both make are proof against it, like a [fork](log.md).
+- Three pairs are proof: two votes for different checkpoints in one attempt, two checkpoints named for one attempt, and a promise with a vote in a lower-ranked attempt that the promise does not report.
+- A proof counts only against a signer whose statements counted at that position. A peer that does not hold the position cannot tell, and waits.
+- A signer that lost its store is convicted like one that lied. The two cannot be told apart.
 
 ## Validation
 

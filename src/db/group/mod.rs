@@ -164,6 +164,21 @@ impl Group {
         self.folded
     }
 
+    /// The latest checkpoint this device knows to be final.
+    #[cfg(test)]
+    pub(crate) fn tip(&self) -> &Checkpoint {
+        self.chain.tip()
+    }
+
+    /// Whether anyone here has been caught going back on its word
+    /// about a checkpoint.
+    #[cfg(test)]
+    pub(crate) fn caught_a_conflict(&self) -> bool {
+        let conflict = |proof: &Proof| matches!(proof, Proof::Conflict(_));
+
+        self.proofs.values().any(conflict)
+    }
+
     fn persist<V: View>(&self, step: &mut Step<V>) {
         let clocks = self.clocks.iter();
         let meta = Meta {
