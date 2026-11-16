@@ -155,6 +155,12 @@ impl Place {
     }
 }
 
+/// Where everything a read of the whole table needs is: that it
+/// exists, its columns, and its rows.
+pub(crate) fn whole() -> (Vec<u8>, Vec<u8>) {
+    (vec![TABLE], vec![ROW + 1])
+}
+
 /// Where the table says it exists and what its columns are: what any
 /// read of its rows needs to make sense of them.
 pub(crate) fn schema() -> Range {

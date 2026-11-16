@@ -41,5 +41,5 @@ mod testing;
 pub use actor::Identity;
 pub use chain::Role;
 pub use db::{Changed, ClockId, Database, Error, GroupId, Outputs, Transaction};
-pub use model::{ColumnId, ModelId, Query, Row, Table, Value};
+pub use model::{ColumnId, Filter, ModelId, Query, Row, Table, Value};
 pub use store::{Entry, MemoryStore, MemoryView, Order, Store, StoreError, View, Write};

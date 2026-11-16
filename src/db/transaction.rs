@@ -1,6 +1,6 @@
 use crate::db::ClockId;
-use crate::model::table::Deferred;
-use crate::model::{ColumnId, Fingerprint, ModelId, Operation, Requirement, Row, Value};
+use crate::model::table::{Deferred, Each};
+use crate::model::{ColumnId, Filter, Fingerprint, ModelId, Operation, Requirement, Row, Value};
 
 /// A set of changes that happen together, or not at all.
 ///
@@ -183,6 +183,49 @@ impl Transaction {
     pub fn number(mut self, table: ModelId, row: &Row, column: ColumnId) -> Self {
         let number = row.number(column);
         self.operations.push(Operation::deferred(table, number));
+        self
+    }
+
+    /// Changes every row of `table` that `filter` picks, of the rows
+    /// there are once the transaction is committed: each gets these
+    /// values in these columns. Nothing changes until then, which can
+    /// take as long as the group's next checkpoint.
+    ///
+    /// Use it when the rows can't be known in advance. Rows that are
+    /// known are better [updated] one by one, which doesn't wait.
+    ///
+    /// The whole transaction is dropped, for good, if any of those
+    /// rows can't take the change: a column is gone, or two rows would
+    /// hold one value in a [unique] column.
+    ///
+    /// [updated]: Self::update
+    /// [unique]: ColumnId::unique
+    pub fn update_where(
+        mut self,
+        table: ModelId,
+        filter: Filter,
+        changes: impl IntoIterator<Item = (ColumnId, Value)>,
+    ) -> Self {
+        let change = Each::Set(changes.into_iter().collect());
+        let each = Deferred::Each { filter, change };
+        self.operations.push(Operation::deferred(table, each));
+        self
+    }
+
+    /// Removes every row of `table` that `filter` picks, of the rows
+    /// there are once the transaction is committed. Like
+    /// [`update_where`], nothing changes until then.
+    ///
+    /// The whole transaction is dropped, for good, if anything has
+    /// [referred] to one of those rows and the row isn't [retired].
+    ///
+    /// [`update_where`]: Self::update_where
+    /// [referred]: Self::refer
+    /// [retired]: Self::retire
+    pub fn delete_where(mut self, table: ModelId, filter: Filter) -> Self {
+        let change = Each::Delete;
+        let each = Deferred::Each { filter, change };
+        self.operations.push(Operation::deferred(table, each));
         self
     }
 

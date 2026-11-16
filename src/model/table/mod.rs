@@ -130,22 +130,26 @@
 //! with a value of the wrong type isn't one a table takes, and its
 //! transaction is pruned like any other that doesn't belong.
 //!
-//! # What isn't here
+//! # What waits
 //!
-//! Operations name the rows they change. There's no "every row where":
-//! what that touches depends on the table's state at the transaction's
-//! place in the timeline, which is a scan, and nothing that decides
-//! whether transactions happen reads more than keys. Find the rows
-//! when reading, by key or through an index, and write to those.
+//! Operations name the rows they change. "Every row where" depends on
+//! the table's state at the transaction's place in the timeline, which
+//! is a scan, and nothing that decides whether an uncommitted
+//! transaction happens reads more than keys. So a change like that
+//! isn't decided until it's committed: see [`Deferred`]. Whatever can
+//! name its rows should, by reading them first, through an index or
+//! by key, and not wait.
 
 mod deferred;
+mod filter;
 mod order;
 mod place;
 mod read;
 mod rows;
 mod value;
 
-pub(crate) use deferred::Deferred;
+pub(crate) use deferred::{Deferred, Each};
+pub use filter::Filter;
 pub(crate) use order::successor;
 use place::Incarnation;
 pub(crate) use place::{Place, UNSEALED, rows, schema, values};

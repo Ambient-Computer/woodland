@@ -5,6 +5,7 @@ mod indexes;
 mod numbers;
 pub(super) mod references;
 mod schema;
+mod sweeps;
 pub(super) mod unique;
 
 use super::*;

@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 
 use crate::db::{GroupId, keys};
 use crate::model::{Fingerprint, ModelId, Operation, Reads, Requirement};
-use crate::store::{StoreError, View};
+use crate::store::{Entry, StoreError, View};
 
 use super::super::step::Step;
 use super::judge;
@@ -29,6 +29,15 @@ impl<V: View> Reads for Committed<'_, V> {
         let key = keys::committed_value(self.group, self.model, key);
 
         self.step.get(&key).await
+    }
+
+    async fn scan(&self, start: &[u8], end: &[u8]) -> Result<Vec<Entry>, StoreError> {
+        let prefix = keys::committed_value(self.group, self.model, b"");
+        let within = |key: &[u8]| [&prefix[..], key].concat();
+        let found = self.step.scan(&within(start), &within(end)).await?;
+        let bare = |(key, value): Entry| (key[prefix.len()..].to_vec(), value);
+
+        Ok(found.into_iter().map(bare).collect())
     }
 }
 
@@ -59,25 +68,32 @@ pub(super) async fn carry_out<V: View>(
             model,
             step: &*step,
         };
-        let Some(resolved) = deferred.resolve(&committed).await? else {
+        let Some(steps) = deferred.resolve(&committed).await? else {
             return Ok(None);
         };
-        for (key, requirement) in &resolved.requires {
-            let held = committed.get(key).await?;
-            let held = held.as_deref().map(Fingerprint::of);
-            let met = match requirement {
-                Requirement::Vacant => held.is_none(),
-                Requirement::Present => held.is_some(),
-                Requirement::Is(value) => held == Some(*value),
+        for resolved in steps {
+            let committed = Committed {
+                group,
+                model,
+                step: &*step,
             };
-            if !met {
-                return Ok(None);
+            for (key, requirement) in &resolved.requires {
+                let held = committed.get(key).await?;
+                let held = held.as_deref().map(Fingerprint::of);
+                let met = match requirement {
+                    Requirement::Vacant => held.is_none(),
+                    Requirement::Present => held.is_some(),
+                    Requirement::Is(value) => held == Some(*value),
+                };
+                if !met {
+                    return Ok(None);
+                }
             }
-        }
 
-        for (key, value) in resolved.writes {
-            judge::write(group, model, &key, value, state, step).await?;
-            touched.push((model, key));
+            for (key, value) in resolved.writes {
+                judge::write(group, model, &key, value, state, step).await?;
+                touched.push((model, key));
+            }
         }
     }
 

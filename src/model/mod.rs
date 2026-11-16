@@ -82,12 +82,12 @@ pub(crate) mod table;
 use serde::{Deserialize, Serialize};
 
 pub use query::Query;
-pub use table::{ColumnId, Row, Table, Value};
+pub use table::{ColumnId, Filter, Row, Table, Value};
 
 use crate::actor::Peer;
 use crate::db::ClockId;
 use crate::encoding;
-use crate::store::StoreError;
+use crate::store::{Entry, StoreError};
 
 /// One step of a transaction: a change to one model.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -153,6 +153,13 @@ impl Fingerprint {
 /// change that waited for it.
 pub(crate) trait Reads {
     fn get(&self, key: &[u8]) -> impl Future<Output = Result<Option<Vec<u8>>, StoreError>>;
+
+    /// Everything under the keys in `start..end`, in key order.
+    fn scan(
+        &self,
+        start: &[u8],
+        end: &[u8],
+    ) -> impl Future<Output = Result<Vec<Entry>, StoreError>>;
 }
 
 /// What a change that waited to be committed comes to: requirements

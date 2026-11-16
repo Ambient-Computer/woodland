@@ -17,10 +17,10 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::place::{Incarnation, Place};
+use super::place::{self, Incarnation, Place};
 use super::rows::{self, Rekey, Target};
 use super::value::Type;
-use super::{ColumnId, Value};
+use super::{ColumnId, Filter, Table, Value};
 use crate::encoding;
 use crate::model::{Reads, Resolved};
 use crate::store::StoreError;
@@ -37,6 +37,17 @@ pub(crate) enum Deferred {
         incarnation: Option<Incarnation>,
         column: ColumnId,
     },
+    /// Does the same thing to every row a filter picks, of the rows
+    /// there are once this is committed.
+    Each { filter: Filter, change: Each },
+}
+
+/// What's done to each row.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum Each {
+    /// Gives these columns new values.
+    Set(Vec<(ColumnId, Value)>),
+    Delete,
 }
 
 impl Deferred {
@@ -44,20 +55,69 @@ impl Deferred {
     pub(crate) fn belongs(&self) -> bool {
         match self {
             Self::Number { column, .. } => column.kind() == Some(Type::Integer),
+            Self::Each { filter, change } => {
+                let typed = match change {
+                    Each::Set(cells) => rows::typed(cells),
+                    Each::Delete => true,
+                };
+
+                filter.typed() && typed
+            }
         }
     }
 
-    /// What it comes to, given what's committed before it. `None` if
-    /// it can't be done.
-    pub(crate) async fn resolve(&self, state: &impl Reads) -> Result<Option<Resolved>, StoreError> {
+    /// What it comes to, given what's committed before it: steps to
+    /// take in order, each checked against what the ones before it
+    /// left. `None` if it can't be done.
+    pub(crate) async fn resolve(
+        &self,
+        state: &impl Reads,
+    ) -> Result<Option<Vec<Resolved>>, StoreError> {
         match self {
             Self::Number {
                 row,
                 incarnation,
                 column,
-            } => number(row, *incarnation, *column, state).await,
+            } => {
+                let numbered = number(row, *incarnation, *column, state).await?;
+
+                Ok(numbered.map(|it| vec![it]))
+            }
+
+            Self::Each { filter, change } => each(filter, change, state).await,
         }
     }
+}
+
+/// Reads the whole table, and changes each row the filter picks the
+/// way a transaction that had just read it would. So everything a
+/// change to a row requires is required here, row by row: a value two
+/// rows are both given in a unique column, or a row something refers
+/// to, stops all of it.
+async fn each(
+    filter: &Filter,
+    change: &Each,
+    state: &impl Reads,
+) -> Result<Option<Vec<Resolved>>, StoreError> {
+    let (start, end) = place::whole();
+    let Some(table) = Table::read(&state.scan(&start, &end).await?) else {
+        return Ok(None);
+    };
+
+    let picked = table.rows().iter().filter(|row| filter.picks(row));
+    let changed = picked.map(|row| {
+        let operation = match change {
+            Each::Set(cells) => row.set(cells.iter().cloned()),
+            Each::Delete => row.delete(),
+        };
+
+        Resolved {
+            requires: operation.requires(),
+            writes: operation.writes(),
+        }
+    });
+
+    Ok(Some(changed.collect()))
 }
 
 async fn number(
