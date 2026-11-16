@@ -165,6 +165,12 @@ impl Group {
         self.folded
     }
 
+    /// Whether `peer` has a role in the group, as far as this device
+    /// knows.
+    pub(crate) fn has(&self, peer: Peer) -> bool {
+        self.chain.tip().electorate.has(peer)
+    }
+
     /// The latest checkpoint this device knows to be final.
     #[cfg(test)]
     pub(crate) fn tip(&self) -> &Checkpoint {

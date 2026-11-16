@@ -10,6 +10,7 @@ mod conflicts;
 mod forks;
 mod guards;
 mod joining;
+mod leaving;
 mod membership;
 mod random;
 mod roles;

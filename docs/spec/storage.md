@@ -49,3 +49,4 @@ Storage is an ordered key-value store that the [core](library.md) reads and writ
 - What a device must read to start is bounded by uncommitted history; see [compaction](compaction.md).
 - Derived structures can be dropped and rebuilt from the rest. Nothing else can.
 - One store may hold many [groups](groups.md). A group's data is removable as a whole.
+- Only a peer with no role in a group removes it. A member that did would return having forgotten what it signed.

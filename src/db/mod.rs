@@ -69,6 +69,10 @@ pub enum Error {
     Broken,
     /// This device doesn't hold that group.
     UnknownGroup,
+    /// The device has a role in the group, and can't [forget] it.
+    ///
+    /// [forget]: Database::forget
+    StillAMember,
     /// This device isn't one of the group's contributors.
     NotAContributor,
     /// The invitation couldn't be read.
@@ -83,6 +87,9 @@ impl fmt::Display for Error {
             Self::Store(error) => error.fmt(formatter),
             Self::Broken => formatter.write_str("an earlier step failed, reopen the database"),
             Self::UnknownGroup => formatter.write_str("this device doesn't hold that group"),
+            Self::StillAMember => {
+                formatter.write_str("this device is still a member of that group")
+            }
             Self::NotAContributor => formatter.write_str("this device isn't a contributor"),
             Self::BadInvitation => formatter.write_str("the invitation couldn't be read"),
             Self::ManyClocks => formatter.write_str("a transaction writes to one clock's models"),
@@ -282,6 +289,38 @@ impl<S: Store> Database<S> {
         let held = self.groups.get_mut(&group).ok_or(Error::UnknownGroup)?;
         let shed = held.shed(&self.identity, &mut step).await;
         self.guard(shed)?;
+
+        self.finish(step).await
+    }
+
+    /// Stops holding `group`, and deletes everything kept for it.
+    ///
+    /// Only a device with no role in the group can. One that could
+    /// still write or vote has signed things it would forget, and
+    /// would sign them again differently if it [joined] again: it has
+    /// to be removed from the group first, by the group.
+    ///
+    /// [joined]: Self::join
+    ///
+    /// # Errors
+    ///
+    /// If this device doesn't hold `group` or is still a member of it,
+    /// or the store fails.
+    pub async fn forget(&mut self, group: GroupId) -> Result<Outputs, Error> {
+        let mut step = self.begin()?;
+        let held = self.groups.get(&group).ok_or(Error::UnknownGroup)?;
+        if held.has(self.identity.peer()) {
+            return Err(Error::StillAMember);
+        }
+
+        let (start, end) = keys::range(keys::group(group));
+        let kept = step.scan(&start, &end).await;
+        for (key, _) in self.guard(kept)? {
+            step.delete(key);
+        }
+        step.delete(keys::founding(group));
+        step.changed(Changed::Everything { group });
+        self.groups.remove(&group);
 
         self.finish(step).await
     }

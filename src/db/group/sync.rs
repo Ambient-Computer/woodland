@@ -90,8 +90,10 @@ impl Group {
         step: &mut Step<V>,
     ) -> Result<(), StoreError> {
         let remote = self.remotes.entry(from).or_default();
-        remote.height = remote.height.max(message.summary.height);
-        remote.folded = remote.folded.max(message.summary.folded);
+        // Like what it holds, how far along it is can go down: it may
+        // have let the group go and been invited back.
+        remote.height = message.summary.height;
+        remote.folded = message.summary.folded;
         remote.gap = message.summary.gap;
         remote.staged = message.summary.staged;
         remote.said.clone_from(&message.summary.heads);
