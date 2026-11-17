@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: nix develop --command bash -eo pipefail {0}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/magic-nix-cache-action@v14
+        with:
+          use-flakehub: false
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', 'flake.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - run: treefmt --ci
+      - run: cargo clippy --all-targets --all-features --quiet
+      # The browser's store only compiles for WebAssembly. The library's own
+      # tests don't: they lean on processes and folders.
+      - run: cargo clippy --target wasm32-unknown-unknown --features browser --lib --test browser --quiet
+      - run: cargo nextest run --all-features --show-progress=none --status-level=fail --cargo-quiet
+      # The browser's store, in headless Firefox.
+      - run: cargo test --target wasm32-unknown-unknown --features browser --test browser
