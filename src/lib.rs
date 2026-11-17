@@ -1,4 +1,4 @@
-//! Woodland: a replicated database for devices that are mostly offline.
+//! Woodland: a peer-to-peer relational database for local-first apps.
 //!
 //! A few devices share a [group]. Each writes whenever it likes, online
 //! or not, and reads what it has. A quorum of them commits history in

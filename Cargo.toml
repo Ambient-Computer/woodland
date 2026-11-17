@@ -1,6 +1,6 @@
 [package]
 name = "woodland"
-description = "A replicated database for devices that are mostly offline."
+description = "A peer-to-peer relational database for local-first apps."
 version = "0.0.0"
 edition = "2024"
 license = "MIT"
