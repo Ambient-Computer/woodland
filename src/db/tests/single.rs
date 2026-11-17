@@ -201,3 +201,50 @@ fn only_a_contributor_writes() {
 
     assert!(matches!(refused, Err(Error::NotAContributor)));
 }
+
+/// A model's ID is a hash, and one in 256 ends in `0xFF`. Its keys are
+/// a range all the same.
+#[test]
+fn a_model_whose_id_ends_in_the_last_byte_is_read() {
+    let (mut sim, group) = Sim::group(1, 1);
+    let ends_last = |model: &ModelId| model.as_bytes().ends_with(&[0xFF]);
+    let nonces = (0..=u16::MAX).map(|nonce| [nonce.to_be_bytes(); 16].concat());
+    let models = nonces.map(|nonce| ModelId::kv(group, nonce.try_into().expect("32 bytes")));
+    let model = models.into_iter().find(ends_last).expect("one in 256");
+    let everything = Query::prefix(group, model, b"");
+
+    sim.write_to(PHONE, group, set(model, "todo", "milk"));
+
+    assert_eq!(sim.read(PHONE, &everything).len(), 1);
+    assert_eq!(sim.read(PHONE, &everything.clone().committed()), []);
+
+    sim.settle();
+
+    assert_eq!(sim.read(PHONE, &everything.committed()).len(), 1);
+}
+
+/// A group's ID is a hash too, and everything a group owns is a range
+/// that starts with it: what a device that forgets the group deletes.
+#[test]
+fn a_group_whose_id_ends_in_the_last_byte_is_forgotten() {
+    let mut sim = Sim::new(2);
+    let mut seeds = (0..=u16::MAX).map(|seed| [seed.to_be_bytes(); 16].concat());
+    let group = loop {
+        let seed = seeds.next().expect("one in 256");
+        let founded = block_on(sim.devices[PHONE].found(seed.try_into().expect("32 bytes")));
+        let (group, outputs) = founded.expect("founded");
+        sim.absorb(PHONE, outputs);
+        if group.as_bytes().ends_with(&[0xFF]) {
+            break group;
+        }
+    };
+    let invitation = sim.devices[PHONE].invite(group).expect("held");
+    let (_, outputs) = block_on(sim.devices[LAPTOP].join(&invitation)).expect("joined");
+    sim.absorb(LAPTOP, outputs);
+
+    let outputs = block_on(sim.devices[LAPTOP].forget(group)).expect("forgotten");
+    sim.absorb(LAPTOP, outputs);
+    sim.restart(LAPTOP);
+
+    assert_eq!(sim.devices[LAPTOP].groups().count(), 0);
+}

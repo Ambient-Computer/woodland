@@ -51,7 +51,7 @@ use crate::actor::Peer;
 use crate::clock::Stamp;
 use crate::db::{ClockId, GroupId};
 use crate::model::ModelId;
-use crate::model::table::{escape, unescape};
+use crate::model::table::{escape, successor, unescape};
 
 const FOUNDING: u8 = 1;
 const GROUP: u8 = 2;
@@ -237,15 +237,18 @@ pub(crate) fn log(id: GroupId, clock: ClockId, author: Peer, seq: u64) -> Vec<u8
     [logs(id), clock, author, seq.to_be_bytes().to_vec()].concat()
 }
 
-/// Every key that starts with `prefix`, as a key range. The prefix must
-/// not end in `0xFF`. None of this module's do.
-pub(crate) fn range(mut prefix: Vec<u8>) -> (Vec<u8>, Vec<u8>) {
-    let start = prefix.clone();
-    if let Some(last) = prefix.last_mut() {
-        *last += 1;
-    }
+/// Every key that starts with `prefix`, as a key range. A prefix may
+/// end in `0xFF`, as one that ends in an ID will one time in 256: the
+/// range then ends at the first key past the bytes before it.
+///
+/// # Panics
+///
+/// If the prefix is nothing but `0xFF`, which has nothing past it.
+/// Every key starts with a tag, and no tag is `0xFF`.
+pub(crate) fn range(prefix: Vec<u8>) -> (Vec<u8>, Vec<u8>) {
+    let end = successor(&prefix).expect("a key starts with a tag, and no tag is 0xFF");
 
-    (start, prefix)
+    (prefix, end)
 }
 
 /// The smallest key greater than `key`.
@@ -521,6 +524,25 @@ mod tests {
         assert!(meta(id()) < start);
         assert!(end < committed_value(id(), model, b""));
         assert!(end < versions(id(), model, b""));
+    }
+
+    /// An ID is a hash, so a prefix that ends in one ends in `0xFF`
+    /// one time in 256.
+    #[test]
+    fn a_prefix_that_ends_in_the_last_byte_has_a_range() {
+        let group = GroupId::from_bytes([0xFF; 32]);
+        let model = ModelId::kv(group, [2; 32]);
+        let (start, end) = range(self::group(group));
+
+        assert!(start < end);
+        assert!(start <= meta(group));
+        assert!(committed_value(group, model, b"\xFF\xFF") < end);
+        assert!(versions(group, model, b"\xFF") < end);
+        assert!(end < foundings() || foundings() < start);
+
+        let (start, end) = range(b"a\xFF\xFF".to_vec());
+
+        assert_eq!((start, end), (b"a\xFF\xFF".to_vec(), b"b".to_vec()));
     }
 
     #[test]
