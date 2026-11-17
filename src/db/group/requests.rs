@@ -8,6 +8,9 @@
 
 use crate::actor::{Identity, Peer, Signed, verify_all};
 use crate::chain::Electorate;
+use crate::db::step::Step;
+use crate::db::{Changed, Reconfigured};
+use crate::store::View;
 
 use super::super::message::Request;
 use super::Group;
@@ -39,6 +42,44 @@ impl Group {
         let signed = Signed::sign(identity, request);
         self.requests
             .insert(identity.peer(), signed.signed().clone());
+    }
+
+    /// Says so if the group is made up differently than it was when
+    /// this last looked. Then lets go of this device's own request if
+    /// it no longer stands, and says what became of it: the group
+    /// became what it asked for, or changed some other way first.
+    ///
+    /// Nothing asks again. A request names everyone, and whoever the
+    /// group has gained since isn't in it.
+    pub(super) fn notice<V: View>(&mut self, me: Peer, step: &mut Step<V>) {
+        let tip = self.chain.tip();
+        if tip.electorate != self.members {
+            self.members = tip.electorate.clone();
+            step.changed(Changed::Members { group: self.id });
+        }
+
+        let Some(wanted) = &self.wanted else {
+            return;
+        };
+
+        let request = self.requests.get(&me).map(Signed::payload);
+        if request.is_some_and(|request| self.stands(me, request)) {
+            return;
+        }
+
+        // The group may have changed more than once since. The
+        // request was carried if any of those was what it asked for.
+        let since = request.map_or(tip.height, |request| request.since);
+        let mut later = self.chain.electorates_since(since).skip(1);
+        let carried = tip.electorate == *wanted || later.any(|it| it == wanted);
+        let outcome = if carried {
+            Reconfigured::Carried
+        } else {
+            Reconfigured::Spent
+        };
+        step.reconfigured(self.id, outcome);
+        self.wanted = None;
+        self.requests.remove(&me);
     }
 
     /// Takes in what a peer passed on. Each member has one request at

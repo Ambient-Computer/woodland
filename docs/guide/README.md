@@ -27,6 +27,7 @@ How the library is meant to be used by an application. Rustdoc has the signature
   - `sends`: give each message to the transport. A message for a peer that can't be reached is dropped; the protocol recovers on reconnect.
   - `changed`: re-run whatever reads it affects. See [Reading](#reading).
   - `outcomes`: what became of this device's own transactions.
+  - `reconfigured`: what became of this device's requests to change a group's members.
   - `unfinished`: call `resume()` until it's false. A step does a bounded amount of work so none blocks for long.
 - `Outputs` is given only after the step is durable. Send after, never before.
 - `Error::Store` or `Error::Broken` means memory may be ahead of the store. Drop the `Database` and open it again.
@@ -45,6 +46,9 @@ How the library is meant to be used by an application. Rustdoc has the signature
 - `invite(group)` gives bytes for another device to `join`. Pass them over a channel the joiner trusts: an invitation is believed.
 - A device that joins holds and relays at once. It writes once the group gives it a role.
 - `reconfigure(group, roles)` sets every role from the next checkpoint on. Anyone left out is removed. It takes effect when a checkpoint carries it.
+- `configuration(group)` says who holds which role, by the latest checkpoint this device holds, and what this device has asked for that still stands. Build every `reconfigure` from it: keep no list of members of your own.
+- `Changed::Members` says when to read it again. It is also how a device learns it was given a role.
+- `Outputs::reconfigured` says what became of a request: `Carried`, or `Spent` because the group changed some other way first. A spent request did nothing. Read the configuration, and ask again if what was wanted still is.
 - Roles: `Role::contributor(weight)` writes and votes, `Role::witness(weight)` votes only, `Role::reader(key)` reads a sealed group. `.only(clocks)` narrows a contributor; `.sealed_to(key)` gives a contributor a sealed group's secret.
 - A quorum is counted by weight: see [checkpoints](../spec/checkpoints.md). Offline devices with weight delay commits; they never endanger them. Remove one that's gone for good.
 - `want` holds only some clocks, `ask` narrows one connection, `forget` drops a group the device has no role in.

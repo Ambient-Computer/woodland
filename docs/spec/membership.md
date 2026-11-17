@@ -12,12 +12,16 @@ A configuration says which [peers](peers.md) hold a role in a [group](groups.md)
 - A founder alone is a valid configuration, and commits by itself.
 - A contributor's weight may be zero. It writes, and has no say in what is committed or in who the members are.
 - A configuration with no weight, or with no contributor, is never valid: nothing could follow it. Nobody votes for a checkpoint that carries one.
+- Any peer that holds the chain can say what the configuration is, by the latest checkpoint it holds, and is told when that changes. It is [visible](confidentiality.md) to every peer, a role or none.
 
 ## Changing it
 
 - A change is proposed by a member that holds weight, and takes effect when a checkpoint carries it.
 - The proposal is signed and [travels](sync.md). Any member that holds weight may start the attempt that carries it; its author need not be reachable.
 - A proposal is made of the configuration in force. Once that changes, it is spent.
+- A proposal names the whole configuration, so it is written from the one in force and never from a record kept elsewhere.
+- Its author is told what became of it: that a checkpoint carried it, or that it was spent. Each is told once.
+- A spent proposal is never made again for its author. It would remove whoever the group has gained since; only the application knows what was meant.
 - A checkpoint that changes the configuration is voted for only in an attempt started by a member that holds weight. A writer confined to a [clock](peers.md) cannot vote itself out of it.
 - The checkpoint that carries a change is signed by a quorum of the configuration it replaces.
 - Checkpoints after it are signed by a quorum of the new configuration.

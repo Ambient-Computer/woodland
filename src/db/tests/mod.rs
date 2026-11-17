@@ -7,6 +7,7 @@ mod allowances;
 mod checkpoints;
 mod clocks;
 mod compaction;
+mod configuration;
 mod conflicts;
 mod extensions;
 mod foreign;
@@ -37,7 +38,9 @@ use crate::store::{MemoryStore, Store, Write};
 use crate::testing::block_on;
 
 use super::veiled::Veiled;
-use super::{Answer, Database, Error, Found, Outcome, Outputs, Transaction, TransactionId};
+use super::{
+    Answer, Database, Error, Found, Outcome, Outputs, Reconfigured, Transaction, TransactionId,
+};
 use crate::chain::Role;
 use crate::seal::SealingKey;
 
@@ -57,6 +60,8 @@ struct Sim {
     shown: Vec<BTreeMap<GroupId, (u64, Vec<Found>)>>,
     /// What each device has been told of its own transactions.
     told: Vec<Vec<(TransactionId, Outcome)>>,
+    /// What each device has been told of its requests to reconfigure.
+    reconfigured: Vec<Vec<(GroupId, Reconfigured)>>,
     /// The last transaction each device wrote.
     wrote: Vec<Option<TransactionId>>,
     /// The group most tests are about.
@@ -93,6 +98,7 @@ impl Sim {
             changes: vec![Vec::new(); 8],
             shown: vec![BTreeMap::new(); 8],
             told: vec![Vec::new(); 8],
+            reconfigured: vec![Vec::new(); 8],
             wrote: vec![None; 8],
             home: GroupId::from_bytes([0; 32]),
             old: BTreeSet::new(),
@@ -170,6 +176,7 @@ impl Sim {
         self.check_committed(device, &outputs.changed);
         self.changes[device].extend(outputs.changed);
         self.told[device].extend(outputs.outcomes);
+        self.reconfigured[device].extend(outputs.reconfigured);
         self.wrote[device] = outputs.wrote.or(self.wrote[device]);
         for (to, message) in outputs.sends {
             let to = self.index(to);

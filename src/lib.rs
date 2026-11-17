@@ -42,8 +42,8 @@ mod testing;
 pub use actor::Identity;
 pub use chain::Role;
 pub use db::{
-    Answer, Changed, ClockId, Database, Error, Found, GroupId, Outcome, Outputs, Part, Pending,
-    Reached, Transaction, TransactionId, Waiting,
+    Answer, Changed, ClockId, Configuration, Database, Error, Found, GroupId, Outcome, Outputs,
+    Part, Pending, Reached, Reconfigured, Transaction, TransactionId, Waiting,
 };
 pub use model::{
     Allowance, Allowances, ColumnId, Combine, Declared, Extension, Filter, ModelId, Needs, Query,

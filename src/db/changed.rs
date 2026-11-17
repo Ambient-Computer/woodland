@@ -44,6 +44,12 @@ pub enum Changed {
         model: ModelId,
         columns: Vec<ColumnId>,
     },
+    /// Who's in the group, or what they may do: a checkpoint this
+    /// device now holds gave the group a different [configuration].
+    /// No read is different because of it.
+    ///
+    /// [configuration]: crate::Database::configuration
+    Members { group: GroupId },
     /// Every key the checkpoint at this height changed has been
     /// reported, in this step or the ones before. Committed reads have
     /// been of this checkpoint since the first of them was. No read is

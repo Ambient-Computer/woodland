@@ -89,7 +89,55 @@ impl Role {
         self
     }
 
-    fn writes(&self, clock: ClockId) -> bool {
+    /// How much it counts toward a quorum. With none, it has no say
+    /// in what's committed or in who the members are.
+    #[must_use]
+    pub fn weight(&self) -> u32 {
+        self.weight
+    }
+
+    /// Whether it writes: to every clock, or to [some].
+    ///
+    /// [some]: Self::clocks
+    #[must_use]
+    pub fn is_contributor(&self) -> bool {
+        matches!(self.part, Part::Contributor(_))
+    }
+
+    /// Whether it votes without writing or reading.
+    #[must_use]
+    pub fn is_witness(&self) -> bool {
+        self.part == Part::Witness
+    }
+
+    /// Whether it's named only so that it can read a sealed group.
+    #[must_use]
+    pub fn is_reader(&self) -> bool {
+        self.part == Part::Reader
+    }
+
+    /// The clocks a contributor is [narrowed] to. `None` if it writes
+    /// to every clock, or to none because it isn't a contributor.
+    ///
+    /// [narrowed]: Self::only
+    #[must_use]
+    pub fn clocks(&self) -> Option<&BTreeSet<ClockId>> {
+        match &self.part {
+            Part::Contributor(clocks) => clocks.as_ref(),
+            Part::Witness | Part::Reader => None,
+        }
+    }
+
+    /// The key it's sent a sealed group's secrets under, if it reads
+    /// one.
+    #[must_use]
+    pub fn sealing_key(&self) -> Option<&SealingKey> {
+        self.key.as_ref()
+    }
+
+    /// Whether it may write to `clock`.
+    #[must_use]
+    pub fn writes(&self, clock: ClockId) -> bool {
         match &self.part {
             Part::Contributor(clocks) => clocks.as_ref().is_none_or(|it| it.contains(&clock)),
             Part::Witness | Part::Reader => false,
@@ -217,6 +265,11 @@ impl Electorate {
     /// Whether `peer` has any role at all.
     pub(crate) fn has(&self, peer: Peer) -> bool {
         self.0.contains_key(&peer)
+    }
+
+    /// Everyone with a role, and the role.
+    pub(crate) fn roles(&self) -> impl Iterator<Item = (Peer, &Role)> + '_ {
+        self.0.iter().map(|(&peer, role)| (peer, role))
     }
 
     /// Everyone with a role, with a say or not.

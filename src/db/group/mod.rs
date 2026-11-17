@@ -76,6 +76,9 @@ pub(crate) struct Group {
     remotes: BTreeMap<Peer, Remote>,
     /// The electorate this device has been asked to bring about.
     wanted: Option<Electorate>,
+    /// The group as it was made up when this device last said that
+    /// had changed.
+    members: Electorate,
     /// What members have asked the group to be made up of, this
     /// device included.
     requests: BTreeMap<Peer, Signed<Request>>,
@@ -219,6 +222,7 @@ impl Group {
     fn new(id: GroupId, chain: Chain) -> Self {
         let founding = chain.checkpoints().next();
         let keys = founding.map(sealing::keyring_of).unwrap_or_default();
+        let members = chain.tip().electorate.clone();
 
         Self {
             id,
@@ -230,6 +234,7 @@ impl Group {
             proofs: BTreeMap::new(),
             remotes: BTreeMap::new(),
             wanted: None,
+            members,
             requests: BTreeMap::new(),
             indexes: BTreeMap::new(),
             origin: Origin::Whole,
@@ -385,6 +390,23 @@ impl Group {
     /// knows.
     pub(crate) fn has(&self, peer: Peer) -> bool {
         self.chain.tip().electorate.has(peer)
+    }
+
+    /// The group as it's made up, by the latest checkpoint this device
+    /// holds.
+    pub(crate) fn electorate(&self) -> &Electorate {
+        &self.chain.tip().electorate
+    }
+
+    /// The height of the latest checkpoint this device holds.
+    pub(crate) fn height(&self) -> u64 {
+        self.chain.tip().height
+    }
+
+    /// What this device has asked the group to be made up of, while
+    /// that still stands.
+    pub(crate) fn asked(&self) -> Option<&Electorate> {
+        self.wanted.as_ref()
     }
 
     /// How many checkpoints it holds, the founding one included.
@@ -640,6 +662,7 @@ impl Group {
                 break;
             }
         }
+        self.notice(identity.peer(), step);
         self.look_back(step).await?;
         self.bury(step);
         let caught_up = self.folded == self.chain.tip().height;

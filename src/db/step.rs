@@ -11,7 +11,7 @@ use serde::de::DeserializeOwned;
 
 use crate::actor::Peer;
 use crate::db::keys::Layer;
-use crate::db::{Changed, ClockId, GroupId, Outcome, keys};
+use crate::db::{Changed, ClockId, GroupId, Outcome, Reconfigured, keys};
 use crate::encoding;
 use crate::store::{Entry, Order, StoreError, View, Write};
 
@@ -26,6 +26,9 @@ pub(crate) struct Step<V> {
     sends: Vec<(Peer, Vec<u8>)>,
     changed: BTreeSet<Changed>,
     told: Vec<Told>,
+    /// What's become of what this device asked its groups to be made
+    /// up of.
+    reconfigured: Vec<(GroupId, Reconfigured)>,
     /// A prefix, and where writes to keys that start with it are kept
     /// instead: see [`divert`](Self::divert).
     aside: Option<(Vec<u8>, Vec<u8>)>,
@@ -56,6 +59,7 @@ impl<V: View> Step<V> {
             sends: Vec::new(),
             changed: BTreeSet::new(),
             told: Vec::new(),
+            reconfigured: Vec::new(),
             aside: None,
             fleeting: BTreeMap::new(),
         }
@@ -143,6 +147,14 @@ impl<V: View> Step<V> {
     pub(crate) fn tell(&mut self, told: Told) {
         if self.aside.is_none() {
             self.told.push(told);
+        }
+    }
+
+    /// What's become of this device's request to change who's in
+    /// `group`.
+    pub(crate) fn reconfigured(&mut self, group: GroupId, outcome: Reconfigured) {
+        if self.aside.is_none() {
+            self.reconfigured.push((group, outcome));
         }
     }
 
@@ -392,6 +404,7 @@ impl<V: View> Step<V> {
             sends: self.sends,
             changed: self.changed.into_iter().collect(),
             outcomes: self.told,
+            reconfigured: self.reconfigured,
         }
     }
 }
@@ -403,6 +416,7 @@ pub(crate) struct Finished {
     pub(crate) sends: Vec<(Peer, Vec<u8>)>,
     pub(crate) changed: Vec<Changed>,
     pub(crate) outcomes: Vec<Told>,
+    pub(crate) reconfigured: Vec<(GroupId, Reconfigured)>,
 }
 
 /// What's become of a transaction.

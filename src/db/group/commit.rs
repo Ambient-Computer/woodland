@@ -470,8 +470,9 @@ impl Group {
 
         // A request to reconfigure was made of the electorate as it was.
         // Once that changes, however it changes, the request is spent.
+        // What this device asked for itself goes once it's been told
+        // what became of it.
         if checkpoint.electorate != before {
-            self.wanted = None;
             self.requests.clear();
         }
 

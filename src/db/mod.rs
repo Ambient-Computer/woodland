@@ -11,6 +11,7 @@
 
 mod answer;
 mod changed;
+mod configuration;
 mod entry;
 mod group;
 mod holding;
@@ -43,6 +44,7 @@ use crate::store::{Store, StoreError};
 
 pub use answer::{Answer, Found, Part, Reached};
 pub use changed::Changed;
+pub use configuration::{Configuration, Reconfigured};
 use group::{Group, Invitation, Wrote};
 pub use id::{ClockId, GroupId};
 use message::Message;
@@ -77,6 +79,11 @@ pub struct Outputs {
     /// it happened. Told once: [`Database::outcome`] says the last
     /// of it again.
     pub outcomes: Vec<(TransactionId, Outcome)>,
+    /// What's become of what this device [asked] its groups to be
+    /// made up of. Told once.
+    ///
+    /// [asked]: Database::reconfigure
+    pub reconfigured: Vec<(GroupId, Reconfigured)>,
     /// Whether there's more to do that waits for nothing. A step does
     /// only so much, so that none takes long or writes a great deal
     /// at once. Call [`Database::resume`] until this is false.
@@ -316,6 +323,15 @@ impl<S: Store> Database<S> {
     /// checkpoint on. Anyone left out is removed; anyone new is added.
     /// It happens when a checkpoint carries it.
     ///
+    /// It names everyone, so build it from the [configuration] in
+    /// force and not from a list kept elsewhere. It's made of the
+    /// group as this device knows it: if the group changes some other
+    /// way first, the request is spent and does nothing, and
+    /// [`Outputs::reconfigured`] says so. Read the configuration again
+    /// and ask again, if what was wanted still is.
+    ///
+    /// [configuration]: Self::configuration
+    ///
     /// # Errors
     ///
     /// If this device has no say in `group`, nobody would be left with
@@ -534,6 +550,7 @@ impl<S: Store> Database<S> {
                 .filter(mine)
                 .map(named)
                 .collect(),
+            reconfigured: finished.reconfigured,
             unfinished: self.groups.values().any(Group::is_busy),
         })
     }
