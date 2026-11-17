@@ -61,6 +61,7 @@ fn a_device_picks_up_where_it_stopped() {
     sim.restart(PHONE);
 
     assert_eq!(sim.id(PHONE), before, "the key is the one in the store");
+    assert_eq!(sim.devices[PHONE].device_secret(), secret(PHONE));
     assert_eq!(
         sim.committed(PHONE, group, notes(group), "kept").as_deref(),
         Some("committed")

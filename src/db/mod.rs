@@ -158,6 +158,11 @@ impl<S: Store> Database<S> {
     /// a store that's new: a device that lost its store comes back as
     /// someone else.
     ///
+    /// So pass fresh random bytes every time, and ask for the
+    /// [secret] the device has afterwards.
+    ///
+    /// [secret]: Self::device_secret
+    ///
     /// # Errors
     ///
     /// If the store fails.
@@ -203,6 +208,21 @@ impl<S: Store> Database<S> {
     /// The key peers know this device by.
     pub fn id(&self) -> VerifyingKey {
         self.identity.public_key()
+    }
+
+    /// The device's secret: the one the store holds, whatever was
+    /// passed to [`open`]. It's for the transport, which is the same
+    /// peer and signs with the same key.
+    ///
+    /// Read it here each time the device starts, and keep it nowhere
+    /// else. A copy that outlives the store would bring the device
+    /// back as a peer that has forgotten what it signed, and one
+    /// written into a group is handed to whoever holds the group.
+    ///
+    /// [`open`]: Self::open
+    #[must_use]
+    pub fn device_secret(&self) -> [u8; 32] {
+        self.identity.secret_key()
     }
 
     /// The groups this device holds.

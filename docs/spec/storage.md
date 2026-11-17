@@ -38,6 +38,7 @@ Storage is an ordered key-value store that the [core](library.md) reads and writ
 
 - A peer that loses stored state has forgotten promises it signed. Continuing under the same key can break [agreement](checkpoints.md) and fork its own [chains](log.md).
 - A peer's signing key is therefore kept in the same store as its state. Losing one loses both.
+- The transport signs with the same key, and is handed it from the store each time the device starts. A copy kept anywhere else can outlive the store, and whoever used it would be the peer that forgot.
 - A device whose store is lost, evicted, or reset returns as a new [peer](peers.md) and is admitted again.
 - Restoring a store from a backup is amnesia: the copy has forgotten everything since it was taken. A restored copy never resumes as the peer it was.
 - Data is backed up by another peer holding it, not by copying a store.

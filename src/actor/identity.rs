@@ -33,6 +33,11 @@ impl Identity {
         self.keypair.verifying_key()
     }
 
+    /// The secret it was made from.
+    pub(crate) fn secret_key(&self) -> [u8; 32] {
+        self.keypair.to_bytes()
+    }
+
     pub(crate) fn peer(&self) -> Peer {
         self.public_key().into()
     }

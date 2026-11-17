@@ -13,6 +13,7 @@ How the library is meant to be used by an application. Rustdoc has the signature
 
 - **A store.** `FileStore` (feature `file`) for native, `BrowserStore` (feature `browser`) for wasm, `MemoryStore` for tests. One `Database` per store at a time.
 - **A device secret.** 32 random bytes, passed to `Database::open`. Used only if the store is new; after that the store's own key wins. A device that loses its store is a different peer.
+- Pass fresh random bytes on every start, and give the transport `device_secret()`, which is the key the store holds. Keep it nowhere else: a copy that outlives the store is a peer that forgot what it signed, and data in a group goes to whoever holds the group.
 - **Seeds and nonces.** `found` takes a random seed. Model, column, and clock IDs take a nonce: random, or a constant every device derives alike, which is how devices agree on a name without talking.
 - **A transport.** Anything that carries bytes between two peers known by their `VerifyingKey`. Woodland signs and checks everything; the transport is trusted with nothing but delivery.
 - **An executor.** Futures are not `Send`, since a browser store can't be. On native, run the database on a local task set or its own thread.
