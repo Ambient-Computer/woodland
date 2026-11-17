@@ -3,6 +3,7 @@ name = "woodland"
 description = "A replicated database for devices that are mostly offline."
 version = "0.0.0"
 edition = "2024"
+license = "MIT"
 publish = false
 repository = "https://github.com/Ambient-Computer/woodland"
 
