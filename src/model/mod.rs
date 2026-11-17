@@ -88,7 +88,7 @@ pub use allowance::{Allowance, Allowances};
 pub use extension::{Combine, Declared, Extension, Needs, extend};
 pub use query::Query;
 pub use sequence::Sequence;
-pub use table::{ColumnId, Filter, Row, Table, Value};
+pub use table::{ColumnId, Comparison, Filter, Row, Table, Value};
 
 use crate::actor::Peer;
 use crate::db::ClockId;
@@ -730,9 +730,10 @@ impl ModelId {
         Self { clock, id }
     }
 
-    /// The clock, then the model within it: a clock's models are one
-    /// range of keys.
-    pub(crate) fn as_bytes(&self) -> [u8; 64] {
+    /// The ID as bytes, to keep or send. The clock, then the model
+    /// within it: a clock's models are one range of keys.
+    #[must_use]
+    pub fn as_bytes(&self) -> [u8; 64] {
         let mut bytes = [0; 64];
         bytes[..32].copy_from_slice(self.clock.as_bytes());
         bytes[32..].copy_from_slice(&self.id);
@@ -740,7 +741,13 @@ impl ModelId {
         bytes
     }
 
-    pub(crate) fn from_bytes(bytes: [u8; 64]) -> Self {
+    /// The model that [`as_bytes`] gave these for. The kind is part
+    /// of the ID, so bytes from anywhere else name a model of a kind
+    /// nothing has.
+    ///
+    /// [`as_bytes`]: Self::as_bytes
+    #[must_use]
+    pub fn from_bytes(bytes: [u8; 64]) -> Self {
         let mut clock = [0; 32];
         let mut id = [0; 32];
         clock.copy_from_slice(&bytes[..32]);

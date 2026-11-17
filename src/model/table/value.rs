@@ -194,11 +194,18 @@ impl ColumnId {
         Self(id)
     }
 
-    pub(crate) fn as_bytes(&self) -> &[u8; 8] {
+    /// The ID as bytes, to keep or send.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8; 8] {
         &self.0
     }
 
-    pub(crate) fn from_bytes(bytes: [u8; 8]) -> Self {
+    /// The column that [`as_bytes`] gave these for. Its type, and
+    /// whether it's unique, are part of the ID.
+    ///
+    /// [`as_bytes`]: Self::as_bytes
+    #[must_use]
+    pub fn from_bytes(bytes: [u8; 8]) -> Self {
         Self(bytes)
     }
 }

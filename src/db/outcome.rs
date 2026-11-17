@@ -1,14 +1,15 @@
 use ed25519_dalek::VerifyingKey;
 
-use super::ClockId;
+use super::{ClockId, GroupId};
 
 /// The name of a transaction: whose it is, and where it sits in what
-/// they've written to the clock. [`Database::write`] gives one for what
+/// they've written to a clock of a group. [`Database::write`] gives one for what
 /// it wrote.
 ///
 /// [`Database::write`]: crate::Database::write
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TransactionId {
+    pub group: GroupId,
     pub clock: ClockId,
     pub author: VerifyingKey,
     pub seq: u64,

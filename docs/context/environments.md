@@ -33,6 +33,7 @@ Woodland runs inside other people's programs, on other people's devices. This pa
 - A transaction that has stopped answering cannot be read again, so a view that outlives a batch cannot be a transaction. The driver reads the present and puts back what batches replaced since the view was taken, kept only while such a view exists.
 - Verified by running the driver's tests in Firefox 159 and Chromium 156, November 2026: keys of raw bytes order bytewise, the empty key included; a transaction asked for strict durability is accepted; a held lock refuses a second owner and is free again once released.
 - Not verified: any of this in Safari, in a worker, or across two real tabs. The tests run in one page.
+- Reported by the author of an application built on the library, November 2026, and not run here: the driver in a shared worker in Chromium 156, with a reload and a second tab attaching to the same worker.
 
 ## Stores looked at and not used
 

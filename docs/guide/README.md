@@ -40,6 +40,7 @@ How the library is meant to be used by an application. Rustdoc has the signature
 - It is when this device attempts a checkpoint, retries one that stalled, and stops assuming that what it sent its peers arrived.
 - Without ticks, writes still replicate and show in optimistic reads. They are not committed.
 - Tick on a coarse timer: every second or few while there is activity is plenty. Faster commits sooner and talks more.
+- A device that holds a quorum by itself, such as a founder alone, commits on its own tick. Call `tick()` right after `write` there and nothing is ever left provisional. When to spend a checkpoint is the application's call, so `write` never does it unasked.
 
 ## Groups and peers
 
@@ -60,8 +61,10 @@ How the library is meant to be used by an application. Rustdoc has the signature
 - A transaction writes to the models of one clock.
 - `ModelId::kv`, `claims`, `threshold`, `allowances`, `sequence`, and `table` name the built-in kinds. `extend` adds an application's own, before any database is opened.
 - Guards (`expect`, `expect_absent`, `expect_unchanged`) are how a write depends on a read. A transaction whose guard fails does nothing, on every device alike.
+- Some operations do nothing until they are committed: `delete_where`, `update_where`, `delete_with`, `insert_numbered`, `add_rule`, and drops. Everything else in the same transaction shows at once. `pending` lists what is waiting.
+- A sequence that orders rows keeps a row's key after such a delete removes the row. Skip keys with no row when reading, and remove them once the delete commits.
 - Success is provisional until committed. `Outputs::outcomes` reports `Live`, `Pruned`, then one of `Committed`, `Rejected`, `Discarded`, or `Covered`.
-- Outcomes are told once. After a restart, `outcome(group, id)` gives the last one, until `compact` sheds the transaction.
+- Outcomes are told once. Each names its group. After a restart, `outcome(id)` gives the last one, until `compact` sheds the transaction.
 
 ## Reading
 
@@ -75,6 +78,7 @@ How the library is meant to be used by an application. Rustdoc has the signature
 - To subscribe: keep the `Query`, and re-run it when `query.is_affected_by(&change)` for a change in `Outputs::changed`. A change says where to look, not what's there.
 - Every read made between two steps is of one moment. Nothing is held across a step.
 - To keep a copy elsewhere (a UI store, a search index): read the committed state once, then follow `changed`, re-reading the keys it names. `Changed::Checkpoint` marks a consistent point; `Changed::Everything` means read it all again. `examples/mirror.rs` does this.
+- `Table::rules` lists the rules in force, and `Filter::tests` says what a filter asks. A rule is judged at commit, so check a row against them before writing it.
 - `add_index` keeps a local index of one or more table columns. It's this device's own and fills over several steps; `has_index` says when it's complete.
 
 ## Upkeep
@@ -91,4 +95,5 @@ How the library is meant to be used by an application. Rustdoc has the signature
 - Peers need not all reach each other. Any peer relays for any other, including for sealed groups it can't read.
 - Committed is final: the same on every device, never reordered, never undone.
 - Storage is bounded by committed state plus uncommitted history, once a device compacts.
-- The public API uses `ed25519_dalek::VerifyingKey` for peer identity. Convert through its 32 bytes if the transport's key type differs.
+- The public API uses `ed25519_dalek::VerifyingKey` for peer identity. Convert through its 32 bytes if the transport's key type differs, and key maps of peers by them.
+- Build dependencies optimized, even for tests: sealing and signing are many times slower without. `[profile.dev.package."*"] opt-level = 3` in the application's `Cargo.toml` does it.

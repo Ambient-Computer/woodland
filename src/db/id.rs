@@ -52,11 +52,17 @@ impl ClockId {
         ))
     }
 
-    pub(crate) fn as_bytes(&self) -> &[u8; 32] {
+    /// The ID as bytes, to keep or send.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
 
-    pub(crate) fn from_bytes(bytes: [u8; 32]) -> Self {
+    /// The clock that [`as_bytes`] gave these for.
+    ///
+    /// [`as_bytes`]: Self::as_bytes
+    #[must_use]
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
 }

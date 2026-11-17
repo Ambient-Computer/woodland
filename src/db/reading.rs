@@ -75,12 +75,7 @@ impl<S: Store> Database<S> {
         held.is_some_and(|held| held.has_index(table, columns.as_ref()))
     }
 
-    /// Answers `query` from whole steps: all of a step's writes, or none.
-    /// The answer says which it is: everything known, or only what's
-    /// committed. A query of a model that shows only what's committed
-    /// gets the second without asking.
-    ///
-    /// What last became of a transaction this device wrote in `group`:
+    /// What last became of a transaction this device wrote:
     /// the last thing [`Outputs::outcomes`] said of it, for an
     /// application that wasn't there to hear. `None` if this device
     /// didn't write it, or no longer keeps it: [`compact`] sheds what
@@ -91,18 +86,19 @@ impl<S: Store> Database<S> {
     /// # Errors
     ///
     /// If the store fails.
-    pub async fn outcome(
-        &self,
-        group: GroupId,
-        id: TransactionId,
-    ) -> Result<Option<Outcome>, Error> {
+    pub async fn outcome(&self, id: TransactionId) -> Result<Option<Outcome>, Error> {
         let author = Peer::from(id.author);
-        let key = keys::outcome(group, id.clock, author, id.seq);
+        let key = keys::outcome(id.group, id.clock, author, id.seq);
         let stored = self.store.view().get(&key).await?;
 
         Ok(stored.and_then(|stored| Outcome::from_bytes(&stored)))
     }
 
+    /// Answers `query` from whole steps: all of a step's writes, or none.
+    /// The answer says which it is: everything known, or only what's
+    /// committed. A query of a model that shows only what's committed
+    /// gets the second without asking.
+    ///
     /// # Errors
     ///
     /// If the store fails.

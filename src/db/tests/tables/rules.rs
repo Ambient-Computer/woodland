@@ -164,9 +164,33 @@ fn a_rule_is_pending_until_its_committed_and_binds_nothing_before() {
 
     // It's shown until the rule that turns it down is committed.
     assert_eq!(ages(&cluster, PHONE, table).len(), 1);
+    assert_eq!(rules(&cluster, PHONE, table), []);
     cluster.connect_all();
     cluster.settle();
     everywhere(&cluster, table, &[]);
+}
+
+/// The rules a table has in force, as the device reads them.
+fn rules(cluster: &Sim, device: usize, table: ModelId) -> Vec<Filter> {
+    let results = cluster.read(device, &Query::table(cluster.home, table));
+    let table = Table::read(&results).expect("created");
+
+    table.rules().to_vec()
+}
+
+/// An application checks a row against the rules before it writes
+/// one, and nothing else says what they are once they're committed.
+#[test]
+fn a_table_says_which_rules_are_in_force() {
+    let (mut cluster, table) = ruled();
+
+    for device in [PHONE, NAS] {
+        assert_eq!(rules(&cluster, device, table), [born(table)]);
+    }
+
+    cluster.write(PHONE, Transaction::new().lift_rule(table, &born(table)));
+
+    assert_eq!(rules(&cluster, PHONE, table), []);
 }
 
 #[test]

@@ -112,7 +112,7 @@ fn an_author_that_catches_up_from_a_snapshot_is_told_it_was_covered() {
 fn asked(sim: &Sim, device: usize) -> Option<Outcome> {
     let wrote = sim.wrote[device].expect("it wrote something");
 
-    block_on(sim.devices[device].outcome(sim.home, wrote)).expect("asked")
+    block_on(sim.devices[device].outcome(wrote)).expect("asked")
 }
 
 /// An application that stopped before it was told can ask.
@@ -131,7 +131,8 @@ fn a_device_says_again_what_became_of_its_transaction() {
     assert_eq!(asked(&sim, PHONE), Some(Outcome::Committed));
     // It wasn't anyone else's to say.
     let wrote = sim.wrote[PHONE].expect("named");
-    let elsewhere = block_on(sim.devices[LAPTOP].outcome(group, wrote));
+    assert_eq!(wrote.group, group);
+    let elsewhere = block_on(sim.devices[LAPTOP].outcome(wrote));
     assert_eq!(elsewhere.expect("asked"), None);
 }
 

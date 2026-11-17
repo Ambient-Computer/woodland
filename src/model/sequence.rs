@@ -309,8 +309,13 @@ impl Transaction {
     }
 
     /// Moves the item at `from` of the list as `read`, so that it's at
-    /// `to` once it has. If someone else moves it too, it ends up
-    /// where one of them put it.
+    /// `to` of that list once it has. If someone else moves it too, it
+    /// ends up where one of them put it.
+    ///
+    /// Like every edit, it's kept as the items on either side and not
+    /// as a number. Moved to the front, it goes ahead of what was
+    /// first when it was read: if another device puts something
+    /// first meanwhile, both land, and this is second.
     pub fn move_to(
         self,
         model: ModelId,

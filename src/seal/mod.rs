@@ -54,6 +54,28 @@ impl SealingKey {
         }
     }
 
+    /// The key and its owner's signature for it, as bytes to keep or
+    /// send. Neither is secret.
+    #[must_use]
+    pub fn to_bytes(&self) -> Vec<u8> {
+        [&self.key[..], &self.vouch].concat()
+    }
+
+    /// The key that [`to_bytes`] gave these for. `None` if they're too
+    /// short to be one. Whether its owner signed for it is checked
+    /// when a role names it: a group never takes one that isn't.
+    ///
+    /// [`to_bytes`]: Self::to_bytes
+    #[must_use]
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        let (key, vouch) = bytes.split_first_chunk::<32>()?;
+
+        Some(Self {
+            key: *key,
+            vouch: vouch.to_vec(),
+        })
+    }
+
     /// Whether `peer` signed for this key.
     pub(crate) fn is_vouched_by(&self, peer: Peer) -> bool {
         let Ok(vouch) = Signature::from_slice(&self.vouch) else {

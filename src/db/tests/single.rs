@@ -249,3 +249,39 @@ fn a_group_whose_id_ends_in_the_last_byte_is_forgotten() {
 
     assert_eq!(sim.devices[LAPTOP].groups().count(), 0);
 }
+
+/// A device that holds a quorum by itself waits for nobody, only to
+/// be told that time has passed. An application that wants what it
+/// writes committed there and then says so right after writing.
+#[test]
+fn a_device_alone_commits_as_soon_as_its_told_to() {
+    let (mut sim, group) = Sim::group(1, 1);
+    sim.write_to(PHONE, group, set(notes(group), "todo", "milk"));
+
+    sim.tick(PHONE);
+    sim.run();
+
+    assert_eq!(
+        sim.committed(PHONE, group, notes(group), "todo").as_deref(),
+        Some("milk")
+    );
+    let wrote = sim.wrote[PHONE].expect("named");
+    assert!(sim.told[PHONE].contains(&(wrote, Outcome::Committed)));
+}
+
+#[test]
+fn ids_come_back_from_their_bytes() {
+    let group = GroupId::from_bytes([7; 32]);
+    let clock = ClockId::new(group, [1; 32]);
+    let model = ModelId::table(clock, [2; 32]);
+    let column = crate::ColumnId::text(model, [3; 32]).unique();
+    let key = block_on(Database::open(MemoryStore::default(), secret(PHONE)))
+        .expect("opened")
+        .sealing_key();
+
+    assert_eq!(ClockId::from_bytes(*clock.as_bytes()), clock);
+    assert_eq!(ModelId::from_bytes(model.as_bytes()), model);
+    assert_eq!(crate::ColumnId::from_bytes(*column.as_bytes()), column);
+    assert_eq!(SealingKey::from_bytes(&key.to_bytes()), Some(key));
+    assert_eq!(SealingKey::from_bytes(&[1; 31]), None);
+}

@@ -40,6 +40,40 @@ enum Passes {
     AtLeast,
 }
 
+/// How a [`Filter`] compares what a row holds in a column with a
+/// value: one of its [tests].
+///
+/// [tests]: Filter::tests
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Comparison {
+    /// [`Filter::is`]
+    Is,
+    /// [`Filter::is_not`]
+    IsNot,
+    /// [`Filter::below`]
+    Below,
+    /// [`Filter::at_most`]
+    AtMost,
+    /// [`Filter::above`]
+    Above,
+    /// [`Filter::at_least`]
+    AtLeast,
+}
+
+impl From<Passes> for Comparison {
+    fn from(passes: Passes) -> Self {
+        match passes {
+            Passes::Same => Self::Is,
+            Passes::Different => Self::IsNot,
+            Passes::Below => Self::Below,
+            Passes::AtMost => Self::AtMost,
+            Passes::Above => Self::Above,
+            Passes::AtLeast => Self::AtLeast,
+        }
+    }
+}
+
 impl Filter {
     /// Every row.
     pub fn all() -> Self {
@@ -74,6 +108,17 @@ impl Filter {
     /// Rows that hold `value` or more in `column`.
     pub fn at_least(self, column: ColumnId, value: impl Into<Value>) -> Self {
         self.and(column, Passes::AtLeast, value.into())
+    }
+
+    /// The tests a row has to pass, in the order they were added: a
+    /// column, how it's compared, and what with. It's how to say what
+    /// a filter read back from [`pending`] is for.
+    ///
+    /// [`pending`]: crate::Database::pending
+    pub fn tests(&self) -> impl Iterator<Item = (ColumnId, Comparison, &Value)> {
+        let tests = self.0.iter();
+
+        tests.map(|test| (test.column, test.passes.into(), &test.value))
     }
 
     fn and(mut self, column: ColumnId, passes: Passes, value: Value) -> Self {
@@ -161,6 +206,23 @@ mod tests {
             [4, 5, 6].map(|held| test.passed_by(&Value::Integer(held))),
             test.passed_by(&Value::Null),
         )
+    }
+
+    #[test]
+    fn a_filter_says_what_its_tests_are() {
+        let column = ColumnId::from_bytes([1; 8]);
+        let filter = Filter::all().is(column, 5).at_least(column, 2);
+        let tests: Vec<_> = filter.tests().collect();
+        let (five, two) = (Value::Integer(5), Value::Integer(2));
+
+        assert_eq!(Filter::all().tests().count(), 0);
+        assert_eq!(
+            tests,
+            [
+                (column, Comparison::Is, &five),
+                (column, Comparison::AtLeast, &two)
+            ]
+        );
     }
 
     #[test]

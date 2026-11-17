@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::place::{Incarnation, Place};
 use super::rows;
-use super::{ColumnId, Operation, Rekey, Target, Value};
+use super::{ColumnId, Filter, Operation, Rekey, Target, Value};
 use crate::encoding;
 use crate::model::{Fingerprint, Requirement};
 
@@ -17,6 +17,7 @@ use crate::model::{Fingerprint, Requirement};
 pub struct Table {
     name: String,
     columns: BTreeMap<ColumnId, String>,
+    rules: Vec<Filter>,
     rows: Vec<Row>,
 }
 
@@ -62,6 +63,7 @@ impl Table {
     pub fn read(results: &[(Vec<u8>, Vec<u8>)]) -> Option<Self> {
         let mut name = None;
         let mut columns = BTreeMap::new();
+        let mut rules = Vec::new();
         let mut parts = Parts::default();
         for (key, value) in results {
             match Place::parse(key) {
@@ -89,12 +91,9 @@ impl Table {
                 Some(Place::Retired(key)) => {
                     parts.retired.insert(key, Fingerprint::of(value));
                 }
+                Some(Place::Rule(_)) => rules.extend(encoding::decode::<Filter>(value)),
                 Some(
-                    Place::Added(_)
-                    | Place::Unique(..)
-                    | Place::Index(..)
-                    | Place::Sequence(_)
-                    | Place::Rule(_),
+                    Place::Added(_) | Place::Unique(..) | Place::Index(..) | Place::Sequence(_),
                 )
                 | None => {}
             }
@@ -105,6 +104,7 @@ impl Table {
         name.map(|name| Self {
             name,
             columns,
+            rules,
             rows,
         })
     }
@@ -121,6 +121,19 @@ impl Table {
     /// The table's columns and their names, in no meaningful order.
     pub fn columns(&self) -> impl Iterator<Item = (ColumnId, &str)> {
         self.columns.iter().map(|(&id, name)| (id, name.as_str()))
+    }
+
+    /// The rules in force: every row passes each of these, from the
+    /// checkpoint that committed the rule on. A row is held to them
+    /// when its transaction is committed and not before, so check a
+    /// row against them before writing it. One that's been [added]
+    /// and isn't committed yet isn't here: it's [pending].
+    ///
+    /// [added]: crate::Transaction::add_rule
+    /// [pending]: crate::Database::pending
+    #[must_use]
+    pub fn rules(&self) -> &[Filter] {
+        &self.rules
     }
 
     /// The rows, in key order.
@@ -259,7 +272,7 @@ impl Row {
     }
 
     /// The operation that stops enforcing a rule.
-    pub(crate) fn lift(filter: &super::Filter) -> Operation {
+    pub(crate) fn lift(filter: &Filter) -> Operation {
         Operation::Lift { rule: filter.id() }
     }
 

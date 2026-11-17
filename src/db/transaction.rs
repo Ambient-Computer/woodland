@@ -134,7 +134,11 @@ impl Transaction {
     /// names. If it already exists at this transaction's place in the
     /// timeline, the whole transaction is dropped, on every device.
     ///
+    /// The table itself has no name until [`rename_table`] gives it
+    /// one, which the same transaction can.
+    ///
     /// [table]: ModelId::table
+    /// [`rename_table`]: Self::rename_table
     pub fn create_table(
         mut self,
         table: ModelId,

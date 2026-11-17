@@ -323,6 +323,7 @@ impl<S: Store> Database<S> {
         match self.guard(written)? {
             Wrote::Yes(seq) => {
                 let wrote = TransactionId {
+                    group,
                     clock,
                     author: self.identity.peer().id(),
                     seq,
@@ -552,6 +553,7 @@ impl<S: Store> Database<S> {
         let mine = |told: &step::Told| told.author == me;
         let named = |told: step::Told| {
             let id = TransactionId {
+                group: told.group,
                 clock: told.clock,
                 author: told.author.id(),
                 seq: told.seq,
