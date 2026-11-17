@@ -7,16 +7,18 @@ A peer-to-peer relational database for local-first apps.
 
 ## Purpose
 
-At a high level, it's [CRDTs for SQL](https://blog.psychollama.io/crdts-theory-and-practice/).
+Woodland is [CRDTs for SQL](https://blog.psychollama.io/crdts-theory-and-practice/). Build apps without a server, and without your data getting stuck on one device.
 
-In concrete terms:
+Local apps are fast, private, and free to run. But the moment you want sync, sharing, or a backup, you need a server. That's money, upkeep, and your data on someone else's cloud.
 
-- Developers can build apps without servers. No cost, uptime management, or data liability.
-- Users own their data and can sync it between devices, without having to know it's any different.
+With Woodland:
 
-Woodland handles the gnarly bits of mapping the relational abstraction to the messy world of concurrent edits and offline devices.
+- No backend. The app reads and writes a local database.
+- Share with people who use the same app.
+- Stream your data out. Archive it to a NAS, script against it, wire up automations.
+- Open source your app and it works for anyone. Nobody has to host anything.
 
-Build your app like it's on a normal relational database and it just works. Well, mostly works. You do have to learn a few things.
+There are [some tradeoffs](#caveats) and [required setup](#target-environments), but otherwise, it works like a normal relational database. All the hard parts are handled transparently.
 
 ## Features
 
@@ -39,6 +41,9 @@ Build your app like it's on a normal relational database and it just works. Well
 ## Target Environments
 
 Woodland is a Rust library written as a state machine. Consumers provide the business logic, I/O bindings, and the state machine driver. Networking assumes [Iroh](https://iroh.computer).
+
+> [!NOTE]
+> Woodland isn't published as a crate. It's only available as a git dependency.
 
 | Environment                      | Runs as                                     | Storage                                                                  |
 | -------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------ |
@@ -76,3 +81,7 @@ Flow:
 5. Transactions that arrive later are ordered after the checkpoint. This is why an optimistic write can still lose to a committed one.
 
 The full design is in [`docs/spec`](docs/spec/README.md), and the reasoning behind it in [`docs/context`](docs/context/README.md).
+
+## The Name
+
+Woodland: (causal) trees, growing together, cut down to (operation) logs.
