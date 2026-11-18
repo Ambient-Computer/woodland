@@ -10,9 +10,11 @@
 //! batch is durable, so a device never says something it could forget.
 
 mod answer;
+#[cfg(feature = "blobs")]
+mod blobs;
 mod changed;
 mod configuration;
-mod entry;
+pub(crate) mod entry;
 mod group;
 mod holding;
 mod id;
@@ -24,7 +26,7 @@ mod pending;
 mod proof;
 mod reading;
 mod sealed;
-mod step;
+pub(crate) mod step;
 mod succession;
 #[cfg(test)]
 mod tests;
@@ -37,14 +39,21 @@ use std::fmt;
 use ed25519_dalek::VerifyingKey;
 
 use crate::actor::{Identity, Peer};
+use crate::blob::tally;
 use crate::chain::{Chain, Checkpoint, Electorate, Role};
 use crate::encoding;
+use crate::model::Operation;
 use crate::seal::Secret;
 use crate::store::{Store, StoreError};
 
+#[cfg(feature = "blobs")]
+pub use crate::blob::want::BlobPolicy;
 pub use answer::{Answer, Found, Part, Reached};
+#[cfg(feature = "blobs")]
+pub use blobs::{Import, ImportId};
 pub use changed::Changed;
 pub use configuration::{Configuration, Reconfigured};
+pub(crate) use group::carried;
 use group::{Group, Invitation, Wrote};
 pub use id::{ClockId, GroupId};
 use message::Message;
@@ -63,6 +72,10 @@ pub struct Database<S> {
     /// Set when a step failed partway. What's in memory can no longer be
     /// trusted to match the store.
     broken: bool,
+    /// Whether the bytes of some blob are being deleted.
+    sweeping: bool,
+    #[cfg(feature = "blobs")]
+    blobs: blobs::Blobs,
 }
 
 /// What a step asks of the application, once the step is durable.
@@ -88,6 +101,12 @@ pub struct Outputs {
     /// only so much, so that none takes long or writes a great deal
     /// at once. Call [`Database::resume`] until this is false.
     pub unfinished: bool,
+    /// The peers there's something to say to about blobs: take it
+    /// with [`Database::next_blob_message`]. Always empty without
+    /// the `blobs` feature.
+    ///
+    /// [`Database::next_blob_message`]: Database#method.next_blob_message
+    pub blobs: Vec<VerifyingKey>,
 }
 
 #[derive(Debug)]
@@ -109,6 +128,18 @@ pub enum Error {
     ///
     /// [forget]: Database::forget
     StillAMember,
+    /// This device read the group once and can't any longer, so it
+    /// has no state to stand in for the history it was asked to
+    /// shed. It [forgets] the group, or [relinquishes] what it could
+    /// read and carries it.
+    ///
+    /// [forgets]: Database::forget
+    /// [relinquishes]: Database::relinquish
+    ShutOut,
+    /// The device reads the group, and has nothing to [relinquish].
+    ///
+    /// [relinquish]: Database::relinquish
+    StillReads,
     /// This device isn't one of the group's contributors.
     NotAContributor,
     /// This device can't read what it was asked to write to: it's
@@ -119,6 +150,23 @@ pub enum Error {
     BadInvitation,
     /// The transaction writes to models of more than one clock.
     ManyClocks,
+    /// The transaction refers to a blob with a reference made for the
+    /// other kind of group. A sealed group's blobs are encrypted and
+    /// an open group's aren't, so the bytes are imported again.
+    BlobMisplaced,
+    /// The transaction refers to a blob this device doesn't hold all
+    /// of. A device writes a reference only to what it could hand
+    /// over, even one it was sent.
+    BlobNotHeld,
+    /// Nothing this device holds refers to that blob, so there's no
+    /// one to fetch it from and nothing to keep it for.
+    BlobUnreferred,
+    /// The device hasn't said which blobs it fetches. There's no
+    /// default: say, and then hold the group.
+    NoBlobPolicy,
+    /// There's no such import: it was never begun, or it's finished
+    /// or abandoned.
+    UnknownImport,
 }
 
 impl fmt::Display for Error {
@@ -134,10 +182,23 @@ impl fmt::Display for Error {
             Self::StillAMember => {
                 formatter.write_str("this device is still a member of that group")
             }
+            Self::ShutOut => {
+                formatter.write_str("this device can no longer read that group, and sheds nothing")
+            }
+            Self::StillReads => formatter.write_str("this device reads that group"),
             Self::NotAContributor => formatter.write_str("this device isn't a contributor"),
             Self::Unreadable => formatter.write_str("this device can't read that"),
             Self::BadInvitation => formatter.write_str("the invitation couldn't be read"),
             Self::ManyClocks => formatter.write_str("a transaction writes to one clock's models"),
+            Self::BlobNotHeld => formatter.write_str("this device doesn't hold all of that blob"),
+            Self::BlobUnreferred => formatter.write_str("nothing here refers to that blob"),
+            Self::NoBlobPolicy => {
+                formatter.write_str("the device hasn't said which blobs it fetches")
+            }
+            Self::UnknownImport => formatter.write_str("there's no such import"),
+            Self::BlobMisplaced => {
+                formatter.write_str("a blob reference made for the other kind of group")
+            }
         }
     }
 }
@@ -192,6 +253,17 @@ impl<S: Store> Database<S> {
             }
         }
 
+        let tallied = tally::tally(&mut step).await?;
+        #[cfg(feature = "blobs")]
+        let blobs = blobs::Blobs::load(&step).await?;
+        #[cfg(feature = "blobs")]
+        let sweeping = blobs::settle(&mut step, tallied).await?;
+        #[cfg(not(feature = "blobs"))]
+        let sweeping = {
+            drop(tallied);
+
+            false
+        };
         store.apply(step.finish().batch).await?;
         let mut database = Self {
             store,
@@ -199,6 +271,9 @@ impl<S: Store> Database<S> {
             groups,
             peers: BTreeSet::new(),
             broken: false,
+            sweeping,
+            #[cfg(feature = "blobs")]
+            blobs,
         };
         database.pin();
 
@@ -282,6 +357,10 @@ impl<S: Store> Database<S> {
     ) -> Result<(GroupId, Outputs), Error> {
         let founding = chain.checkpoints().next().ok_or(Error::BadInvitation)?;
         let id = group::id_of(founding);
+        #[cfg(feature = "blobs")]
+        if self.blobs.policy.is_none() {
+            return Err(Error::NoBlobPolicy);
+        }
         let mut step = self.begin()?;
         if !self.groups.contains_key(&id) {
             let mut group = Group::start(chain, &mut step).ok_or(Error::BadInvitation)?;
@@ -314,9 +393,22 @@ impl<S: Store> Database<S> {
         transaction: Transaction,
     ) -> Result<Outputs, Error> {
         let mut step = self.begin()?;
-        let held = self.groups.get_mut(&group).ok_or(Error::UnknownGroup)?;
         let clock = transaction.clock(group.into());
         let clock = clock.ok_or(Error::ManyClocks)?;
+        let blobs = transaction.operations.iter().flat_map(Operation::blobs);
+        #[cfg(feature = "blobs")]
+        for blob in blobs {
+            let whole = crate::blob::kept::is_whole(&step, blob.listed()).await;
+            if !self.guard(whole)? {
+                return Err(Error::BlobNotHeld);
+            }
+        }
+        // A device that keeps no bytes holds no blob.
+        #[cfg(not(feature = "blobs"))]
+        if blobs.count() > 0 {
+            return Err(Error::BlobNotHeld);
+        }
+        let held = self.groups.get_mut(&group).ok_or(Error::UnknownGroup)?;
         let written = held
             .write(&self.identity, clock, transaction.operations, &mut step)
             .await;
@@ -337,6 +429,7 @@ impl<S: Store> Database<S> {
             }
             Wrote::NotAllowed => Err(Error::NotAContributor),
             Wrote::Unreadable => Err(Error::Unreadable),
+            Wrote::Misplaced => Err(Error::BlobMisplaced),
         }
     }
 
@@ -385,6 +478,8 @@ impl<S: Store> Database<S> {
         let peer = Peer::from(peer);
         let mut step = self.begin()?;
         self.peers.insert(peer);
+        #[cfg(feature = "blobs")]
+        self.blobs.hunger();
         for group in self.groups.values_mut() {
             let greeted = group.connected(peer, &mut step).await;
             if greeted.is_err() {
@@ -400,6 +495,8 @@ impl<S: Store> Database<S> {
     pub fn disconnected(&mut self, peer: VerifyingKey) {
         let peer = Peer::from(peer);
         self.peers.remove(&peer);
+        #[cfg(feature = "blobs")]
+        self.blobs.disconnected(peer);
         for group in self.groups.values_mut() {
             group.disconnected(peer);
         }
@@ -438,9 +535,16 @@ impl<S: Store> Database<S> {
                 continue;
             };
 
+            #[cfg(feature = "blobs")]
+            let shared = group.shares(from);
             let received = group
                 .receive(&self.identity, from, message, &mut step)
                 .await;
+            // A peer that turns out to hold the group may have its blobs.
+            #[cfg(feature = "blobs")]
+            if !shared && group.shares(from) {
+                self.blobs.hunger();
+            }
             self.guard(received)?;
         }
 
@@ -455,6 +559,8 @@ impl<S: Store> Database<S> {
     /// If the store fails.
     pub async fn tick(&mut self) -> Result<Outputs, Error> {
         let mut step = self.begin()?;
+        #[cfg(feature = "blobs")]
+        self.blobs.tick();
         for group in self.groups.values_mut() {
             let ticked = group.tick(&self.identity, &mut step).await;
             if ticked.is_err() {
@@ -482,8 +588,20 @@ impl<S: Store> Database<S> {
             }
             resumed?;
         }
+        #[cfg(feature = "blobs")]
+        self.sweep(&mut step).await?;
 
         self.finish(step).await
+    }
+
+    /// Whether there's more to do that waits for nothing.
+    fn is_unfinished(&self) -> bool {
+        #[cfg(feature = "blobs")]
+        let looking = self.blobs.is_busy();
+        #[cfg(not(feature = "blobs"))]
+        let looking = false;
+
+        looking || self.sweeping || self.groups.values().any(Group::is_busy)
     }
 
     fn begin(&self) -> Result<Step<S::View>, Error> {
@@ -542,11 +660,25 @@ impl<S: Store> Database<S> {
             step.put(key, outcome);
         }
 
+        // Last of all, since it goes by everything the step wrote.
+        let tallied = tally::tally(&mut step).await;
+        let tallied = self.guard(tallied)?;
+        #[cfg(feature = "blobs")]
+        {
+            let followed = self.follow(&mut step, tallied).await;
+            self.guard(followed)?;
+        }
+        #[cfg(not(feature = "blobs"))]
+        drop(tallied);
+
         let mut finished = step.finish();
         let hidden = |change: &Changed| self.groups.values().any(|group| group.hides(change));
         finished.changed.retain(|change| !hidden(change));
-        let applied = self.store.apply(finished.batch).await;
-        self.guard(applied)?;
+        // A step that wrote nothing has nothing to make durable.
+        if !finished.batch.is_empty() {
+            let applied = self.store.apply(finished.batch).await;
+            self.guard(applied)?;
+        }
         self.pin();
         let sends = finished.sends.into_iter();
         let me = self.identity.peer();
@@ -573,7 +705,11 @@ impl<S: Store> Database<S> {
                 .map(named)
                 .collect(),
             reconfigured: finished.reconfigured,
-            unfinished: self.groups.values().any(Group::is_busy),
+            unfinished: self.is_unfinished(),
+            #[cfg(feature = "blobs")]
+            blobs: self.blobs.waiting(),
+            #[cfg(not(feature = "blobs"))]
+            blobs: Vec::new(),
         })
     }
 }

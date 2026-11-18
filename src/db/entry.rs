@@ -15,6 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::actor::{Identity, Peer, Signable, Signed, verify_all};
+use crate::blob::{BlobRef, Listed};
 use crate::chain::Digest;
 use crate::clock::Stamp;
 use crate::db::{ClockId, GroupId};
@@ -60,6 +61,8 @@ pub(crate) struct Header {
     /// The latest checkpoint its author held.
     pub(crate) under: Under,
     pub(crate) payload: Hash,
+    /// The list of blobs the entry comes with.
+    pub(crate) blobs: Hash,
 }
 
 /// The checkpoint an entry was written under.
@@ -78,6 +81,11 @@ impl Signable for Header {
 pub(crate) struct Entry {
     pub(crate) header: Signed<Header>,
     pub(crate) payload: Vec<u8>,
+    /// The blobs it refers to, for a device that can't read the
+    /// payload or lacks a kind it's for. A device that can read counts
+    /// what it reads: the list is the author's word, and getting it
+    /// wrong costs only whether such devices hold the bytes.
+    pub(crate) blobs: Vec<Listed>,
 }
 
 /// An entry whose signature and payload have been checked.
@@ -111,11 +119,22 @@ impl Entry {
         let plain = encoding::encode(&carried(&operations));
         let payload = keys.seal(&about, header.under.height, plain)?;
         header.payload = Hash::of_payload(&payload);
+        let blobs: BTreeSet<Listed> = operations
+            .iter()
+            .flat_map(Operation::blobs)
+            .map(|it| it.listed())
+            .collect();
+        let blobs: Vec<Listed> = blobs.into_iter().collect();
+        header.blobs = Hash::of_blobs(&blobs);
         let hash = Hash::of_header(identity.peer(), &header);
         let header = Signed::sign(identity, header).signed().clone();
 
         Some(Checked {
-            entry: Self { header, payload },
+            entry: Self {
+                header,
+                payload,
+                blobs,
+            },
             operations,
             unread: false,
             hash,
@@ -133,14 +152,24 @@ impl Entry {
     pub(crate) fn check(self, group: GroupId, keys: &Keyring) -> Option<Checked> {
         let header = verify_all(vec![self.header.clone()]).pop()?;
         let said = header.payload();
-        let intact = said.group == group && said.payload == Hash::of_payload(&self.payload);
+        let intact = said.group == group
+            && said.payload == Hash::of_payload(&self.payload)
+            && said.blobs == Hash::of_blobs(&self.blobs);
         let (operations, unread) = match self.read(keys) {
             Read::Does(operations) => (operations, false),
             Read::Sealed | Read::Foreign => (Vec::new(), true),
             Read::Nonsense => return None,
         };
         let within = |operation: &Operation| operation.model.clock() == said.clock;
-        let intact = intact && operations.iter().all(within);
+        // A sealed group's references carry keys and an open group's
+        // don't. One made for the other kind of group is no reference
+        // here.
+        let fits = |operation: &Operation| {
+            let fits = |blob: &BlobRef| blob.is_sealed() == keys.is_sealed();
+
+            operation.blobs().iter().all(fits)
+        };
+        let intact = intact && operations.iter().all(within) && operations.iter().all(fits);
         let hash = Hash::of_header(header.author(), said);
 
         intact.then_some(Checked {
@@ -263,6 +292,10 @@ impl Hash {
     /// For a header that hasn't been filled in yet.
     pub(crate) const NONE: Self = Self([0; 32]);
 
+    fn of_blobs(blobs: &[Listed]) -> Self {
+        Self(encoding::hash("woodland/entry/blobs", &blobs))
+    }
+
     fn of_payload(payload: &[u8]) -> Self {
         Self(encoding::hash("woodland/entry/payload", &payload))
     }
@@ -363,6 +396,7 @@ mod tests {
                 checkpoint: founding.digest(),
             },
             payload: Hash::NONE,
+            blobs: Hash::NONE,
         };
         let operations = vec![Operation::set(model, b"key".to_vec(), b"value".to_vec())];
 
@@ -380,7 +414,16 @@ mod tests {
         let header = Signed::sign(&identity, header).signed().clone();
         let payload = plain.to_vec();
 
-        (group, Entry { header, payload })
+        let blobs = entry.blobs;
+
+        (
+            group,
+            Entry {
+                header,
+                payload,
+                blobs,
+            },
+        )
     }
 
     #[test]
@@ -523,6 +566,7 @@ mod tests {
         let moved = Entry {
             header: Signed::sign(&identity, moved).signed().clone(),
             payload: entry.payload,
+            blobs: entry.blobs,
         };
 
         assert!(moved.check(group, &keys).is_none());
@@ -540,6 +584,65 @@ mod tests {
 
         assert!(Entry::author(&identity, header.clone(), Vec::new(), &keys).is_some());
         assert!(Entry::author(&identity, header, Vec::new(), &later).is_none());
+    }
+
+    fn pictured(sealed: bool) -> Vec<Operation> {
+        use crate::model::{ColumnId, Value};
+
+        let clock = ClockId::from_bytes([3; 32]);
+        let table = ModelId::table(clock, [5; 32]);
+        let blob = BlobRef::new([7; 32], 10, sealed.then_some([8; 32]));
+        let cells = vec![(ColumnId::blob(table, [6; 32]), Value::Blob(blob))];
+
+        vec![Operation::insert_row(table, b"ada".to_vec(), cells)]
+    }
+
+    #[test]
+    fn an_entry_lists_the_blobs_it_refers_to() {
+        let clock = ClockId::from_bytes([3; 32]);
+        let (group, entry) = entry(clock, ModelId::kv(clock, [5; 32]));
+        let header = entry.header.payload().clone();
+        let identity = Identity::from_secret_key([1; 32]);
+        let written = Entry::author(&identity, header, pictured(false), &Keyring::Open);
+        let written = written.expect("an open group").entry;
+        let listed = Listed {
+            name: [7; 32],
+            length: 10,
+        };
+
+        assert_eq!(written.blobs, [listed]);
+        assert!(written.clone().check(group, &Keyring::Open).is_some());
+
+        // The list is signed for, so nobody on the way changes what a
+        // device that can't read is told to hold.
+        let emptied = Entry {
+            blobs: Vec::new(),
+            ..written
+        };
+        assert!(emptied.check(group, &Keyring::Open).is_none());
+    }
+
+    #[test]
+    fn a_reference_made_for_the_other_kind_of_group_is_no_entry() {
+        let keys = sealed_under(b"ours");
+        let clock = ClockId::from_bytes([3; 32]);
+        let (group, entry) = entry(clock, ModelId::kv(clock, [5; 32]));
+        let header = entry.header.payload().clone();
+        let identity = Identity::from_secret_key([1; 32]);
+        let author = |operations, keys: &Keyring| {
+            let entry = Entry::author(&identity, header.clone(), operations, keys);
+
+            entry.expect("written").entry
+        };
+
+        assert!(author(pictured(true), &keys).check(group, &keys).is_some());
+        assert!(author(pictured(false), &keys).check(group, &keys).is_none());
+        let open = Keyring::Open;
+        assert!(author(pictured(true), &open).check(group, &open).is_none());
+
+        // A device that can't read it can't tell, and carries it.
+        let carried = author(pictured(false), &keys).check(group, &Keyring::sealed());
+        assert!(carried.expect("an entry").unread);
     }
 
     #[test]

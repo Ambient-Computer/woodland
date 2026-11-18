@@ -10,6 +10,7 @@ mod deferred;
 mod foreign;
 mod forks;
 mod history;
+mod holdover;
 mod indexes;
 mod interest;
 mod job;
@@ -40,6 +41,7 @@ use super::message::Request;
 use super::proof::Proof;
 use super::step::Step;
 use ahead::Foresight;
+pub(crate) use carry::listed as carried;
 use clock::{Clock, Kept};
 use compact::{Installing, Staging};
 pub(crate) use interest::Refused;
@@ -137,6 +139,9 @@ pub(crate) struct Group {
     /// The height of the sealed snapshot this device keeps without
     /// being able to read it.
     carrying: Option<u64>,
+    /// The height this device had reached when it started over, if
+    /// it still keeps the blobs the group referred to then.
+    held_over: Option<u64>,
     /// The secret this device wants replaced: the one brought in by
     /// the checkpoint at this height. Once another is in force, it's
     /// done.
@@ -170,6 +175,7 @@ struct Meta {
     mending: bool,
     keys: Keyring,
     carrying: Option<u64>,
+    held_over: Option<u64>,
     renewing: Option<u64>,
     skipping: Option<u64>,
     /// How many kinds of model the library had when this was saved.
@@ -188,6 +194,9 @@ pub(crate) enum Wrote {
     /// It can't read the clock, so it doesn't know what it would be
     /// writing on top of.
     Unreadable,
+    /// It refers to a blob with a reference made for the other kind
+    /// of group: a sealed one in an open group, or the reverse.
+    Misplaced,
 }
 
 /// What one device hands another so it can hold a group.
@@ -258,6 +267,7 @@ impl Group {
             mending: false,
             keys,
             carrying: None,
+            held_over: None,
             renewing: None,
             skipping: None,
             spoke: crate::model::vocabulary(),
@@ -325,6 +335,7 @@ impl Group {
         group.mending = meta.mending;
         group.keys = meta.keys;
         group.carrying = meta.carrying;
+        group.held_over = meta.held_over;
         group.renewing = meta.renewing;
         group.skipping = meta.skipping;
         group.spoke = meta.spoke;
@@ -477,6 +488,7 @@ impl Group {
             mending: self.mending,
             keys: self.keys.clone(),
             carrying: self.carrying,
+            held_over: self.held_over,
             renewing: self.renewing,
             skipping: self.skipping,
             spoke: crate::model::vocabulary(),
@@ -528,6 +540,15 @@ impl Group {
         if !may || self.proofs.contains_key(&me) {
             return Ok(Wrote::NotAllowed);
         }
+        let sealed = self.is_sealed();
+        let fits = |operation: &Operation| {
+            let blobs = operation.blobs();
+
+            blobs.iter().all(|blob| blob.is_sealed() == sealed)
+        };
+        if !operations.iter().all(fits) {
+            return Ok(Wrote::Misplaced);
+        }
         let Some(seq) = self.clock(clock).write(identity, &tip, operations, step) else {
             return Ok(Wrote::Unreadable);
         };
@@ -578,6 +599,10 @@ impl Group {
         only: Option<ClockId>,
         step: &mut Step<V>,
     ) -> Result<(), StoreError> {
+        // A device that can't read sheds by being handed state.
+        if self.carries() {
+            return self.skip(identity, step).await;
+        }
         self.compact(only);
 
         self.progress(identity, None, step).await
@@ -666,12 +691,19 @@ impl Group {
         self.look_back(step).await?;
         self.bury(step);
         let caught_up = self.folded == self.chain.tip().height;
+        let reached = if self.carries() {
+            self.carrying.unwrap_or(0)
+        } else {
+            self.folded
+        };
         if self
             .skipping
-            .is_some_and(|from| self.folded > from && caught_up)
+            .is_some_and(|from| reached > from && caught_up)
         {
             self.skipping = None;
         }
+
+        self.hand_back(step);
 
         self.clocks
             .retain(|_, clock| !clock.is_empty() || clock.is_unswept());

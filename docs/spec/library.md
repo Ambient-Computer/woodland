@@ -49,7 +49,7 @@ Woodland is a library with a deterministic core. The application owns the proces
 
 ## Time
 
-- Time is used only to wait: between attempts at a checkpoint, and before retrying a peer.
+- Time is used only to wait: between attempts at a checkpoint, and before retrying a peer or a [fetch](blobs.md).
 - Time never orders data, breaks a tie, or decides validity.
 - A device with a wrong clock is slow or impatient, never incorrect.
 

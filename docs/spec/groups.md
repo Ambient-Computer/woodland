@@ -16,6 +16,7 @@ A group is a set of [contributors](peers.md) and everything they agree on: who t
 - A [transaction](transactions.md) belongs to exactly one clock and may change any of that clock's models.
 - Clocks in a group are causally independent. Nothing in one waits on, or is ordered against, anything in another until a checkpoint covers both.
 - A peer that subscribes to a clock holds all of it; a peer that does not holds none of it.
+- [Blobs](blobs.md) are the exception. A peer holds every blob reference in a clock, and chooses which bytes.
 - Data that different devices need in different amounts belongs in different clocks.
 - Creating a clock is writing to it; it needs no agreement. Which contributors may write to it is a matter of [role](peers.md).
 

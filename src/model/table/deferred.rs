@@ -71,6 +71,18 @@ pub(crate) enum Each {
 }
 
 impl Deferred {
+    /// The blobs it writes references to, in whichever rows it turns
+    /// out to change.
+    pub(crate) fn blobs(&self) -> Vec<crate::blob::BlobRef> {
+        match self {
+            Self::Each {
+                change: Each::Set(cells),
+                ..
+            } => super::blobs_in(cells),
+            _ => Vec::new(),
+        }
+    }
+
     /// Whether a table takes it: only whole numbers count rows.
     pub(crate) fn belongs(&self) -> bool {
         match self {

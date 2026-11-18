@@ -391,6 +391,27 @@ impl<V: View> Step<V> {
         Ok(())
     }
 
+    /// What this step has written so far, or taken away, under the
+    /// keys that start with `prefix` and that `wanted` picks out.
+    pub(crate) fn written(
+        &self,
+        prefix: &[u8],
+        wanted: impl Fn(&[u8]) -> bool,
+    ) -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
+        let (start, end) = keys::range(prefix.to_vec());
+        let written = self.pending.range(start..end);
+
+        written
+            .filter(|(key, _)| wanted(key))
+            .map(|(key, write)| (key.clone(), write.clone()))
+            .collect()
+    }
+
+    /// What the store held under `key` before this step.
+    pub(crate) async fn was(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        self.view.get(key).await
+    }
+
     /// The step's writes as one batch, and what to let out once it's
     /// durable.
     pub(crate) fn finish(self) -> Finished {

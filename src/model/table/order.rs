@@ -62,6 +62,13 @@ pub(crate) fn ordered(value: &Value) -> Vec<u8> {
         Value::Text(text) => escape(text.as_bytes()),
         Value::Boolean(flag) => vec![u8::from(*flag)],
         Value::Bytes(bytes) => escape(bytes),
+        // No blob comes before another. This only has to tell them
+        // apart, in as many bytes for each.
+        Value::Blob(blob) => {
+            let listed = blob.listed();
+
+            [&listed.name[..], &listed.length.to_be_bytes()].concat()
+        }
     }
 }
 
@@ -71,6 +78,7 @@ pub(crate) fn after(column: ColumnId, bytes: &[u8]) -> Option<&[u8]> {
         Type::Integer | Type::Real => bytes.get(8..),
         Type::Boolean => bytes.get(1..),
         Type::Text | Type::Bytes => unescape(bytes).map(|(_, rest)| rest),
+        Type::Blob => bytes.get(40..),
     }
 }
 

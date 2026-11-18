@@ -17,6 +17,8 @@
 //! [GROUP][group][TRIAL][model][key…]            → what a transaction being tried would leave
 //! [GROUP][group][AHEAD][the rest of a key…]     → what a checkpoint not yet decided would leave
 //! [GROUP][group][BEFORE][the rest of a key…]    → what the key held before a checkpoint that's partly in place
+//! [GROUP][group][HELD_OVER]                    → the blobs kept while the group is sent again
+//! [BLOBS]…                                      → blobs, which no group owns: see `blob::keys`
 //! ```
 //!
 //! A model's ID starts with its clock's, so everything a clock owns is
@@ -69,6 +71,7 @@ const INDEX: u8 = 9;
 const INDEXED: u8 = 10;
 const INDEXES: u8 = 11;
 const BEFORE: u8 = 12;
+const HELD_OVER: u8 = 13;
 
 const CHAIN: u8 = 1;
 const META: u8 = 2;
@@ -237,6 +240,67 @@ pub(crate) fn log(id: GroupId, clock: ClockId, author: Peer, seq: u64) -> Vec<u8
     [logs(id), clock, author, seq.to_be_bytes().to_vec()].concat()
 }
 
+/// Something a group holds that can refer to a blob.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Referrer {
+    /// An entry, whatever became of it.
+    Entry,
+    /// A committed value.
+    Value { model: ModelId, key: Vec<u8> },
+    /// A committed value kept while what replaces it is put in place.
+    Kept { model: ModelId, key: Vec<u8> },
+    /// What an entry that isn't committed wrote.
+    Version { model: ModelId, key: Vec<u8> },
+    /// A piece of committed state this device can't read.
+    Carried,
+    /// What referred to blobs before the group was started over.
+    HeldOver,
+}
+
+/// What `key` holds, if it's something that can refer to a blob, and
+/// the group that holds it.
+pub(crate) fn referrer(key: &[u8]) -> Option<(GroupId, Referrer)> {
+    let (&space, rest) = key.split_first()?;
+    let (group, rest) = take_id(rest)?;
+    let group = GroupId::from_bytes(group);
+    if space != GROUP {
+        return None;
+    }
+
+    let value = |rest: &[u8]| {
+        let (model, key) = rest.split_first_chunk::<64>()?;
+
+        Some((ModelId::from_bytes(*model), key.to_vec()))
+    };
+    let referrer = match rest {
+        [PROTOCOL, LOG, ..] => Referrer::Entry,
+        [COMMITTED, rest @ ..] => {
+            let (model, key) = value(rest)?;
+
+            Referrer::Value { model, key }
+        }
+        [BEFORE, COMMITTED, rest @ ..] => {
+            let (model, key) = value(rest)?;
+
+            Referrer::Kept { model, key }
+        }
+        [UNCOMMITTED, ..] => match parse(key)? {
+            Record::Version { model, key, .. } => Referrer::Version { model, key },
+            _ => return None,
+        },
+        [SEALED, ..] => Referrer::Carried,
+        [HELD_OVER] => Referrer::HeldOver,
+        _ => return None,
+    };
+
+    Some((group, referrer))
+}
+
+/// Every group's keys.
+pub(crate) fn groups() -> Vec<u8> {
+    vec![GROUP]
+}
+
 /// Every key that starts with `prefix`, as a key range. A prefix may
 /// end in `0xFF`, as one that ends in an ID will one time in 256: the
 /// range then ends at the first key past the bytes before it.
@@ -317,6 +381,12 @@ pub(crate) fn trial_value(id: GroupId, model: ModelId, key: &[u8]) -> Vec<u8> {
 /// under the rest of the key it would write it to.
 pub(crate) fn ahead(id: GroupId) -> Vec<u8> {
     [group(id), vec![AHEAD]].concat()
+}
+
+/// The blobs a group referred to when it was started over, kept
+/// until it has been sent again.
+pub(crate) fn held_over(id: GroupId) -> Vec<u8> {
+    [group(id), vec![HELD_OVER]].concat()
 }
 
 /// A snapshot of a sealed group, as a device that can't read it

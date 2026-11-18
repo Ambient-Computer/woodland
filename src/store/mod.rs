@@ -110,6 +110,25 @@ pub trait Store {
 
     /// The store as it is now, to read from.
     fn view(&self) -> Self::View;
+
+    /// About how many bytes the store holds that it has freed and
+    /// not given back to the device. A delete frees space for the
+    /// store to use again, and needn't shrink it. A store that has
+    /// no way to tell says none.
+    ///
+    /// # Errors
+    ///
+    /// If the store can't be read.
+    fn unreturned(&self) -> impl Future<Output = Result<u64, StoreError>>;
+
+    /// Gives back what was freed, as far as the store can. It may
+    /// take as long as rewriting everything the store holds, and
+    /// nothing else is done with the store meanwhile.
+    ///
+    /// # Errors
+    ///
+    /// If the store fails. Nothing it held is lost.
+    fn reclaim(&mut self) -> impl Future<Output = Result<(), StoreError>>;
 }
 
 /// A store at one moment.

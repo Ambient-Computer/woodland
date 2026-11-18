@@ -4,6 +4,8 @@
 //! asks to send, in an order the test controls, and nothing else moves.
 
 mod allowances;
+#[cfg(feature = "blobs")]
+mod blobs;
 mod checkpoints;
 mod clocks;
 mod compaction;
@@ -53,6 +55,13 @@ struct Sim {
     devices: Vec<Database<MemoryStore>>,
     /// Messages on their way: from, to, bytes.
     queue: VecDeque<(usize, usize, Vec<u8>)>,
+    /// What's on its way about blobs, apart from the rest: from, to,
+    /// and the bytes once they've been taken.
+    #[cfg(feature = "blobs")]
+    blobs: VecDeque<(usize, usize, Option<Vec<u8>>)>,
+    /// How many parts of blobs each device has been sent.
+    #[cfg(feature = "blobs")]
+    parts: Vec<usize>,
     links: BTreeSet<(usize, usize)>,
     changes: Vec<Vec<Changed>>,
     /// What a committed read of each group last showed on each device,
@@ -86,13 +95,31 @@ fn secret(device: usize) -> [u8; 32] {
     [u8::try_from(device + 1).expect("a handful of devices"); 32]
 }
 
+/// A device with nothing in its store. It fetches no blob unasked,
+/// unless a test says otherwise.
+fn fresh(device: usize) -> Database<MemoryStore> {
+    let opened = block_on(Database::open(MemoryStore::default(), secret(device)));
+    #[cfg_attr(
+        not(feature = "blobs"),
+        expect(unused_mut, reason = "a policy is only said with the feature")
+    )]
+    let mut database = opened.expect("memory doesn't fail");
+    #[cfg(feature = "blobs")]
+    drop(block_on(database.set_blob_policy(crate::BlobPolicy::None)).expect("said"));
+
+    database
+}
+
 impl Sim {
     fn new(devices: usize) -> Self {
-        let open = |device| block_on(Database::open(MemoryStore::default(), secret(device)));
-        let devices: Result<Vec<_>, Error> = (0..devices).map(open).collect();
+        let devices: Vec<_> = (0..devices).map(fresh).collect();
 
         Self {
-            devices: devices.expect("memory doesn't fail"),
+            #[cfg(feature = "blobs")]
+            blobs: VecDeque::new(),
+            #[cfg(feature = "blobs")]
+            parts: vec![0; devices.len()],
+            devices,
             queue: VecDeque::new(),
             links: BTreeSet::new(),
             changes: vec![Vec::new(); 8],
@@ -184,6 +211,57 @@ impl Sim {
                 self.queue.push_back((device, to, message));
             }
         }
+        #[cfg(feature = "blobs")]
+        for to in outputs.blobs {
+            let to = self.index(to);
+            let waiting = (device, to, None);
+            if self.linked(device, to) && !self.blobs.contains(&waiting) {
+                self.blobs.push_back(waiting);
+            }
+        }
+    }
+
+    /// Carries the next thing said about blobs: has whoever has
+    /// something to say take it, or delivers what was taken. Returns
+    /// whether there was anything.
+    #[cfg(feature = "blobs")]
+    fn carry(&mut self) -> bool {
+        let Some((from, to, taken)) = self.blobs.pop_front() else {
+            return false;
+        };
+        if !self.linked(from, to) {
+            return true;
+        }
+
+        match taken {
+            None => {
+                let peer = self.id(to);
+                self.wake(from);
+                let next = block_on(self.devices[from].next_blob_message(peer)).expect("taken");
+                if let Some(message) = next {
+                    self.blobs.push_back((from, to, Some(message)));
+                    self.blobs.push_back((from, to, None));
+                }
+            }
+            Some(message) => {
+                let peer = self.id(from);
+                self.wake(to);
+                let part = crate::encoding::decode::<crate::blob::fetch::Message>(&message);
+                if let Some(crate::blob::fetch::Message::Have { .. }) = part {
+                    self.parts[to] += 1;
+                }
+                let received = block_on(self.devices[to].receive_blob(peer, &message));
+                self.absorb(to, received.expect("received"));
+            }
+        }
+
+        true
+    }
+
+    #[cfg(not(feature = "blobs"))]
+    #[expect(clippy::unused_self, reason = "there's nothing to carry without blobs")]
+    fn carry(&mut self) -> bool {
+        false
     }
 
     fn linked(&self, a: usize, b: usize) -> bool {
@@ -298,7 +376,7 @@ impl Sim {
     /// Delivers everything, and everything that follows from it.
     fn run(&mut self) {
         let mut delivered = 0;
-        while self.deliver() || self.resume() {
+        while self.deliver() || self.resume() || self.carry() {
             delivered += 1;
             assert!(delivered < 100_000, "the devices never stop talking");
         }
@@ -307,9 +385,7 @@ impl Sim {
     /// Has the first device with something left to do carry on with
     /// it. Returns whether there was one.
     fn resume(&mut self) -> bool {
-        let busy = |device: &Database<MemoryStore>| {
-            device.groups.values().any(super::group::Group::is_busy)
-        };
+        let busy = Database::is_unfinished;
         let Some(device) = self.devices.iter().position(busy) else {
             return false;
         };
@@ -336,12 +412,64 @@ impl Sim {
             }
             self.run();
         }
+        self.check_blobs();
+    }
+
+    /// Holds every device to this: what refers to each blob is what
+    /// going through everything it holds again would come to.
+    fn check_blobs(&self) {
+        for (device, database) in self.devices.iter().enumerate() {
+            let view = database.store.view();
+            let (counted, kept) = block_on(crate::blob::tally::recount(&view)).expect("scanned");
+
+            assert_eq!(kept, counted, "device {device}");
+        }
     }
 
     fn write_to(&mut self, device: usize, group: GroupId, transaction: Transaction) {
         self.wake(device);
         let outputs = block_on(self.devices[device].write(group, transaction));
         self.absorb(device, outputs.expect("written"));
+    }
+
+    /// Brings `bytes` in on a device, a few at a time, and says what
+    /// to refer to them by.
+    #[cfg(feature = "blobs")]
+    fn import(&mut self, device: usize, bytes: &[u8]) -> crate::BlobRef {
+        let begun = block_on(self.devices[device].begin_import());
+
+        self.import_from(device, begun.expect("begun"), bytes)
+    }
+
+    /// Brings `bytes` in on a device for sealed groups.
+    #[cfg(feature = "blobs")]
+    fn import_sealed(&mut self, device: usize, bytes: &[u8], randomness: u8) -> crate::BlobRef {
+        let begun = block_on(self.devices[device].begin_sealed_import([randomness; 32]));
+
+        self.import_from(device, begun.expect("begun"), bytes)
+    }
+
+    #[cfg(feature = "blobs")]
+    fn import_from(
+        &mut self,
+        device: usize,
+        (id, outputs): (crate::ImportId, Outputs),
+        bytes: &[u8],
+    ) -> crate::BlobRef {
+        self.absorb(device, outputs);
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            let next = &rest[..rest.len().min(100_000)];
+            let imported = block_on(self.devices[device].import(id, next));
+            let (taken, outputs) = imported.expect("imported");
+            self.absorb(device, outputs);
+            rest = &rest[taken..];
+        }
+
+        let (blob, outputs) = block_on(self.devices[device].finish_import(id)).expect("finished");
+        self.absorb(device, outputs);
+
+        blob
     }
 
     /// Writes to the group most tests are about.
@@ -455,8 +583,7 @@ impl Sim {
     fn rejoin(&mut self, device: usize, group: GroupId, inviter: usize) {
         self.isolate(device);
         let invitation = self.devices[inviter].invite(group).expect("held");
-        let reopened = block_on(Database::open(MemoryStore::default(), secret(device)));
-        self.devices[device] = reopened.expect("opened");
+        self.devices[device] = fresh(device);
         let (_, outputs) = block_on(self.devices[device].join(&invitation)).expect("joined");
         self.absorb(device, outputs);
     }

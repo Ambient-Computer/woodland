@@ -29,9 +29,13 @@ jobs:
             ${{ runner.os }}-cargo-
       - run: treefmt --ci
       - run: cargo clippy --all-targets --all-features --quiet
+      # Every feature is optional, so the library is checked without any.
+      - run: cargo clippy --all-targets --quiet
       # The browser's store only compiles for WebAssembly. The library's own
       # tests don't: they lean on processes and folders.
       - run: cargo clippy --target wasm32-unknown-unknown --features browser --lib --test browser --quiet
+      - run: cargo clippy --target wasm32-unknown-unknown --features browser,blobs --lib --test browser --quiet
       - run: cargo nextest run --all-features --show-progress=none --status-level=fail --cargo-quiet
       # The browser's store, in headless Firefox.
       - run: cargo test --target wasm32-unknown-unknown --features browser --test browser
+      - run: cargo test --target wasm32-unknown-unknown --features browser,blobs --test browser

@@ -30,6 +30,15 @@ impl MemoryStore {
 }
 
 impl Store for MemoryStore {
+    /// Memory is given back as it's freed.
+    fn unreturned(&self) -> impl Future<Output = Result<u64, StoreError>> {
+        ready(Ok(0))
+    }
+
+    fn reclaim(&mut self) -> impl Future<Output = Result<(), StoreError>> {
+        ready(Ok(()))
+    }
+
     type View = MemoryView;
 
     fn apply(&mut self, batch: Vec<Write>) -> impl Future<Output = Result<(), StoreError>> {

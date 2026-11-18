@@ -20,6 +20,8 @@ fn main() -> Result<(), Error> {
     // The secret is the device's signing key. It's made once, and
     // kept in the store from then on: the store is the device.
     let mut phone = block_on(Database::open(MemoryStore::new(), [1; 32]))?;
+    #[cfg(feature = "blobs")]
+    drop(block_on(phone.set_blob_policy(woodland::BlobPolicy::None))?);
 
     // Every call that changes anything is one step: one atomic batch
     // to the store, and then what the application should do about it.

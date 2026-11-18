@@ -45,6 +45,7 @@ Woodland is a replicated relational database for small groups of devices that ar
 - [commit operations](commit-operations.md): operations that take effect only when final.
 - [migrations](migrations.md): changing a schema while old devices keep writing.
 - [models](models.md): kinds of data other than tables.
+- [blobs](blobs.md): large bytes that values refer to, and who holds them.
 - [compaction](compaction.md): shedding history, snapshots, and provable restore.
 - [sync](sync.md): what two peers exchange, and what is checked on arrival.
 - [confidentiality](confidentiality.md): sealed groups, secrets, and what removal guarantees.

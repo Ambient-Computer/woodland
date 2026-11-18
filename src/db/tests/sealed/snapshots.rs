@@ -104,7 +104,8 @@ fn what_is_written_after_a_carried_snapshot_is_carried_too() {
     );
 }
 
-/// It has no state to stand in for the history, so it keeps that.
+/// It has no state to stand in for the history, so it keeps that
+/// until it's handed some. Compacting asks.
 #[test]
 fn a_device_that_cant_read_sheds_nothing_on_its_own() {
     let (mut sim, group) = sealed();
@@ -155,6 +156,7 @@ fn a_reader_refuses_state_that_isnt_sealed_under_the_groups_secret() {
         sealed: Some(SealedPiece {
             body: vec![7; 200],
             last: true,
+            blobs: Vec::new(),
         }),
     };
     offer(&mut sim, NAS, FRIEND, group, junk);

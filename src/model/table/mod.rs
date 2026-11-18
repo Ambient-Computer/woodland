@@ -182,7 +182,36 @@ pub use value::{ColumnId, Value};
 
 use super::{Fingerprint, Requirement};
 use crate::actor::Peer;
+use crate::blob::BlobRef;
 use crate::encoding;
+
+/// The blobs some cells are references to.
+pub(crate) fn blobs_in(cells: &[(ColumnId, Value)]) -> Vec<BlobRef> {
+    let blob = |(_, value): &(ColumnId, Value)| match value {
+        Value::Blob(blob) => Some(*blob),
+        _ => None,
+    };
+
+    cells.iter().filter_map(blob).collect()
+}
+
+/// Whether a table's key is a cell of a column of blobs.
+pub(crate) fn may_refer(key: &[u8]) -> bool {
+    matches!(Place::parse(key), Some(Place::Cell(_, _, column)) if column.holds_blobs())
+}
+
+/// The blob a table's key holds a reference to, if it's a cell of a
+/// column of them.
+pub(crate) fn blob_under(key: &[u8], value: &[u8]) -> Option<BlobRef> {
+    if !may_refer(key) {
+        return None;
+    }
+
+    match encoding::decode::<Value>(value)? {
+        Value::Blob(blob) => Some(blob),
+        _ => None,
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Operation {
@@ -256,6 +285,14 @@ impl Operation {
             | Self::Refer { .. }
             | Self::Retire { .. }
             | Self::Restore { .. } => true,
+        }
+    }
+
+    /// The blobs it writes references to.
+    pub(crate) fn blobs(&self) -> Vec<BlobRef> {
+        match self {
+            Self::Insert { cells, .. } | Self::Set { cells, .. } => blobs_in(cells),
+            _ => Vec::new(),
         }
     }
 

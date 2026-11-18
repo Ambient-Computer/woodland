@@ -119,7 +119,10 @@ impl Group {
         identity: &Identity,
         step: &mut Step<V>,
     ) -> Result<(), StoreError> {
-        self.skipping = Some(self.folded);
+        // A device that can't read has state only as far as it was
+        // last handed any, however far it has followed the chain.
+        let carried = self.carrying.unwrap_or(0);
+        self.skipping = Some(if self.carries() { carried } else { self.folded });
         self.progress(identity, None, step).await?;
         let peers: Vec<_> = self.remotes.keys().copied().collect();
         for peer in peers {
@@ -243,7 +246,11 @@ impl Group {
     ) -> Result<(), StoreError> {
         // A group that carries on from another starts from state, which
         // is the one snapshot of a checkpoint this device is already at.
-        let news = piece.height > self.folded || self.is_unfounded();
+        // A device that can't read asks for the state of where it has
+        // got to, to hold in place of the entries that led there.
+        let wanted = self.carries() && self.skipping.is_some();
+        let newer = piece.height > self.carrying.unwrap_or(0) && piece.height >= self.folded;
+        let news = piece.height > self.folded || self.is_unfounded() || (wanted && newer);
         if !news || self.installing.is_some() || self.pinned.is_some() {
             return Ok(());
         }

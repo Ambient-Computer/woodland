@@ -9,6 +9,8 @@ use crate::chain::Electorate;
 use crate::db::group::Sealing;
 use crate::seal::Secret;
 
+#[cfg(feature = "blobs")]
+mod blobs;
 mod rotation;
 mod snapshots;
 

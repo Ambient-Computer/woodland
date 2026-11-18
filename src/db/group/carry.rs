@@ -7,12 +7,14 @@
 //! on. It can't tell whether they're the state the checkpoint names,
 //! and doesn't need to: whoever it passes them to can.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::db::keys;
+use crate::blob::Listed;
+use crate::db::{ClockId, keys};
 use crate::encoding;
+use crate::model::{self, ModelId};
 use crate::store::{StoreError, View};
 
 use super::super::message::{Piece, SealedPiece};
@@ -38,6 +40,19 @@ pub(super) enum Unsealed {
 struct Kept {
     upto: Option<Vec<u8>>,
     sealed: SealedPiece,
+}
+
+/// The blobs a kept piece says its values refer to, and the clock
+/// each is in.
+fn blobs_of(kept: &[u8]) -> Vec<(ClockId, Listed)> {
+    let kept = encoding::decode::<Kept>(kept);
+
+    kept.map(|kept| kept.sealed.blobs).unwrap_or_default()
+}
+
+/// The blobs a kept piece says its values refer to.
+pub(crate) fn listed(kept: &[u8]) -> Vec<Listed> {
+    blobs_of(kept).into_iter().map(|(_, blob)| blob).collect()
 }
 
 /// What a piece's contents are sealed about: the snapshot it's part
@@ -71,9 +86,17 @@ impl Group {
         let upto = piece.upto.as_ref();
         let upto = upto.map(|key| secret.seal(&about_cursor(piece.height), key));
         let body = encoding::encode(&(&piece.values, &piece.end));
+        let listed = |(key, value): &(Vec<u8>, Vec<u8>)| {
+            let (model, rest) = key.split_first_chunk::<64>()?;
+            let model = ModelId::from_bytes(*model);
+            let blob = model::blob_under(model, rest, value)?;
+
+            Some((model.clock(), blob.listed()))
+        };
         let sealed = SealedPiece {
             body: secret.seal(&about_piece(&piece), &body),
             last: piece.end.is_some(),
+            blobs: piece.values.iter().filter_map(listed).collect(),
         };
 
         Some(Piece {
@@ -162,13 +185,37 @@ impl Group {
             return self.unstage(step).await;
         };
 
+        // The pieces can't be checked, but what they say they refer
+        // to can. Entries are about to be let go on the strength of
+        // it, and the blobs they listed with them.
+        let prefix = keys::staged(self.id);
+        let (start, end) = keys::range(prefix.clone());
+        let staged = step.scan(&start, &end).await?;
+        let mut listed: BTreeMap<ClockId, Vec<Listed>> = BTreeMap::new();
+        for (clock, blob) in staged.iter().flat_map(|(_, piece)| blobs_of(piece)) {
+            listed.entry(clock).or_default().push(blob);
+        }
+        let named = |(id, blobs): (&ClockId, &Vec<Listed>)| {
+            let covered = covers.clocks.get(id);
+
+            covered.is_some_and(|covered| covered.state.lists(blobs))
+        };
+        let nothing = Vec::new();
+        let wanted = covers.clocks.keys().filter(|id| self.wants(**id));
+        let whole = wanted
+            .map(|id| (id, listed.get(id).unwrap_or(&nothing)))
+            .all(named);
+        if !whole || !listed.iter().all(named) {
+            tracing::warn!(group = ?self.id, height = staging.height, "refused a snapshot whose blobs aren't the checkpoint's");
+
+            return self.unstage(step).await;
+        }
+
         let (start, end) = keys::range(keys::sealed(self.id));
         for (key, _) in step.scan(&start, &end).await? {
             step.delete(key);
         }
-        let prefix = keys::staged(self.id);
-        let (start, end) = keys::range(prefix.clone());
-        for (key, value) in step.scan(&start, &end).await? {
+        for (key, value) in staged {
             step.put(
                 [&keys::sealed(self.id)[..], &key[prefix.len()..]].concat(),
                 value,

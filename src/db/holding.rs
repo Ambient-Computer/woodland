@@ -11,6 +11,42 @@ use crate::store::Store;
 use super::{Changed, ClockId, Database, Error, GroupId, Outputs, group, keys};
 
 impl<S: Store> Database<S> {
+    /// About how many bytes the store holds that it has freed and
+    /// not given back to the device. Deleting, [compacting], and
+    /// letting blobs go free space for the store to use again, and
+    /// needn't shrink it: [`reclaim`] does.
+    ///
+    /// A store that can't tell says none. The browser's is one.
+    ///
+    /// [compacting]: Self::compact
+    /// [`reclaim`]: Self::reclaim
+    ///
+    /// # Errors
+    ///
+    /// If the store fails.
+    pub async fn unreturned(&self) -> Result<u64, Error> {
+        Ok(self.store.unreturned().await?)
+    }
+
+    /// Gives back to the device what the store has freed. It may
+    /// take as long as rewriting everything the store holds, so
+    /// it's for when the device is idle and [`unreturned`] says
+    /// there's enough to be worth it.
+    ///
+    /// [`unreturned`]: Self::unreturned
+    ///
+    /// # Errors
+    ///
+    /// If the store fails. Nothing is lost, and the database carries
+    /// on as it was.
+    pub async fn reclaim(&mut self) -> Result<(), Error> {
+        if self.broken {
+            return Err(Error::Broken);
+        }
+
+        Ok(self.store.reclaim().await?)
+    }
+
     /// Sheds the history of `group` that's committed, keeping committed
     /// state and whatever isn't committed yet. Nothing reads differently
     /// afterwards. A peer that needs what was shed is sent the state
@@ -21,10 +57,19 @@ impl<S: Store> Database<S> {
     ///
     /// # Errors
     ///
-    /// If this device doesn't hold `group`, or the store fails.
+    /// If this device doesn't hold `group`, or the store fails. If it
+    /// read `group` once and can't any longer, [`Error::ShutOut`]: it
+    /// sheds nothing until it [forgets] the group or [relinquishes]
+    /// what it could read.
+    ///
+    /// [forgets]: Self::forget
+    /// [relinquishes]: Self::relinquish
     pub async fn compact(&mut self, group: GroupId) -> Result<Outputs, Error> {
         let mut step = self.begin()?;
         let held = self.groups.get_mut(&group).ok_or(Error::UnknownGroup)?;
+        if held.is_shut_out() {
+            return Err(Error::ShutOut);
+        }
         let shed = held.shed(&self.identity, None, &mut step).await;
         self.guard(shed)?;
 
@@ -40,7 +85,8 @@ impl<S: Store> Database<S> {
     ///
     /// # Errors
     ///
-    /// If this device doesn't hold `group`, or the store fails.
+    /// If this device doesn't hold `group`, or the store fails, or
+    /// as [`compact`] fails for a group it can no longer read.
     pub async fn compact_clock(
         &mut self,
         group: GroupId,
@@ -48,6 +94,9 @@ impl<S: Store> Database<S> {
     ) -> Result<Outputs, Error> {
         let mut step = self.begin()?;
         let held = self.groups.get_mut(&group).ok_or(Error::UnknownGroup)?;
+        if held.is_shut_out() {
+            return Err(Error::ShutOut);
+        }
         let shed = held.shed(&self.identity, Some(clock), &mut step).await;
         self.guard(shed)?;
 
@@ -168,6 +217,49 @@ impl<S: Store> Database<S> {
         let held = self.groups.get_mut(&group).ok_or(Error::UnknownGroup)?;
         let asked = held.ask(Peer::from(peer), clocks, &mut step).await;
         self.guard(asked)?;
+
+        self.finish(step).await
+    }
+
+    /// Whether this device read `group` once and can't any longer:
+    /// it was removed from a sealed group, or the secret was replaced
+    /// and it hasn't been given the new one. What it reads is as the
+    /// group was then, and it can't [compact].
+    ///
+    /// A device left like this chooses: [`forget`] the group, or
+    /// [`relinquish`] what it could read and stay to carry it.
+    /// [`Changed::Members`] says when to look.
+    ///
+    /// [compact]: Self::compact
+    /// [`forget`]: Self::forget
+    /// [`relinquish`]: Self::relinquish
+    #[must_use]
+    pub fn is_shut_out(&self, group: GroupId) -> bool {
+        self.groups
+            .get(&group)
+            .is_some_and(group::Group::is_shut_out)
+    }
+
+    /// Gives up everything this device could read of a sealed `group`
+    /// it can no longer read, and the secrets it read it with. It
+    /// stays in the group as a device that never could read it: it
+    /// is sent the group again, and carries it for others.
+    ///
+    /// Nothing gets the secrets back but the group naming this device
+    /// to read again.
+    ///
+    /// # Errors
+    ///
+    /// If this device doesn't hold `group` or still reads it, or the
+    /// store fails.
+    pub async fn relinquish(&mut self, group: GroupId) -> Result<Outputs, Error> {
+        let mut step = self.begin()?;
+        let held = self.groups.get_mut(&group).ok_or(Error::UnknownGroup)?;
+        if !held.is_shut_out() {
+            return Err(Error::StillReads);
+        }
+        let given = held.relinquish(&self.identity, &mut step).await;
+        self.guard(given)?;
 
         self.finish(step).await
     }

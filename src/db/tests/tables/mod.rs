@@ -1,6 +1,8 @@
 //! Tables: schema and rows in the same timeline, held together by what
 //! each transaction requires.
 
+#[cfg(feature = "blobs")]
+pub(super) mod blobs;
 mod compound;
 mod indexes;
 mod long;

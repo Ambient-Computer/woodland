@@ -5,6 +5,7 @@ A model is one kind of data inside a [clock](groups.md): a namespace of keys and
 ## Contract
 
 - A model declares, for each operation, what it writes and what it [requires](transactions.md).
+- A model declares which values it writes are [blob references](blobs.md).
 - Everything else follows from the [timeline](log.md) without the model's involvement: who wins, what is pruned, what is final, what is [compacted](compaction.md).
 - No layer beneath a model interprets its values.
 - A model knows nothing of peers, quorums, or checkpoints.
@@ -23,6 +24,7 @@ A model is one kind of data inside a [clock](groups.md): a namespace of keys and
 - A map where the last write to a key is what is read.
 - A map where the first write to a key holds it: names, locks, anything exactly one writer should get.
 - A map of ordered lists, a [merging kind](#merging-kinds): items are inserted, removed, and moved.
+- A [blob reference](blobs.md) is written only as a [table's](tables.md) cell, in a column of them. Where one may be is then known from the column alone.
 - Any map may be restricted to [committed reads](reads.md). Readers then never see a value that could be displaced.
 
 ## Merging kinds

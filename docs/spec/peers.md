@@ -31,6 +31,7 @@ A peer is a device, identified by a signing key. What a peer may do is decided p
 ## Observers
 
 - Any number of peers may observe a group; the group does not know or track them.
+- A peer that is [removed](membership.md) is an observer from then on, for as long as it stays.
 - An observer verifies everything it is able to read, so data relayed by an observer is as good as data from its author.
 - An observer chooses how much history to keep. One that keeps all of it is an archive; see [compaction](compaction.md).
 - An observer of an open group reads everything. An observer of a sealed group is a relay: it carries what it cannot read.
