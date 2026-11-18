@@ -2,7 +2,7 @@
 //!
 //! A blob's bytes are kept in pieces of a few groups each, under a
 //! number the store gives it. Beside them are the hashes of its
-//! groups, and of its pages of groups: see [`hash`](super::hash).
+//! groups, and of its pages of groups: see [`hash`].
 //!
 //! Everything here does a bounded amount per step, however long the
 //! blob is.

@@ -17,6 +17,7 @@
 //! [GROUP][group][TRIAL][model][key…]            → what a transaction being tried would leave
 //! [GROUP][group][AHEAD][the rest of a key…]     → what a checkpoint not yet decided would leave
 //! [GROUP][group][BEFORE][the rest of a key…]    → what the key held before a checkpoint that's partly in place
+//! [GROUP][group][HELD_OVER]                    → the blobs kept while the group is sent again
 //! [BLOBS]…                                      → blobs, which no group owns: see `blob::keys`
 //! ```
 //!
@@ -70,6 +71,7 @@ const INDEX: u8 = 9;
 const INDEXED: u8 = 10;
 const INDEXES: u8 = 11;
 const BEFORE: u8 = 12;
+const HELD_OVER: u8 = 13;
 
 const CHAIN: u8 = 1;
 const META: u8 = 2;
@@ -251,6 +253,8 @@ pub(crate) enum Referrer {
     Version { model: ModelId, key: Vec<u8> },
     /// A piece of committed state this device can't read.
     Carried,
+    /// What referred to blobs before the group was started over.
+    HeldOver,
 }
 
 /// What `key` holds, if it's something that can refer to a blob, and
@@ -285,6 +289,7 @@ pub(crate) fn referrer(key: &[u8]) -> Option<(GroupId, Referrer)> {
             _ => return None,
         },
         [SEALED, ..] => Referrer::Carried,
+        [HELD_OVER] => Referrer::HeldOver,
         _ => return None,
     };
 
@@ -376,6 +381,12 @@ pub(crate) fn trial_value(id: GroupId, model: ModelId, key: &[u8]) -> Vec<u8> {
 /// under the rest of the key it would write it to.
 pub(crate) fn ahead(id: GroupId) -> Vec<u8> {
     [group(id), vec![AHEAD]].concat()
+}
+
+/// The blobs a group referred to when it was started over, kept
+/// until it has been sent again.
+pub(crate) fn held_over(id: GroupId) -> Vec<u8> {
+    [group(id), vec![HELD_OVER]].concat()
 }
 
 /// A snapshot of a sealed group, as a device that can't read it

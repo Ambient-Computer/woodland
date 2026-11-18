@@ -296,6 +296,19 @@ pub(crate) fn combine(model: ModelId, held: Option<&[u8]>, write: &[u8]) -> Vec<
 /// The blob that what `key` of `model` holds is a reference to, if
 /// it's one. It's the model that says, so that nothing beneath it
 /// reads values.
+///
+/// Only a table's cell is one. Before another kind holds references,
+/// or a table gains an operation that writes one, mind what happens
+/// on a device that can't read the entry: one with an older library,
+/// or without a kind the application [added]. It counts the entry's
+/// blobs by its list. Once a checkpoint covers the entry unread, the
+/// clock's state there is behind until the device catches up with
+/// the library, and compacting sheds the entry with nothing that
+/// refers to those blobs in its place. Today that takes a
+/// transaction that writes a reference alongside something the
+/// device can't read. `docs/context/rationale.md` has more.
+///
+/// [added]: crate::extend
 pub(crate) fn blob_under(model: ModelId, key: &[u8], value: &[u8]) -> Option<BlobRef> {
     match model.kind()? {
         Kind::Table => table::blob_under(key, value),

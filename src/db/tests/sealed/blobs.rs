@@ -391,10 +391,9 @@ fn a_reader_that_was_removed_gives_up_what_it_read_to_carry_the_group() {
 
     relinquish(&mut sim, FRIEND, group);
     sim.settle();
-    // It has every entry, so nobody hands it state unasked.
-    let outputs = block_on(sim.devices[FRIEND].skip_ahead(group)).expect("asked");
-    sim.absorb(FRIEND, outputs);
-    shed(&mut sim, group, "sunday");
+    assert!(sim.entries_kept(FRIEND, group) > 0);
+    sim.compact(FRIEND, group);
+    sim.settle();
 
     assert!(!sim.devices[FRIEND].is_shut_out(group));
     assert!(!sim.devices[FRIEND].reads(group));
@@ -452,4 +451,103 @@ fn only_a_device_that_can_no_longer_read_gives_anything_up() {
 
     assert!(matches!(reader, Err(Error::StillReads)), "{reader:?}");
     assert!(matches!(relay, Err(Error::StillReads)), "{relay:?}");
+}
+
+/// Starting over lets go of everything that referred to a blob, to
+/// be sent again. The bytes wait for that, however long it takes:
+/// this device may be the only one that has them.
+#[test]
+fn a_device_that_starts_over_keeps_its_blobs_until_it_has_caught_up() {
+    let (mut sim, group, before, after) = shut_out();
+    for device in [PHONE, LAPTOP, NAS, GUEST] {
+        policy(&mut sim, device, BlobPolicy::None);
+        release(&mut sim, device, &before);
+        release(&mut sim, device, &after);
+    }
+    sim.settle();
+
+    sim.isolate(FRIEND);
+    relinquish(&mut sim, FRIEND, group);
+    while sim.resume() {}
+    sim.restart(FRIEND);
+    while sim.resume() {}
+    assert_eq!(held(&sim, FRIEND, &before), 200_000);
+    assert_eq!(held(&sim, FRIEND, &after), 300_000);
+
+    assert!(holds_over(&sim, FRIEND, group));
+
+    sim.connect_all();
+    sim.settle();
+    assert!(!holds_over(&sim, FRIEND, group));
+    assert_eq!(held(&sim, FRIEND, &before), 200_000);
+    assert_eq!(held(&sim, FRIEND, &after), 300_000);
+}
+
+/// Whether the device still keeps blobs for what the group referred
+/// to before it started over.
+fn holds_over(sim: &Sim, device: usize, group: GroupId) -> bool {
+    let view = sim.devices[device].store.view();
+    let kept = block_on(crate::store::View::get(&view, &keys::held_over(group))).expect("read");
+
+    kept.is_some()
+}
+
+/// Once the group has been sent again, what refers to a blob is what
+/// came back. A blob the group stopped referring to meanwhile goes.
+#[test]
+fn a_blob_nothing_refers_to_once_the_group_is_back_is_let_go() {
+    let (mut sim, group, before, after) = shut_out();
+    sim.isolate(FRIEND);
+    relinquish(&mut sim, FRIEND, group);
+    while sim.resume() {}
+
+    let found = Table::read(&sim.reader(PHONE).read(&Query::table(group, table(group))));
+    let rows: Vec<_> = found.iter().flat_map(Table::rows).cloned().collect();
+    for row in &rows {
+        sim.write_to(
+            PHONE,
+            group,
+            Transaction::new().delete_row(table(group), row),
+        );
+    }
+    sim.settle();
+    shed(&mut sim, group, "sunday");
+    assert_eq!(held(&sim, FRIEND, &before), 200_000);
+    assert_eq!(held(&sim, FRIEND, &after), 300_000);
+
+    sim.connect_all();
+    sim.settle();
+
+    assert!(!holds_over(&sim, FRIEND, group));
+    assert_eq!(held(&sim, FRIEND, &before), 0);
+    assert_eq!(held(&sim, FRIEND, &after), 0);
+}
+
+/// A device that can't read has every entry, and nobody hands it
+/// state unasked. Compacting is how it asks: it sheds what the state
+/// stands in for, and keeps the blobs the state lists.
+#[test]
+fn a_device_that_cant_read_compacts_by_asking_for_state() {
+    let (mut sim, group, blob) = pictured(200_000);
+    assert!(sim.entries_kept(GUEST, group) > 0);
+    let height = sim.devices[PHONE].groups[&group].folded();
+
+    sim.compact(GUEST, group);
+    sim.settle();
+
+    assert_eq!(sim.entries_kept(GUEST, group), 0);
+    assert_eq!(sim.devices[GUEST].groups[&group].folded(), height);
+    assert_eq!(held(&sim, GUEST, &blob), 200_000);
+    assert!(!stores_anywhere(&sim, GUEST));
+
+    // It carries on as before, and passes on what it was handed.
+    sim.write_to(PHONE, group, set(notes(group), "plan", "sunday"));
+    sim.settle();
+    assert_eq!(sim.entries_kept(GUEST, group), 1);
+    sim.rejoin(FRIEND, group, GUEST);
+    policy(&mut sim, FRIEND, BlobPolicy::All);
+    sim.isolate(FRIEND);
+    sim.connect(FRIEND, GUEST);
+    sim.settle();
+    assert_eq!(held(&sim, FRIEND, &blob), 200_000);
 }

@@ -547,6 +547,7 @@ impl Group {
 
     /// Forgets everything but the chain, so that it's all sent again.
     pub(super) async fn relearn<V: View>(&mut self, step: &mut Step<V>) -> Result<(), StoreError> {
+        self.hold_over(step).await?;
         let clocks: Vec<ClockId> = self.clocks.keys().copied().collect();
         let mut ranges = vec![
             keys::committed(self.id),

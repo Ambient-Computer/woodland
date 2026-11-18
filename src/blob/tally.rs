@@ -7,6 +7,10 @@
 //! pruned transaction may be revived, so its entry counts for as long
 //! as it's held.
 //!
+//! A group that starts over lets go of all of those, to be sent them
+//! again. What they referred to is listed and counts until it has
+//! been: see `db/group/holdover.rs`.
+//!
 //! Nothing that writes those says so. Everything a step writes goes
 //! through the step, so at its end the step's writes are compared with
 //! what the store held before, and the counts follow. Nothing can
@@ -57,6 +61,7 @@ fn referred(referrer: &Referrer, stored: Option<&[u8]>) -> Vec<Listed> {
             blob.iter().map(super::BlobRef::listed).collect()
         }
         Referrer::Carried => crate::db::carried(stored),
+        Referrer::HeldOver => encoding::decode(stored).unwrap_or_default(),
         Referrer::Kept { model, key } | Referrer::Version { model, key } => {
             let kept = encoding::decode::<Option<Vec<u8>>>(stored).flatten();
             let blob = kept.and_then(|value| model::blob_under(*model, key, &value));
@@ -70,7 +75,7 @@ fn referred(referrer: &Referrer, stored: Option<&[u8]>) -> Vec<Listed> {
 /// alone. It saves reading what most keys held before.
 fn could_refer(referrer: &Referrer) -> bool {
     match referrer {
-        Referrer::Entry | Referrer::Carried => true,
+        Referrer::Entry | Referrer::Carried | Referrer::HeldOver => true,
         Referrer::Value { model, key }
         | Referrer::Kept { model, key }
         | Referrer::Version { model, key } => model::may_refer(*model, key),

@@ -31,6 +31,7 @@ A blob is bytes too large or too opaque to be a value. A [transaction](transacti
 - A value [kept](library.md) while a checkpoint or snapshot is put in place counts until it is discarded.
 - When nothing refers to a blob any longer, its bytes are deleted, across [steps](library.md). After a committed deletion, that is when [compaction](compaction.md) sheds the entries that referred to it.
 - A blob that is referred to again while its bytes are being deleted is a blob held in part. Deleting stops, and what is left is kept.
+- A peer that lets go of everything it holds of a group, to be sent it again, keeps the blobs the group referred to until it holds again all that some peer does. What came back refers to them from then on.
 - What refers to each blob is a derived structure, kept current as entries arrive and are let go, and as committed state changes.
 - The core never lets go of the bytes of a blob that is referred to, unasked. An application may let go of any, and the reference remains.
 - A blob the application let go of is fetched again only when it asks, for as long as anything refers to it.

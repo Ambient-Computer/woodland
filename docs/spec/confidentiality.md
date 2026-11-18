@@ -15,6 +15,7 @@ A sealed [group](groups.md) encrypts what its contributors write, so that peers 
 - A peer without keys therefore verifies every signature, link, and checkpoint, and relays a sealed group as faithfully as an open one.
 - Committed state travels encrypted. A peer without keys cannot check it against a checkpoint, and does not need to in order to carry it.
 - A peer without keys keeps committed state as it was handed it, and the history since. It sheds history only when handed newer state.
+- [Compacting](compaction.md) is how such a peer asks for that state: of the checkpoint it has reached, from any peer that can read it or carries it.
 - The state root in a checkpoint commits to contents without revealing them, even contents that are easy to guess. It does not change when keys do.
 - [Blobs](blobs.md) are sealed apart from entries, by rules of their own.
 

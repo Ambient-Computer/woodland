@@ -10,6 +10,7 @@ mod deferred;
 mod foreign;
 mod forks;
 mod history;
+mod holdover;
 mod indexes;
 mod interest;
 mod job;
@@ -138,6 +139,9 @@ pub(crate) struct Group {
     /// The height of the sealed snapshot this device keeps without
     /// being able to read it.
     carrying: Option<u64>,
+    /// The height this device had reached when it started over, if
+    /// it still keeps the blobs the group referred to then.
+    held_over: Option<u64>,
     /// The secret this device wants replaced: the one brought in by
     /// the checkpoint at this height. Once another is in force, it's
     /// done.
@@ -171,6 +175,7 @@ struct Meta {
     mending: bool,
     keys: Keyring,
     carrying: Option<u64>,
+    held_over: Option<u64>,
     renewing: Option<u64>,
     skipping: Option<u64>,
     /// How many kinds of model the library had when this was saved.
@@ -262,6 +267,7 @@ impl Group {
             mending: false,
             keys,
             carrying: None,
+            held_over: None,
             renewing: None,
             skipping: None,
             spoke: crate::model::vocabulary(),
@@ -329,6 +335,7 @@ impl Group {
         group.mending = meta.mending;
         group.keys = meta.keys;
         group.carrying = meta.carrying;
+        group.held_over = meta.held_over;
         group.renewing = meta.renewing;
         group.skipping = meta.skipping;
         group.spoke = meta.spoke;
@@ -481,6 +488,7 @@ impl Group {
             mending: self.mending,
             keys: self.keys.clone(),
             carrying: self.carrying,
+            held_over: self.held_over,
             renewing: self.renewing,
             skipping: self.skipping,
             spoke: crate::model::vocabulary(),
@@ -591,6 +599,10 @@ impl Group {
         only: Option<ClockId>,
         step: &mut Step<V>,
     ) -> Result<(), StoreError> {
+        // A device that can't read sheds by being handed state.
+        if self.carries() {
+            return self.skip(identity, step).await;
+        }
         self.compact(only);
 
         self.progress(identity, None, step).await
@@ -679,12 +691,19 @@ impl Group {
         self.look_back(step).await?;
         self.bury(step);
         let caught_up = self.folded == self.chain.tip().height;
+        let reached = if self.carries() {
+            self.carrying.unwrap_or(0)
+        } else {
+            self.folded
+        };
         if self
             .skipping
-            .is_some_and(|from| self.folded > from && caught_up)
+            .is_some_and(|from| reached > from && caught_up)
         {
             self.skipping = None;
         }
+
+        self.hand_back(step);
 
         self.clocks
             .retain(|_, clock| !clock.is_empty() || clock.is_unswept());

@@ -62,6 +62,22 @@ pub(crate) fn refs(group: GroupId, listed: Listed) -> Vec<u8> {
     [&[BLOBS, REFS][..], group.as_bytes(), &blob(listed)].concat()
 }
 
+/// Every blob `group` refers to.
+pub(crate) fn refs_of(group: GroupId) -> Vec<u8> {
+    [&[BLOBS, REFS][..], group.as_bytes()].concat()
+}
+
+/// The blob a key ends with.
+pub(crate) fn listed_of(key: &[u8]) -> Option<Listed> {
+    let (rest, length) = key.split_last_chunk::<8>()?;
+    let (_, name) = rest.split_last_chunk::<32>()?;
+
+    Some(Listed {
+        name: *name,
+        length: u64::from_be_bytes(*length),
+    })
+}
+
 /// Every group that refers to `listed`.
 pub(crate) fn referrers(listed: Listed) -> Vec<u8> {
     [&[BLOBS, BY][..], &blob(listed)].concat()

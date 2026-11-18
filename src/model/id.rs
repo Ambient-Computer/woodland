@@ -99,6 +99,8 @@ impl ModelId {
 
     /// A model of a kind the application added with [`extend`], by the
     /// number it was added under. `None` if the number is 64 or more.
+    ///
+    /// [`extend`]: crate::extend
     #[must_use]
     pub fn of_kind(number: u8, clock: impl Into<ClockId>, nonce: [u8; 32]) -> Option<Self> {
         let clock = clock.into();

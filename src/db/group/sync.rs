@@ -76,6 +76,21 @@ pub(super) struct Remote {
 }
 
 impl Remote {
+    /// The height it has reached and the last entry of each chain it
+    /// holds, once it has said, if it holds every clock `wanted`.
+    pub(super) fn holds(
+        &self,
+        wanted: Option<&BTreeSet<ClockId>>,
+    ) -> Option<(u64, &BTreeMap<ClockId, Frontier>)> {
+        let all = match (&self.interest, wanted) {
+            (None, _) => true,
+            (Some(_), None) => false,
+            (Some(theirs), Some(wanted)) => wanted.is_subset(theirs),
+        };
+
+        (self.heard && all).then_some((self.height, &self.said))
+    }
+
     fn sent(&mut self, clock: ClockId, author: Peer, link: Link) {
         let sent = self.sent.entry(clock).or_default();
         if reach(sent, author) <= link.seq {
@@ -488,9 +503,18 @@ impl Group {
     }
 
     fn summary(&self) -> Summary {
+        // A device that can't read and has asked for state says how
+        // far the state it holds goes, which is what it's behind in.
+        let asking = self.carries() && self.skipping.is_some();
+        let folded = if asking {
+            self.carrying.unwrap_or(0)
+        } else {
+            self.folded
+        };
+
         Summary {
             height: self.chain.tip().height,
-            folded: self.folded,
+            folded,
             gap: self.gap() || self.skipping.is_some(),
             unfounded: self.is_unfounded(),
             staged: self.staging.as_ref().map(|it| (it.height, it.upto.clone())),

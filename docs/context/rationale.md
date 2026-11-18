@@ -113,6 +113,15 @@ The spec states decisions without their history. This page keeps the history: wh
 - A random key in the reference costs nothing when secrets change, and leaves copying a reference as the way two groups share one blob.
 - The hash is taken over the encrypted bytes so that a peer without keys can check and serve them. Since the reference is signed and names that hash, the encryption needs no check of its own, and any range can be read without the rest.
 
+## Why only a table holds blob references
+
+- Decided in November 2026. A table's column says what its cells are, so where a reference may be is known from a key, and a peer counts references without reading other values.
+- A map's value and a list's item are bytes the application chose. Telling a reference from data there means changing how every such value is stored and what state roots commit to.
+- Nothing asked for them. A reference always comes with something to say about it, and that is what columns are for.
+- A danger to weigh before adding another place: a peer that cannot read an entry counts its blobs by the entry's list. If a checkpoint covers that entry unread, the peer's state is behind, and compacting sheds the entry and with it the only thing there that referred to those blobs.
+- In a sealed group that peer is told to leave or to carry, and in either case nothing is dropped unchecked. In an open group there is no such rule: the peer is one with an older library or without a kind the application added, and it is put right only when it catches up.
+- With references only in tables, that takes a transaction that writes a reference together with something the peer cannot read. Each new kind that holds references, and each new way a table writes one, is another way in.
+
 ## Why a blob carries no metadata
 
 - A header inside the bytes changes the name. The same file with another header is another blob, and a device must fetch part of a blob to learn what it is.
