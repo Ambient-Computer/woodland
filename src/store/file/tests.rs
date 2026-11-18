@@ -114,7 +114,7 @@ fn the_process_that_gets_killed() {
     let Some(folder) = std::env::var_os(VICTIM) else {
         return;
     };
-    let folder = std::path::PathBuf::from(folder);
+    let folder = PathBuf::from(folder);
     let mut store = FileStore::open(folder.join("store")).expect("opened");
     let last = get(&store.view(), &[0]).and_then(|it| number(&it));
     for batch in last.map_or(1, |last| last + 1)..=u64::MAX {
@@ -171,4 +171,37 @@ fn a_store_killed_mid_batch_holds_whole_batches() {
         );
         reached = first;
     }
+}
+
+/// Deleting leaves the file as long as it was, and says so. Asked to,
+/// the store gives the space back.
+#[test]
+fn what_was_freed_is_given_back_when_asked() {
+    let folder = folder();
+    let mut store = open(&folder, "store");
+    let length = || {
+        std::fs::metadata(folder.path().join("store"))
+            .expect("a file")
+            .len()
+    };
+    let keys: Vec<Vec<u8>> = (0..40u8).map(|index| vec![b'k', index]).collect();
+    for key in &keys {
+        apply(&mut store, vec![put(key, &vec![7; 112 * 1024])]);
+    }
+    apply(&mut store, vec![put(b"kept", b"1")]);
+    let full = length();
+    assert!(full > 4_000_000, "{full}");
+
+    for key in &keys {
+        apply(&mut store, vec![delete(key)]);
+    }
+    let freed = block_on(store.unreturned()).expect("counted");
+    assert_eq!(length(), full, "it never shrinks by itself");
+    assert!(freed > 4_000_000, "{freed}");
+
+    block_on(store.reclaim()).expect("reclaimed");
+
+    assert!(length() < full / 4, "{}", length());
+    assert!(block_on(store.unreturned()).expect("counted") < freed / 4);
+    assert_eq!(get(&store.view(), b"kept"), Some(b"1".to_vec()));
 }

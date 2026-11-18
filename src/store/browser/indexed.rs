@@ -221,6 +221,17 @@ impl BrowserStore {
 impl Store for BrowserStore {
     type View = BrowserView;
 
+    /// The browser doesn't say what its database has freed, and
+    /// gives it back when it sees fit: there's nothing to tell and
+    /// nothing to ask for.
+    fn unreturned(&self) -> impl Future<Output = Result<u64, StoreError>> {
+        std::future::ready(Ok(0))
+    }
+
+    fn reclaim(&mut self) -> impl Future<Output = Result<(), StoreError>> {
+        std::future::ready(Ok(()))
+    }
+
     async fn apply(&mut self, batch: Vec<Write>) -> Result<(), StoreError> {
         let transaction = self.writing().map_err(|it| failed(&it))?;
         let replaced = match self.ask(&transaction, &batch) {

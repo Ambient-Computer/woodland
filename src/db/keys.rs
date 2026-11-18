@@ -247,6 +247,10 @@ pub(crate) enum Referrer {
     Value { model: ModelId, key: Vec<u8> },
     /// A committed value kept while what replaces it is put in place.
     Kept { model: ModelId, key: Vec<u8> },
+    /// What an entry that isn't committed wrote.
+    Version { model: ModelId, key: Vec<u8> },
+    /// A piece of committed state this device can't read.
+    Carried,
 }
 
 /// What `key` holds, if it's something that can refer to a blob, and
@@ -276,6 +280,11 @@ pub(crate) fn referrer(key: &[u8]) -> Option<(GroupId, Referrer)> {
 
             Referrer::Kept { model, key }
         }
+        [UNCOMMITTED, ..] => match parse(key)? {
+            Record::Version { model, key, .. } => Referrer::Version { model, key },
+            _ => return None,
+        },
+        [SEALED, ..] => Referrer::Carried,
         _ => return None,
     };
 

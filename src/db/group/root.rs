@@ -71,8 +71,6 @@ impl Root {
     /// Whether `listed` is every blob the state refers to, each as
     /// many times as it does. It's all a device that can't read the
     /// state can check of it.
-    // Nothing takes a list on trust until relays count blobs.
-    #[cfg_attr(not(test), expect(dead_code, reason = "used once relays go by lists"))]
     pub(crate) fn lists(&self, listed: &[Listed]) -> bool {
         let mut sum = vec![0; LANES];
         for blob in listed {

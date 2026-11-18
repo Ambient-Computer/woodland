@@ -40,6 +40,7 @@ use super::message::Request;
 use super::proof::Proof;
 use super::step::Step;
 use ahead::Foresight;
+pub(crate) use carry::listed as carried;
 use clock::{Clock, Kept};
 use compact::{Installing, Staging};
 pub(crate) use interest::Refused;

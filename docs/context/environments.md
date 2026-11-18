@@ -78,9 +78,9 @@ Woodland runs inside other people's programs, on other people's devices. This pa
 - Its store is an actor on a runtime of its own, with a database and files beside ours. That is a second store to keep in step, on devices we cannot repair.
 - Its collector deleted blobs still in use until two fixes that month, and stops for good after one failed run. Both were open or newly closed issues at the time.
 - It has no store that persists in a browser, no encryption, and by default serves a blob to anyone who knows its hash.
-- What is taken from it is the format the [spec](../spec/blobs.md) names, through the `bao-tree` crate. Keeping its 16 KiB leaves an open blob's name the one `iroh-blobs` gives it.
-- `bao-tree` 0.17 was built for `wasm32-unknown-unknown` with no default features, November 2026. It brought about two dozen crates and no runtime.
-- `bao-tree` has not reached 1.0. The hash is BLAKE3's and stable; the crate's interface is not, and the version is pinned.
+- What is taken from it is the format the [spec](../spec/blobs.md) names. Keeping its 16 KiB leaves an open blob's name the one `iroh-blobs` gives it.
+- The `bao-tree` crate was to supply the tree, and was built for `wasm32-unknown-unknown` at 0.17. It is not used: it has not reached 1.0, and brought about two dozen crates.
+- The `blake3` crate's own `hazmat` module hashes a subtree at an offset and joins two, which is all the tree needs. It was already a dependency.
 - A sealed blob is named by the hash of its encrypted bytes, so a stock `iroh-blobs` node cannot be handed one by the name its readers know.
 - Its collections were looked at for directories: a blob listing child hashes, with a second blob of names. Their documentation says the format may change, and it holds names only.
 
@@ -97,7 +97,9 @@ Woodland runs inside other people's programs, on other people's devices. This pa
 - At 256 MiB its slowest 4 MiB batch took 1.4 to 1.8 seconds, and deleting took ten. The page is not blocked, but the core does nothing else in that time.
 - A value of 496 KiB took 32 ms to read back in the browser, against 2 ms at 112 KiB.
 - Values of 112 KiB, seven verified groups, were the best size measured on both. Batches smaller than 4 MiB were not measured in the browser.
-- Not tried: redb's own compaction, which is what would return freed space to the device, or anything of the kind in a browser.
+- redb's own compaction returned the space: a file of 4.5 MiB with everything deleted shrank below a quarter, in a test that runs with the rest. Large stores were not timed.
+- redb's cache is capped at 64 MiB by default since. That figure was chosen, not measured.
+- Not tried: anything that returns freed space in a browser. IndexedDB offers no call for it and does not say what it has freed.
 - Not measured: tens of gigabytes anywhere, and whether a browser's strict durability reaches as far for large values.
 - Not tried: keeping pieces in the browser as its own `Blob` objects, which it stores as files and reads a slice at a time. They might read faster. Safari has a history of losing them, and whether strict durability covers them is not known.
 

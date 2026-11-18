@@ -155,6 +155,7 @@ fn a_reader_refuses_state_that_isnt_sealed_under_the_groups_secret() {
         sealed: Some(SealedPiece {
             body: vec![7; 200],
             last: true,
+            blobs: Vec::new(),
         }),
     };
     offer(&mut sim, NAS, FRIEND, group, junk);

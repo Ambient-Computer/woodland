@@ -81,7 +81,10 @@ pub(crate) async fn note<V: View>(
         Some(Record::Committed { model, key, .. } | Record::Version { model, key, .. }) => {
             model::may_refer(model, &key)
         }
-        _ => matches!(held::referrer(key), Some((_, Referrer::Entry))),
+        _ => matches!(
+            held::referrer(key),
+            Some((_, Referrer::Entry | Referrer::Carried))
+        ),
     };
     let mut noted = false;
     for (stored, value) in step.written(&held::groups(), wanted) {
@@ -109,15 +112,20 @@ pub(crate) async fn note<V: View>(
                 }
             }
             _ => {
-                let Some((group, Referrer::Entry)) = held::referrer(&stored) else {
-                    continue;
+                let (group, listed) = match held::referrer(&stored) {
+                    Some((group, Referrer::Entry)) => {
+                        let entry = encoding::decode::<Entry>(&value);
+
+                        (group, entry.map(|it| it.blobs).unwrap_or_default())
+                    }
+                    Some((group, Referrer::Carried)) => (group, crate::db::carried(&value)),
+                    _ => continue,
                 };
                 if reads(group) {
                     continue;
                 }
 
-                let entry = encoding::decode::<Entry>(&value);
-                for blob in entry.map(|it| it.blobs).unwrap_or_default() {
+                for blob in listed {
                     noted |= consider(step, blob, keys::want_listed(blob, group)).await?;
                 }
             }

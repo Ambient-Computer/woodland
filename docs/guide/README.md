@@ -81,12 +81,28 @@ How the library is meant to be used by an application. Rustdoc has the signature
 - `Table::rules` lists the rules in force, and `Filter::tests` says what a filter asks. A rule is judged at commit, so check a row against them before writing it.
 - `add_index` keeps a local index of one or more table columns. It's this device's own and fills over several steps; `has_index` says when it's complete.
 
+## Blobs
+
+- Feature `blobs`. Without it a device still carries references and counts them; it keeps no bytes, and none of what follows exists.
+- A blob is bytes too large to be a value. A table cell holds a `BlobRef`: a name, a length, and in a sealed group a key. The bytes are held apart, by the devices that choose to.
+- A reference describes nothing. A file's name, type, and folder are columns beside it, and a directory is a table.
+- `set_blob_policy` says which blobs this device fetches unasked: `All`, `UpTo(bytes)`, or `None`. There is no default, and `found` and `join` fail until it's said. `set_model_blob_policy` says otherwise for one model.
+- To write one: `begin_import` (`begin_sealed_import` with 32 random bytes, for a sealed group), `import` the bytes in order, at most `BLOB_STEP` a call, then `finish_import` gives the reference to write. `imports` lists what's unfinished or finished and unwritten after a restart; `abandon_import` drops one. Nothing else lets go of them.
+- A device writes only references to blobs it holds whole. To pass on one it was sent, fetch it first.
+- `blob_held` says how many bytes of a blob are here, and `Changed::Blob` when that changes. `read_blob` reads a range, or says it isn't held. Treat every blob as possibly absent: nothing promises anyone has it.
+- `fetch_blob` asks for one the policy leaves out. `release_blob` lets its bytes go and keeps the reference.
+- Blob bytes travel apart from everything else. When `Outputs::blobs` names a peer, call `next_blob_message(peer)` for one bounded message, send it, and call again once it has gone. Hand what arrives to `receive_blob`. Give these a stream of their own and a large blob never delays sync.
+- Bytes go when nothing refers to them: after a committed delete, that is when `compact` sheds the history that did.
+- A group that wants its blobs kept needs a device whose policy is `All`. It need not be able to read them.
+
 ## Upkeep
 
 - `compact(group)` sheds committed history and keeps committed state. Reads don't change. A device that never compacts is an archive.
 - `skip_ahead(group)` has a device that's far behind take committed state instead of history.
 - `restore(group, clock)` gets shed history back from an archive.
 - `replace_secret(group)` asks a sealed group for a new secret, for one that may have leaked.
+- `unreturned()` says about how much space the store has freed and still holds; `reclaim()` gives it back. Deleting never shrinks a `FileStore`'s file by itself. `reclaim` can take as long as rewriting the store, and fails while a view of it is held: call it when idle.
+- `FileStore::open_with_cache` sets how much of the file is kept in memory. `open` allows 64 MiB.
 - `succeed(old, seed)` founds a new group from the committed state of one that has lost its quorum for good. That is a decision for people.
 
 ## What to expect

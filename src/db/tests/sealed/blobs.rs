@@ -3,6 +3,8 @@
 
 use super::super::tables::blobs::{create_with_pictures, insert_with, picture};
 use super::*;
+use crate::db::message::Message;
+use crate::encoding;
 use crate::model::{Table, Value};
 use crate::{BlobPolicy, BlobRef};
 
@@ -188,4 +190,98 @@ fn a_blob_outlives_the_secret_it_was_written_under() {
         pictures.collect::<Vec<_>>(),
         [Value::Blob(blob), Value::Blob(blob)]
     );
+}
+
+/// The readers write something more and shed all their history, so
+/// that whoever is behind is handed state.
+fn shed(sim: &mut Sim, group: GroupId, note: &str) {
+    sim.write_to(PHONE, group, set(notes(group), "plan", note));
+    sim.settle();
+    for device in [PHONE, LAPTOP] {
+        sim.compact(device, group);
+    }
+}
+
+/// State a device can't read says which blobs it refers to, and
+/// that's what the device goes by.
+#[test]
+fn a_device_handed_state_it_cant_read_fetches_the_blobs_it_lists() {
+    let (mut sim, group, blob) = pictured(200_000);
+    shed(&mut sim, group, "sunday");
+    sim.rejoin(NAS, group, PHONE);
+    policy(&mut sim, NAS, BlobPolicy::All);
+    sim.connect(NAS, PHONE);
+    sim.settle();
+
+    assert_eq!(sim.entries_kept(NAS, group), 0, "it was handed state");
+    assert_eq!(held(&sim, NAS, &blob), 200_000);
+}
+
+/// The entries that listed a blob go when newer state arrives. The
+/// state lists it too, so the bytes stay: and go when it doesn't.
+#[test]
+fn a_device_that_cant_read_keeps_a_blob_for_as_long_as_the_state_lists_it() {
+    let (mut sim, group, blob) = pictured(200_000);
+    sim.isolate(GUEST);
+    shed(&mut sim, group, "sunday");
+    sim.connect(GUEST, PHONE);
+    sim.settle();
+    assert_eq!(sim.entries_kept(GUEST, group), 0, "it was handed state");
+    assert_eq!(held(&sim, GUEST, &blob), 200_000);
+
+    sim.isolate(GUEST);
+    let found = Table::read(&sim.reader(PHONE).read(&Query::table(group, table(group))));
+    let row = found
+        .iter()
+        .flat_map(Table::rows)
+        .next()
+        .expect("a row")
+        .clone();
+    sim.write_to(
+        PHONE,
+        group,
+        Transaction::new().delete_row(table(group), &row),
+    );
+    sim.settle();
+    shed(&mut sim, group, "monday");
+    sim.connect(GUEST, PHONE);
+    sim.settle();
+
+    assert_eq!(held(&sim, GUEST, &blob), 0);
+}
+
+/// A device that can't read is never told what to drop by whoever
+/// hands it state: the list is checked against the checkpoint.
+#[test]
+fn state_that_lists_other_blobs_than_the_checkpoints_is_refused() {
+    let (mut sim, group, blob) = pictured(200_000);
+    sim.isolate(GUEST);
+    shed(&mut sim, group, "sunday");
+    let behind = sim.devices[GUEST].groups[&group].folded();
+    sim.connect(GUEST, PHONE);
+
+    // Whatever state is on its way to the guest says it refers to
+    // nothing.
+    let guest = GUEST;
+    loop {
+        for (_, to, bytes) in &mut sim.queue {
+            let Some(mut message) = encoding::decode::<Message>(bytes) else {
+                continue;
+            };
+            let sealed = message
+                .snapshot
+                .as_mut()
+                .and_then(|piece| piece.sealed.as_mut());
+            if let (true, Some(sealed)) = (*to == guest, sealed) {
+                sealed.blobs.clear();
+                *bytes = encoding::encode(&message);
+            }
+        }
+        if !(sim.deliver() || sim.resume() || sim.carry()) {
+            break;
+        }
+    }
+
+    assert_eq!(sim.devices[GUEST].groups[&group].folded(), behind);
+    assert_eq!(held(&sim, GUEST, &blob), 200_000, "nothing was let go");
 }

@@ -1,18 +1,21 @@
 //! Counting what refers to each blob.
 //!
-//! Three things a group holds can refer to a blob: a committed value,
-//! a committed value kept while what replaces it is put in place, and
-//! an entry, whatever became of it. A pruned transaction may be
-//! revived, so its entry counts for as long as it's held.
+//! These things a group holds can refer to a blob: a committed value,
+//! a committed value kept while what replaces it is put in place,
+//! what an entry that isn't committed wrote, an entry whatever became
+//! of it, and a piece of committed state the device can't read. A
+//! pruned transaction may be revived, so its entry counts for as long
+//! as it's held.
 //!
 //! Nothing that writes those says so. Everything a step writes goes
 //! through the step, so at its end the step's writes are compared with
 //! what the store held before, and the counts follow. Nothing can
 //! write a reference and forget to count it.
 //!
-//! An entry is counted by the list it comes with, by every device,
-//! readable or not. A committed value is counted by what it is, which
-//! only a device that can read it knows.
+//! An entry is counted by the list it comes with, and so is a piece
+//! of state that can't be read. A value is counted by what it is,
+//! which only a device that can read it knows: so a device that
+//! reads counts what it reads, whatever the list said.
 //!
 //! The counts are derived: dropped, they're what going through
 //! everything held again comes to.
@@ -53,7 +56,8 @@ fn referred(referrer: &Referrer, stored: Option<&[u8]>) -> Vec<Listed> {
 
             blob.iter().map(super::BlobRef::listed).collect()
         }
-        Referrer::Kept { model, key } => {
+        Referrer::Carried => crate::db::carried(stored),
+        Referrer::Kept { model, key } | Referrer::Version { model, key } => {
             let kept = encoding::decode::<Option<Vec<u8>>>(stored).flatten();
             let blob = kept.and_then(|value| model::blob_under(*model, key, &value));
 
@@ -66,10 +70,10 @@ fn referred(referrer: &Referrer, stored: Option<&[u8]>) -> Vec<Listed> {
 /// alone. It saves reading what most keys held before.
 fn could_refer(referrer: &Referrer) -> bool {
     match referrer {
-        Referrer::Entry => true,
-        Referrer::Value { model, key } | Referrer::Kept { model, key } => {
-            model::may_refer(*model, key)
-        }
+        Referrer::Entry | Referrer::Carried => true,
+        Referrer::Value { model, key }
+        | Referrer::Kept { model, key }
+        | Referrer::Version { model, key } => model::may_refer(*model, key),
     }
 }
 

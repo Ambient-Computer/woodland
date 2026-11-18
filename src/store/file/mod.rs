@@ -12,7 +12,7 @@
 //! short, and the core does nothing else while it waits anyway.
 
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use redb::{Database, ReadOnlyTable, ReadableDatabase, TableDefinition};
@@ -26,7 +26,16 @@ type Table = ReadOnlyTable<&'static [u8], &'static [u8]>;
 
 pub struct FileStore {
     database: Database,
+    path: PathBuf,
 }
+
+/// How much of the file is kept in memory, at most. The store is
+/// read a little at a time, on devices with little to spare.
+const CACHE: usize = 64 * 1024 * 1024;
+
+/// How many times the file is gone over to give space back. Each
+/// pass moves what it can towards the front.
+const PASSES: usize = 16;
 
 impl fmt::Debug for FileStore {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -57,14 +66,57 @@ impl FileStore {
     /// If the file can't be opened or isn't a store, or another store
     /// has it open.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
-        let database = Database::create(path).map_err(failed)?;
+        Self::open_with_cache(path, CACHE)
+    }
+
+    /// Opens the store as [`open`] does, keeping up to `cache` bytes
+    /// of the file in memory.
+    ///
+    /// [`open`]: Self::open
+    ///
+    /// # Errors
+    ///
+    /// If the file can't be opened or isn't a store, or another store
+    /// has it open.
+    pub fn open_with_cache(path: impl AsRef<Path>, cache: usize) -> Result<Self, StoreError> {
+        let path = path.as_ref().to_path_buf();
+        let mut builder = Database::builder();
+        builder.set_cache_size(cache);
+        let database = builder.create(&path).map_err(failed)?;
 
         // A view reads the table, so it has to be there from the start.
         let creating = database.begin_write().map_err(failed)?;
         creating.open_table(TABLE).map_err(failed)?;
         creating.commit().map_err(failed)?;
 
-        Ok(Self { database })
+        Ok(Self { database, path })
+    }
+
+    /// What the file holds that's in use, in bytes.
+    fn used(&self) -> Result<u64, StoreError> {
+        let writing = self.database.begin_write().map_err(failed)?;
+        let stats = writing.stats().map_err(failed)?;
+        writing.abort().map_err(failed)?;
+
+        Ok(stats.allocated_pages() * stats.page_size() as u64)
+    }
+
+    fn freed(&self) -> Result<u64, StoreError> {
+        let length = std::fs::metadata(&self.path);
+        let length = length.map_err(|error| StoreError::new(error.to_string()))?;
+
+        Ok(length.len().saturating_sub(self.used()?))
+    }
+
+    fn shrink(&mut self) -> Result<(), StoreError> {
+        for _ in 0..PASSES {
+            let moved = self.database.compact();
+            if !moved.map_err(|error| StoreError::new(error.to_string()))? {
+                break;
+            }
+        }
+
+        Ok(())
     }
 
     fn write(&self, batch: Vec<Write>) -> Result<(), StoreError> {
@@ -106,6 +158,18 @@ impl Store for FileStore {
 
     fn view(&self) -> FileView {
         FileView(self.read())
+    }
+
+    /// The file never shrinks by itself: what's freed is used again
+    /// by what's written next.
+    fn unreturned(&self) -> impl Future<Output = Result<u64, StoreError>> {
+        std::future::ready(self.freed())
+    }
+
+    /// Rewrites the file to be as small as what it holds. It fails
+    /// while a view of the store is still held.
+    fn reclaim(&mut self) -> impl Future<Output = Result<(), StoreError>> {
+        std::future::ready(self.shrink())
     }
 }
 

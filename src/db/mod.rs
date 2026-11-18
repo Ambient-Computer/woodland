@@ -53,6 +53,7 @@ pub use answer::{Answer, Found, Part, Reached};
 pub use blobs::{Import, ImportId};
 pub use changed::Changed;
 pub use configuration::{Configuration, Reconfigured};
+pub(crate) use group::carried;
 use group::{Group, Invitation, Wrote};
 pub use id::{ClockId, GroupId};
 use message::Message;

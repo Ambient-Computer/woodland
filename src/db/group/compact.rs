@@ -23,6 +23,7 @@ use super::super::message::Piece;
 use super::super::step::Step;
 use super::Group;
 use super::carry::Unsealed;
+use super::clock::Clock;
 use super::commit::{Covers, covers_of};
 use super::root::Accumulator;
 use super::succession::Origin;
@@ -93,8 +94,16 @@ impl Group {
         }
 
         let folded = self.folded;
+        // A clock with something committed that went unread has no
+        // state for it either. Its entries are all this device has
+        // of what they wrote, and of the blobs they refer to.
         let chosen = |id: &ClockId| only.is_none_or(|only| only == *id);
-        for (_, clock) in self.clocks.iter_mut().filter(|(id, _)| chosen(id)) {
+        let kept = |clock: &Clock| !clock.is_lost();
+        for (_, clock) in self
+            .clocks
+            .iter_mut()
+            .filter(|(id, clock)| chosen(id) && kept(clock))
+        {
             let committed = clock.history.committed.clone();
             clock.shed_through(&committed);
             clock.base = folded;

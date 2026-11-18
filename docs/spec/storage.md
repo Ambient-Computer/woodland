@@ -20,6 +20,7 @@ Storage is an ordered key-value store that the [core](library.md) reads and writ
 - An in-memory driver exists for tests and simulation, and is available to applications for theirs.
 - Owning the drivers is what lets the contract stay small: nothing has to be promised to code the library does not control.
 - A delete frees space for the store to use again, and need not return it to the device. Every driver says how much it holds freed and unreturned, and returns it when the application asks. No [step](library.md) runs meanwhile.
+- A driver whose platform hides what is freed says none and has nothing to return. The browser is one.
 
 ## What is not assumed
 

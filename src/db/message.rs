@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::actor::{Signable, Signed};
+use crate::blob::Listed;
 use crate::chain::{Certificate, Electorate, Gossip};
 use crate::db::{ClockId, GroupId};
 use crate::model::ModelId;
@@ -116,4 +117,9 @@ pub(crate) struct SealedPiece {
     pub(crate) body: Vec<u8>,
     /// Whether it's the last piece.
     pub(crate) last: bool,
+    /// The blobs its values refer to, and the clock each value is
+    /// in. It's all a device that can't read the piece knows of what
+    /// the state refers to, and it's checked against the checkpoint
+    /// once every piece is in.
+    pub(crate) blobs: Vec<(ClockId, Listed)>,
 }

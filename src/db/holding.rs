@@ -11,6 +11,42 @@ use crate::store::Store;
 use super::{Changed, ClockId, Database, Error, GroupId, Outputs, group, keys};
 
 impl<S: Store> Database<S> {
+    /// About how many bytes the store holds that it has freed and
+    /// not given back to the device. Deleting, [compacting], and
+    /// letting blobs go free space for the store to use again, and
+    /// needn't shrink it: [`reclaim`] does.
+    ///
+    /// A store that can't tell says none. The browser's is one.
+    ///
+    /// [compacting]: Self::compact
+    /// [`reclaim`]: Self::reclaim
+    ///
+    /// # Errors
+    ///
+    /// If the store fails.
+    pub async fn unreturned(&self) -> Result<u64, Error> {
+        Ok(self.store.unreturned().await?)
+    }
+
+    /// Gives back to the device what the store has freed. It may
+    /// take as long as rewriting everything the store holds, so
+    /// it's for when the device is idle and [`unreturned`] says
+    /// there's enough to be worth it.
+    ///
+    /// [`unreturned`]: Self::unreturned
+    ///
+    /// # Errors
+    ///
+    /// If the store fails. Nothing is lost, and the database carries
+    /// on as it was.
+    pub async fn reclaim(&mut self) -> Result<(), Error> {
+        if self.broken {
+            return Err(Error::Broken);
+        }
+
+        Ok(self.store.reclaim().await?)
+    }
+
     /// Sheds the history of `group` that's committed, keeping committed
     /// state and whatever isn't committed yet. Nothing reads differently
     /// afterwards. A peer that needs what was shed is sent the state
