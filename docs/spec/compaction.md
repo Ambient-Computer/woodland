@@ -17,10 +17,11 @@ Compaction is how a peer sheds history it no longer needs. It is safe at any tim
 - Superseded values and cleared keys. Nothing can arrive that sorts before a checkpoint, so nothing needs to be remembered to lose to.
 - Whatever a [merging model](models.md) kept only to merge with concurrency that can no longer arrive.
 - A committed deletion leaves nothing behind.
+- Whatever [blobs](blobs.md) only shed history referred to.
 
 ## Bounds
 
-- A peer's storage is bounded by committed state plus uncommitted history.
+- A peer's storage is bounded by committed state, uncommitted history, and the [blobs](blobs.md) it chose to hold or import.
 - Uncommitted history grows while no quorum is reachable. That is delay, not unsafety, and it ends at the next checkpoint.
 - What a peer must load to start is bounded by uncommitted history, not by the size of the data.
 - A group with a contributor that will never return is unblocked by [removing](membership.md) it, not by waiting.

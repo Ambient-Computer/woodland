@@ -8,6 +8,7 @@ The log is every [transaction](transactions.md) a peer holds, as signed chains. 
 - An entry is a signed header and a payload. The header commits to the payload, the entry before it, and earlier entries at growing distances.
 - A header is verifiable without its payload, and without the entries between it and any earlier one it can reach.
 - A header names the [checkpoint](checkpoints.md) its author held when writing it.
+- An entry carries a [list of blobs](blobs.md) outside its payload. The header commits to the list.
 - A chain has a history root: a commitment to all of it that grows by appending and proves any entry's inclusion.
 
 ## Causality

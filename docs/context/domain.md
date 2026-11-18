@@ -44,6 +44,6 @@ Woodland is for applications whose data belongs to a few devices and to no serve
 
 - Data with an open or large set of writers. Agreement among named members does not stretch to strangers.
 - Writers that are adversaries of each other. Misbehaviour is provable here, not preventable.
-- Data too large for the devices that subscribe to it. Every subscriber holds the whole of what it subscribes to.
+- Data too large for the devices that subscribe to it. Every subscriber holds the whole of what it subscribes to, apart from the bytes of [blobs](../spec/blobs.md), which each device holds by choice.
 - Decisions that must be final at once. Finality waits for people's devices to meet.
 - Applications content with a server. A server that orders everything is simpler than anything here.

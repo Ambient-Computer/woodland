@@ -71,6 +71,36 @@ Woodland runs inside other people's programs, on other people's devices. This pa
 - Browser key stores that never reveal the key sign asynchronously and cannot serve as the transport identity, so they are not used.
 - The key lives in the store beside the state it signed for, which is what the amnesia rule requires anyway.
 
+## Blobs: what was looked at
+
+- Looked at in November 2026: the `iroh-blobs` crate at 0.105, from its source, changelog, and issues. It was read, not run.
+- It is not used. Its own readme calls that line of releases not yet of production quality, and its latest release made seven breaking changes.
+- Its store is an actor on a runtime of its own, with a database and files beside ours. That is a second store to keep in step, on devices we cannot repair.
+- Its collector deleted blobs still in use until two fixes that month, and stops for good after one failed run. Both were open or newly closed issues at the time.
+- It has no store that persists in a browser, no encryption, and by default serves a blob to anyone who knows its hash.
+- What is taken from it is the format the [spec](../spec/blobs.md) names, through the `bao-tree` crate. Keeping its 16 KiB leaves an open blob's name the one `iroh-blobs` gives it.
+- `bao-tree` 0.17 was built for `wasm32-unknown-unknown` with no default features, November 2026. It brought about two dozen crates and no runtime.
+- `bao-tree` has not reached 1.0. The hash is BLAKE3's and stable; the crate's interface is not, and the version is pinned.
+- A sealed blob is named by the hash of its encrypted bytes, so a stock `iroh-blobs` node cannot be handed one by the name its readers know.
+- Its collections were looked at for directories: a blob listing child hashes, with a second blob of names. Their documentation says the format may change, and it holds names only.
+
+## Blobs: what was measured
+
+- Measured in November 2026 on one laptop, on ZFS, at idle priority while the machine was short of memory. Rates are rough; ratios are not.
+- The native driver was given blobs as values of one size under ordered keys, about 4 MiB a batch, up to 3 GiB.
+- Its file was 2.13 times the bytes stored at 16 KiB a value, 1.53 at 48 KiB, 1.27 at 112 KiB, 1.13 at 240 KiB, and 1.07 at 496 KiB. One value per verified group wastes half the file.
+- No batch took longer than half a second, and most took tens of milliseconds. Deleting 1 GiB a batch at a time took one to two seconds.
+- Deleting did not shrink the file. Writing the same amount again fitted in the space freed.
+- The native driver's memory peaked near 1.1 GiB, which is the cache redb takes unless told otherwise. That is too much for a client device and has nothing to do with blobs.
+- The browser driver was given the same in headless Firefox, up to 256 MiB. Chromium and Safari were not run.
+- A blob of 256 KiB took one batch of 11 ms. At 64 MiB it wrote 14 MiB a second at 16 KiB a value and 47 at 112 KiB.
+- At 256 MiB its slowest 4 MiB batch took 1.4 to 1.8 seconds, and deleting took ten. The page is not blocked, but the core does nothing else in that time.
+- A value of 496 KiB took 32 ms to read back in the browser, against 2 ms at 112 KiB.
+- Values of 112 KiB, seven verified groups, were the best size measured on both. Batches smaller than 4 MiB were not measured in the browser.
+- Not tried: redb's own compaction, which is what would return freed space to the device, or anything of the kind in a browser.
+- Not measured: tens of gigabytes anywhere, and whether a browser's strict durability reaches as far for large values.
+- Not tried: keeping pieces in the browser as its own `Blob` objects, which it stores as files and reads a slice at a time. They might read faster. Safari has a history of losing them, and whether strict durability covers them is not known.
+
 ## Sources
 
 - File system access handles: MDN and the WHATWG File System standard.

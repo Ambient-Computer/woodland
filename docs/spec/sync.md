@@ -21,6 +21,7 @@ Sync is what two connected [peers](peers.md) exchange so each ends up with every
 - A side that lacks transactions the other has [compacted](compaction.md) is sent a snapshot, then what is uncommitted.
 - Checkpoint agreement, fork proofs, and membership proposals travel the same way: each side sends what the other has not seen.
 - After catching up, the connection stays open and carries new data as it happens. Catch-up and live are one protocol.
+- The bytes of [blobs](blobs.md) are fetched apart from all of this.
 
 ## Properties
 

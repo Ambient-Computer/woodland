@@ -16,6 +16,7 @@ A sealed [group](groups.md) encrypts what its contributors write, so that peers 
 - Committed state travels encrypted. A peer without keys cannot check it against a checkpoint, and does not need to in order to carry it.
 - A peer without keys keeps committed state as it was handed it, and the history since. It sheds history only when handed newer state.
 - The state root in a checkpoint commits to contents without revealing them, even contents that are easy to guess. It does not change when keys do.
+- [Blobs](blobs.md) are sealed apart from entries, by rules of their own.
 
 ## Epochs
 
@@ -35,6 +36,7 @@ A sealed [group](groups.md) encrypts what its contributors write, so that peers 
 - A removed peer cannot read any entry whose header names the checkpoint that removed it, or a later one.
 - It can still read entries written under secrets it held, including ones written after its removal by contributors who had not yet heard.
 - It keeps everything it already had. Removal cannot unshare.
+- It can still read any [blob](blobs.md) whose reference it could read, can still fetch the bytes if it had not, and can see when a later entry refers to one.
 - The guarantee is relative to the chain, never to wall-clock time.
 
 ## History
@@ -57,6 +59,9 @@ A sealed [group](groups.md) encrypts what its contributors write, so that peers 
 - Who the contributors, witnesses, and readers are, and their weights.
 - Who wrote each entry, when it arrived, how large it is, and what it was written on top of.
 - When secrets were replaced, which suggests when someone was removed.
+- How many [blobs](blobs.md) an entry refers to, how long each is, and when two references name the same blob, in one group or in several.
+- To a peer that is asked for a blob: who asked, for which parts, and when. A device that fetches only what its user opens shows what was opened.
+- To a contributor of any group it shares with a peer: whether that peer holds a blob whose name the contributor knows. Referring to it there is enough to be served it, still encrypted.
 - An application that must hide these needs more than this page provides.
 
 ## Cost

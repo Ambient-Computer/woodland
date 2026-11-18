@@ -19,6 +19,7 @@ Storage is an ordered key-value store that the [core](library.md) reads and writ
 - Nothing above a driver knows which one it is on. Behaviour that differs between drivers is a defect in one of them.
 - An in-memory driver exists for tests and simulation, and is available to applications for theirs.
 - Owning the drivers is what lets the contract stay small: nothing has to be promised to code the library does not control.
+- A delete frees space for the store to use again, and need not return it to the device. Every driver says how much it holds freed and unreturned, and returns it when the application asks. No [step](library.md) runs meanwhile.
 
 ## What is not assumed
 
@@ -50,4 +51,5 @@ Storage is an ordered key-value store that the [core](library.md) reads and writ
 - What a device must read to start is bounded by uncommitted history; see [compaction](compaction.md).
 - Derived structures can be dropped and rebuilt from the rest. Nothing else can.
 - One store may hold many [groups](groups.md). A group's data is removable as a whole.
+- [Blobs](blobs.md) and their imports are kept in the same store and written in the same batches, outside any group. Removing a group lets go of the blobs nothing else refers to.
 - Only a peer with no role in a group removes it. A member that did would return having forgotten what it signed.
