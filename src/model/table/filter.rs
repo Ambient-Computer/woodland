@@ -172,6 +172,8 @@ fn compare(held: &Value, value: &Value) -> Option<Ordering> {
         (Value::Text(held), Value::Text(value)) => Some(held.as_bytes().cmp(value.as_bytes())),
         (Value::Boolean(held), Value::Boolean(value)) => Some(held.cmp(value)),
         (Value::Bytes(held), Value::Bytes(value)) => Some(held.cmp(value)),
+        // A blob is another or it isn't. Neither comes first.
+        (Value::Blob(held), Value::Blob(value)) => (held == value).then_some(Ordering::Equal),
         _ => None,
     }
 }

@@ -188,6 +188,9 @@ pub(crate) enum Wrote {
     /// It can't read the clock, so it doesn't know what it would be
     /// writing on top of.
     Unreadable,
+    /// It refers to a blob with a reference made for the other kind
+    /// of group: a sealed one in an open group, or the reverse.
+    Misplaced,
 }
 
 /// What one device hands another so it can hold a group.
@@ -527,6 +530,15 @@ impl Group {
         let may = tip.electorate.writers(clock).includes(me) && self.wants(clock);
         if !may || self.proofs.contains_key(&me) {
             return Ok(Wrote::NotAllowed);
+        }
+        let sealed = self.is_sealed();
+        let fits = |operation: &Operation| {
+            let blobs = operation.blobs();
+
+            blobs.iter().all(|blob| blob.is_sealed() == sealed)
+        };
+        if !operations.iter().all(fits) {
+            return Ok(Wrote::Misplaced);
         }
         let Some(seq) = self.clock(clock).write(identity, &tip, operations, step) else {
             return Ok(Wrote::Unreadable);

@@ -191,7 +191,7 @@ fn a_contributor_that_reaches_another_state_doesnt_vote() {
     let (mut sim, group) = Sim::group(2, 2);
     let corrupt = Write::Put {
         key: keys::state(group, group.into()),
-        value: vec![7; 2048],
+        value: vec![7; 4096],
     };
     block_on(sim.devices[LAPTOP].store.apply(vec![corrupt])).expect("applied");
 

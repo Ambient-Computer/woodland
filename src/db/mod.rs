@@ -119,6 +119,10 @@ pub enum Error {
     BadInvitation,
     /// The transaction writes to models of more than one clock.
     ManyClocks,
+    /// The transaction refers to a blob with a reference made for the
+    /// other kind of group. A sealed group's blobs are encrypted and
+    /// an open group's aren't, so the bytes are imported again.
+    BlobMisplaced,
 }
 
 impl fmt::Display for Error {
@@ -138,6 +142,9 @@ impl fmt::Display for Error {
             Self::Unreadable => formatter.write_str("this device can't read that"),
             Self::BadInvitation => formatter.write_str("the invitation couldn't be read"),
             Self::ManyClocks => formatter.write_str("a transaction writes to one clock's models"),
+            Self::BlobMisplaced => {
+                formatter.write_str("a blob reference made for the other kind of group")
+            }
         }
     }
 }
@@ -337,6 +344,7 @@ impl<S: Store> Database<S> {
             }
             Wrote::NotAllowed => Err(Error::NotAContributor),
             Wrote::Unreadable => Err(Error::Unreadable),
+            Wrote::Misplaced => Err(Error::BlobMisplaced),
         }
     }
 

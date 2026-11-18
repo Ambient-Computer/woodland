@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::blob::BlobRef;
 use crate::encoding;
 use crate::model::ModelId;
 
@@ -18,6 +19,9 @@ pub enum Value {
     Text(String),
     Boolean(bool),
     Bytes(Vec<u8>),
+    /// A reference to a blob. The bytes are held apart, by whichever
+    /// devices choose to.
+    Blob(BlobRef),
 }
 
 /// The types of value a column can take. A column's type is part of
@@ -29,6 +33,7 @@ pub(crate) enum Type {
     Text = 3,
     Boolean = 4,
     Bytes = 5,
+    Blob = 6,
 }
 
 /// Names a column of a table: its type, then a hash of the table's ID
@@ -56,6 +61,7 @@ impl Value {
             Self::Text(_) => Some(Type::Text),
             Self::Boolean(_) => Some(Type::Boolean),
             Self::Bytes(_) => Some(Type::Bytes),
+            Self::Blob(_) => Some(Type::Blob),
         }
     }
 }
@@ -71,6 +77,7 @@ impl PartialEq for Value {
             (Self::Text(ours), Self::Text(theirs)) => ours == theirs,
             (Self::Boolean(ours), Self::Boolean(theirs)) => ours == theirs,
             (Self::Bytes(ours), Self::Bytes(theirs)) => ours == theirs,
+            (Self::Blob(ours), Self::Blob(theirs)) => ours == theirs,
             _ => false,
         }
     }
@@ -105,6 +112,12 @@ impl From<String> for Value {
 impl From<bool> for Value {
     fn from(value: bool) -> Self {
         Self::Boolean(value)
+    }
+}
+
+impl From<BlobRef> for Value {
+    fn from(value: BlobRef) -> Self {
+        Self::Blob(value)
     }
 }
 
@@ -150,6 +163,13 @@ impl ColumnId {
         Self::new(Type::Bytes, table, nonce)
     }
 
+    /// A column of references to blobs. It can't be unique: a blob
+    /// says nothing about itself to tell two apart by.
+    #[must_use]
+    pub fn blob(table: ModelId, nonce: [u8; 32]) -> Self {
+        Self::new(Type::Blob, table, nonce)
+    }
+
     /// The same column, but unique: no two rows can hold the same value
     /// in it, other than none. Like the type, that's part of the ID and
     /// can't change, so decide before the column is added.
@@ -159,6 +179,11 @@ impl ColumnId {
         self
     }
 
+    /// Whether its cells are references to blobs.
+    pub(crate) fn holds_blobs(self) -> bool {
+        self.kind() == Some(Type::Blob)
+    }
+
     pub(crate) fn is_unique(self) -> bool {
         self.0[0] & UNIQUE != 0
     }
@@ -166,8 +191,9 @@ impl ColumnId {
     /// Whether the column takes `value`: one of its type, or none.
     pub(crate) fn takes(self, value: &Value) -> bool {
         let kind = self.kind();
+        let keyed = kind == Some(Type::Blob) && self.is_unique();
 
-        kind.is_some() && value.kind().is_none_or(|it| Some(it) == kind)
+        kind.is_some() && !keyed && value.kind().is_none_or(|it| Some(it) == kind)
     }
 
     /// `None` for an ID this version of the library didn't make.
@@ -178,6 +204,7 @@ impl ColumnId {
             Type::Text,
             Type::Boolean,
             Type::Bytes,
+            Type::Blob,
         ];
 
         types

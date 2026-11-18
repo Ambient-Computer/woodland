@@ -232,6 +232,7 @@ impl Clock {
                 checkpoint: tip.digest(),
             },
             payload: Hash::NONE,
+            blobs: Hash::NONE,
         };
         let entry = Entry::author(identity, header, operations, &self.keys)?;
         self.integrate(&entry, step);

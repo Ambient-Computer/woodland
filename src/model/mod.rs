@@ -91,6 +91,7 @@ pub use sequence::Sequence;
 pub use table::{ColumnId, Comparison, Filter, Row, Table, Value};
 
 use crate::actor::Peer;
+use crate::blob::BlobRef;
 use crate::db::ClockId;
 use crate::encoding;
 use crate::store::{Entry, StoreError};
@@ -246,8 +247,12 @@ pub(crate) enum Effect {
 /// The first version of the library in which a table has a name.
 const NAMES: u8 = 7;
 
+/// The first version of the library in which a value can be a
+/// reference to a blob.
+const BLOBS: u8 = 8;
+
 /// The latest of everything this version of the library can read.
-const LATEST: u8 = NAMES;
+const LATEST: u8 = BLOBS;
 
 /// How much this version of the library can read. Each kind of model
 /// has a number, and so does each operation added to a kind since.
@@ -283,6 +288,16 @@ pub(crate) fn combine(model: ModelId, held: Option<&[u8]>, write: &[u8]) -> Vec<
     match model.extension().and_then(|kind| kind.combine) {
         Some(combine) => combine(held, write),
         None => sequence::combine(held, write),
+    }
+}
+
+/// The blob that what `key` of `model` holds is a reference to, if
+/// it's one. It's the model that says, so that nothing beneath it
+/// reads values.
+pub(crate) fn blob_under(model: ModelId, key: &[u8], value: &[u8]) -> Option<BlobRef> {
+    match model.kind()? {
+        Kind::Table => table::blob_under(key, value),
+        _ => None,
     }
 }
 
@@ -462,7 +477,18 @@ impl Operation {
     pub(crate) fn since(&self) -> u8 {
         match &self.change {
             Change::Table(table::Operation::Name { .. }) => NAMES,
+            _ if !self.blobs().is_empty() => BLOBS,
             _ => 0,
+        }
+    }
+
+    /// The blobs it writes references to. An operation says so
+    /// itself, so nothing has to be read to know.
+    pub(crate) fn blobs(&self) -> Vec<BlobRef> {
+        match &self.change {
+            Change::Table(operation) => operation.blobs(),
+            Change::Deferred(deferred) => deferred.blobs(),
+            _ => Vec::new(),
         }
     }
 
