@@ -10,6 +10,8 @@
 //! with, and to work out what a checkpoint commits to.
 
 #[cfg(feature = "blobs")]
+pub(crate) mod cipher;
+#[cfg(feature = "blobs")]
 pub(crate) mod fetch;
 #[cfg(feature = "blobs")]
 pub(crate) mod hash;
@@ -89,6 +91,12 @@ impl BlobRef {
     #[must_use]
     pub fn is_sealed(&self) -> bool {
         self.key.is_some()
+    }
+
+    /// The key it's encrypted under, in a sealed group.
+    #[cfg(feature = "blobs")]
+    pub(crate) fn key(&self) -> Option<[u8; 32]> {
+        self.key
     }
 
     pub(crate) fn listed(&self) -> Listed {

@@ -5,6 +5,7 @@ mod fetch;
 
 use super::{Changed, Database, Error, Outputs, Step};
 use crate::BlobRef;
+use crate::blob::cipher;
 use crate::blob::kept::{self, Bytes, Kept};
 use crate::store::Store;
 
@@ -58,6 +59,35 @@ impl<S: Store> Database<S> {
     pub async fn begin_import(&mut self) -> Result<(ImportId, Outputs), Error> {
         let mut step = self.begin()?;
         let begun = kept::begin(&mut step, None).await;
+        let number = self.guard(begun)?;
+
+        Ok((ImportId(number), self.finish(step).await?))
+    }
+
+    /// Starts bringing bytes in to be a blob in sealed groups. It's
+    /// otherwise an import like [any other].
+    ///
+    /// The blob is encrypted under a key of its own, made from
+    /// `randomness`: pass fresh random bytes every time. The key is
+    /// in the reference, which is sealed with whatever it's written
+    /// in, so whoever reads that reads the blob, and a device that
+    /// can't still holds and serves it.
+    ///
+    /// The same bytes brought in twice are two blobs. A reference
+    /// made here isn't one an open group takes, nor the other way
+    /// about: bring the bytes in again.
+    ///
+    /// [any other]: Self::begin_import
+    ///
+    /// # Errors
+    ///
+    /// If the store fails.
+    pub async fn begin_sealed_import(
+        &mut self,
+        randomness: [u8; 32],
+    ) -> Result<(ImportId, Outputs), Error> {
+        let mut step = self.begin()?;
+        let begun = kept::begin(&mut step, Some(cipher::key(randomness))).await;
         let number = self.guard(begun)?;
 
         Ok((ImportId(number), self.finish(step).await?))
@@ -168,10 +198,14 @@ impl<S: Store> Database<S> {
         length: usize,
     ) -> Result<Option<Vec<u8>>, Error> {
         let step = Step::new(self.store.view());
-        match kept::read(&step, blob.listed(), offset, length).await? {
-            Bytes::Held(bytes) => Ok(Some(bytes)),
-            Bytes::NotHeld => Ok(None),
+        let Bytes::Held(mut bytes) = kept::read(&step, blob.listed(), offset, length).await? else {
+            return Ok(None);
+        };
+        if let Some(key) = blob.key() {
+            cipher::apply(&key, offset.min(blob.length()), &mut bytes);
         }
+
+        Ok(Some(bytes))
     }
 
     /// Deletes a step's worth of the bytes nothing refers to.

@@ -436,7 +436,26 @@ impl Sim {
     /// to refer to them by.
     #[cfg(feature = "blobs")]
     fn import(&mut self, device: usize, bytes: &[u8]) -> crate::BlobRef {
-        let (id, outputs) = block_on(self.devices[device].begin_import()).expect("begun");
+        let begun = block_on(self.devices[device].begin_import());
+
+        self.import_from(device, begun.expect("begun"), bytes)
+    }
+
+    /// Brings `bytes` in on a device for sealed groups.
+    #[cfg(feature = "blobs")]
+    fn import_sealed(&mut self, device: usize, bytes: &[u8], randomness: u8) -> crate::BlobRef {
+        let begun = block_on(self.devices[device].begin_sealed_import([randomness; 32]));
+
+        self.import_from(device, begun.expect("begun"), bytes)
+    }
+
+    #[cfg(feature = "blobs")]
+    fn import_from(
+        &mut self,
+        device: usize,
+        (id, outputs): (crate::ImportId, Outputs),
+        bytes: &[u8],
+    ) -> crate::BlobRef {
         self.absorb(device, outputs);
         let mut rest = bytes;
         while !rest.is_empty() {

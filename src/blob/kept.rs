@@ -11,7 +11,7 @@ use blake3::hazmat::ChainingValue;
 use serde::{Deserialize, Serialize};
 
 use super::hash::{self, GROUP, PAGE};
-use super::{BlobRef, Listed, keys, tally};
+use super::{BlobRef, Listed, cipher, keys, tally};
 use crate::db::keys as held;
 use crate::db::step::Step;
 use crate::store::{StoreError, View};
@@ -234,7 +234,12 @@ pub(crate) async fn append<V: View>(
         return Ok(None);
     };
 
-    let bytes = &bytes[..bytes.len().min(MOST)];
+    // In a sealed group it's the encrypted bytes that are the blob.
+    let mut sealed = bytes[..bytes.len().min(MOST)].to_vec();
+    if let Some(key) = kept.key {
+        cipher::apply(&key, kept.taken, &mut sealed);
+    }
+    let bytes = sealed.as_slice();
     let mut at = kept.taken;
     let mut rest = bytes;
     while !rest.is_empty() {
