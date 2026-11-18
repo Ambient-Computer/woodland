@@ -174,6 +174,29 @@ impl Group {
         self.is_sealed() && self.keys.blind().is_none()
     }
 
+    /// Whether this device read the group once and can't any longer:
+    /// it holds a secret, and not the one in force. What it has is
+    /// behind for good, and it can neither read what's written now
+    /// nor be handed it to pass on.
+    pub(crate) fn is_shut_out(&self) -> bool {
+        self.is_sealed() && !self.reads() && !self.carries()
+    }
+
+    /// Gives up every secret and everything they read, and starts
+    /// over as a device that can't read the group: it's sent the
+    /// group again, to carry.
+    pub(crate) async fn relinquish<V: View>(
+        &mut self,
+        identity: &Identity,
+        step: &mut Step<V>,
+    ) -> Result<(), StoreError> {
+        self.keys.give_up();
+        self.rekey(step);
+        self.relearn(step).await?;
+
+        self.progress(identity, None, step).await
+    }
+
     /// What the latest checkpoint says about the secret.
     fn sealing(&self) -> Option<Sealing> {
         sealing_of(self.chain.tip())
@@ -362,7 +385,16 @@ impl Group {
             return false;
         }
 
+        // Secrets given up stay given up. The chain still carries
+        // the copies made for this device, until it's named again.
         let me = identity.peer();
+        if self.keys.is_given_up() {
+            if self.chain.tip().electorate.key_of(me).is_none() {
+                return false;
+            }
+            self.keys.take_up();
+        }
+
         let said = self.chain.checkpoints().filter_map(|checkpoint| {
             let sealing = sealing_of(checkpoint)?;
 
@@ -489,6 +521,11 @@ impl Group {
             return Ok(());
         };
         if self.keys.secret(handed.epoch).is_some() {
+            return Ok(());
+        }
+        let me = identity.peer();
+        let listed = self.chain.tip().electorate.key_of(me).is_some();
+        if self.keys.is_given_up() && !listed {
             return Ok(());
         }
 

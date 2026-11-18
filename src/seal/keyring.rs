@@ -22,6 +22,10 @@ pub(crate) enum Keyring {
         /// What the group's state is named under. It's the same for
         /// the life of the group.
         blind: Option<Secret>,
+        /// Whether the device gave up the secrets it held, to carry
+        /// the group and not read it. It takes none until the group
+        /// names it to read again.
+        given_up: bool,
     },
 }
 
@@ -43,6 +47,7 @@ impl Keyring {
         Self::Sealed {
             secrets: BTreeMap::from([(0, None)]),
             blind: None,
+            given_up: false,
         }
     }
 
@@ -55,6 +60,35 @@ impl Keyring {
         match self {
             Self::Open => None,
             Self::Sealed { blind, .. } => blind.as_ref(),
+        }
+    }
+
+    /// Lets go of every secret, keeping which were brought in when.
+    /// What's left is what a device that never read the group has.
+    pub(crate) fn give_up(&mut self) {
+        if let Self::Sealed {
+            secrets,
+            blind,
+            given_up,
+        } = self
+        {
+            for secret in secrets.values_mut() {
+                *secret = None;
+            }
+            *blind = None;
+            *given_up = true;
+        }
+    }
+
+    /// Whether the secrets were given up, and none is to be taken.
+    pub(crate) fn is_given_up(&self) -> bool {
+        matches!(self, Self::Sealed { given_up: true, .. })
+    }
+
+    /// The group named this device to read again.
+    pub(crate) fn take_up(&mut self) {
+        if let Self::Sealed { given_up, .. } = self {
+            *given_up = false;
         }
     }
 

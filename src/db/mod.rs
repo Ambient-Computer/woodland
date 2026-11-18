@@ -128,6 +128,18 @@ pub enum Error {
     ///
     /// [forget]: Database::forget
     StillAMember,
+    /// This device read the group once and can't any longer, so it
+    /// has no state to stand in for the history it was asked to
+    /// shed. It [forgets] the group, or [relinquishes] what it could
+    /// read and carries it.
+    ///
+    /// [forgets]: Database::forget
+    /// [relinquishes]: Database::relinquish
+    ShutOut,
+    /// The device reads the group, and has nothing to [relinquish].
+    ///
+    /// [relinquish]: Database::relinquish
+    StillReads,
     /// This device isn't one of the group's contributors.
     NotAContributor,
     /// This device can't read what it was asked to write to: it's
@@ -170,6 +182,10 @@ impl fmt::Display for Error {
             Self::StillAMember => {
                 formatter.write_str("this device is still a member of that group")
             }
+            Self::ShutOut => {
+                formatter.write_str("this device can no longer read that group, and sheds nothing")
+            }
+            Self::StillReads => formatter.write_str("this device reads that group"),
             Self::NotAContributor => formatter.write_str("this device isn't a contributor"),
             Self::Unreadable => formatter.write_str("this device can't read that"),
             Self::BadInvitation => formatter.write_str("the invitation couldn't be read"),

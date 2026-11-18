@@ -53,6 +53,8 @@ How the library is meant to be used by an application. Rustdoc has the signature
 - `Outputs::reconfigured` says what became of a request: `Carried`, or `Spent` because the group changed some other way first. A spent request did nothing. Read the configuration, and ask again if what was wanted still is.
 - Roles: `Role::contributor(weight)` writes and votes, `Role::witness(weight)` votes only, `Role::reader(key)` reads a sealed group. `.only(clocks)` narrows a contributor; `.sealed_to(key)` gives a contributor a sealed group's secret.
 - A quorum is counted by weight: see [checkpoints](../spec/checkpoints.md). Offline devices with weight delay commits; they never endanger them. Remove one that's gone for good.
+- A device removed from a sealed group keeps what it could read and reads nothing since: `is_shut_out(group)` says so, and `Changed::Members` says when to ask. It can't `compact` until it chooses. `forget` deletes the group, which is what a person who removed someone expects of that someone's device. `relinquish` deletes what it could read and its secrets, and stays to carry the group for others, as a server might.
+- A device that carries a group it can't read sheds history only when it's handed newer state. One that is always up to date is handed none unasked: call `skip_ahead` for it now and then. Set its blob policy for what it should keep.
 - `want` holds only some clocks, `ask` narrows one connection, `forget` drops a group the device has no role in.
 
 ## Writing

@@ -18,7 +18,6 @@ Compaction is how a peer sheds history it no longer needs. It is safe at any tim
 - Whatever a [merging model](models.md) kept only to merge with concurrency that can no longer arrive.
 - A committed deletion leaves nothing behind.
 - Whatever [blobs](blobs.md) only shed history referred to.
-- Nothing of a clock in which a peer could not read something committed. Its state there is behind, and the history is all it has of what was written.
 
 ## Bounds
 

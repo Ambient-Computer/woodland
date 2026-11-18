@@ -24,7 +24,7 @@ A model is one kind of data inside a [clock](groups.md): a namespace of keys and
 - A map where the last write to a key is what is read.
 - A map where the first write to a key holds it: names, locks, anything exactly one writer should get.
 - A map of ordered lists, a [merging kind](#merging-kinds): items are inserted, removed, and moved.
-- A table's cell, a map's value, and a list's item may each be a [blob reference](blobs.md).
+- A [blob reference](blobs.md) is written only as a [table's](tables.md) cell, in a column of them. Where one may be is then known from the column alone.
 - Any map may be restricted to [committed reads](reads.md). Readers then never see a value that could be displaced.
 
 ## Merging kinds

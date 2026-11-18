@@ -285,3 +285,171 @@ fn state_that_lists_other_blobs_than_the_checkpoints_is_refused() {
     assert_eq!(sim.devices[GUEST].groups[&group].folded(), behind);
     assert_eq!(held(&sim, GUEST, &blob), 200_000, "nothing was let go");
 }
+
+fn release(sim: &mut Sim, device: usize, blob: &BlobRef) {
+    let outputs = block_on(sim.devices[device].release_blob(blob)).expect("released");
+    sim.absorb(device, outputs);
+}
+
+/// A device that kept a blob it couldn't read keeps it when it's
+/// given a key, though it starts the group over.
+#[test]
+fn a_device_given_a_key_keeps_the_blobs_it_held() {
+    for length in [50_000, 2_000_000] {
+        let (mut sim, group, blob) = pictured(length);
+        assert_eq!(held(&sim, GUEST, &blob), length as u64);
+        for device in [LAPTOP, NAS, FRIEND] {
+            policy(&mut sim, device, BlobPolicy::None);
+            release(&mut sim, device, &blob);
+        }
+        policy(&mut sim, PHONE, BlobPolicy::None);
+        release(&mut sim, PHONE, &blob);
+        sim.settle();
+
+        let mut roles = roles(&sim).to_vec();
+        roles.push((GUEST, Role::reader(key(&sim, GUEST))));
+        sim.assign(PHONE, group, roles);
+        sim.settle();
+
+        assert!(sim.devices[GUEST].reads(group));
+        assert_eq!(held(&sim, GUEST, &blob), length as u64, "length {length}");
+    }
+}
+
+/// A sealed group with a picture, from which the friend was then
+/// removed, and another picture brought in since.
+fn shut_out() -> (Sim, GroupId, BlobRef, BlobRef) {
+    let (mut sim, group, before) = pictured(200_000);
+    let fewer = roles(&sim)
+        .into_iter()
+        .filter(|(device, _)| *device != FRIEND);
+    sim.assign(PHONE, group, fewer);
+    sim.settle();
+    let after = sim.import_sealed(PHONE, &content(300_000), 2);
+    insert_with(&mut sim, PHONE, table(group), "bob", after);
+    sim.write_to(PHONE, group, set(notes(group), "plan", "after"));
+    sim.settle();
+
+    (sim, group, before, after)
+}
+
+fn relinquish(sim: &mut Sim, device: usize, group: GroupId) {
+    let outputs = block_on(sim.devices[device].relinquish(group)).expect("given up");
+    sim.absorb(device, outputs);
+}
+
+/// It can't read what's written now and has no state to stand in
+/// for it, so it sheds none of it: nor the blobs it lists.
+#[test]
+fn a_reader_that_was_removed_sheds_nothing_until_it_chooses() {
+    let (mut sim, group, before, after) = shut_out();
+    assert!(sim.devices[FRIEND].is_shut_out(group));
+    assert!(!sim.devices[PHONE].is_shut_out(group));
+    assert!(!sim.devices[GUEST].is_shut_out(group), "it never read");
+    let kept = sim.entries_kept(FRIEND, group);
+
+    let shed = block_on(sim.devices[FRIEND].compact(group));
+    let clock = table(group).clock();
+    let one = block_on(sim.devices[FRIEND].compact_clock(group, clock));
+
+    assert!(matches!(shed, Err(Error::ShutOut)), "{shed:?}");
+    assert!(matches!(one, Err(Error::ShutOut)), "{one:?}");
+    assert_eq!(sim.entries_kept(FRIEND, group), kept);
+    assert_eq!(held(&sim, FRIEND, &before), 200_000);
+    assert_eq!(held(&sim, FRIEND, &after), 300_000);
+}
+
+/// Let back in, it starts over and reads what was written while it
+/// was out.
+#[test]
+fn a_reader_removed_and_let_back_in_catches_up() {
+    let (mut sim, group, before, after) = shut_out();
+    assert_eq!(read_note(&sim, FRIEND, group, "plan"), None);
+
+    let all = roles(&sim);
+    sim.assign(PHONE, group, all);
+    sim.settle();
+
+    assert!(!sim.devices[FRIEND].is_shut_out(group));
+    assert_eq!(
+        read_note(&sim, FRIEND, group, "plan").as_deref(),
+        Some("after")
+    );
+    assert_eq!(held(&sim, FRIEND, &before), 200_000);
+    assert_eq!(held(&sim, FRIEND, &after), 300_000);
+    sim.compact(FRIEND, group);
+}
+
+/// What it gives up is everything it could read, and the means to
+/// read it. From there it's a device that never could: it carries
+/// the group, sheds when it's handed state, and keeps the blobs the
+/// state lists.
+#[test]
+fn a_reader_that_was_removed_gives_up_what_it_read_to_carry_the_group() {
+    let (mut sim, group, before, after) = shut_out();
+    assert!(stores(&sim, FRIEND, group, NEEDLE) || read(&sim, FRIEND, &before).is_some());
+
+    relinquish(&mut sim, FRIEND, group);
+    sim.settle();
+    // It has every entry, so nobody hands it state unasked.
+    let outputs = block_on(sim.devices[FRIEND].skip_ahead(group)).expect("asked");
+    sim.absorb(FRIEND, outputs);
+    shed(&mut sim, group, "sunday");
+
+    assert!(!sim.devices[FRIEND].is_shut_out(group));
+    assert!(!sim.devices[FRIEND].reads(group));
+    assert!(!stores(&sim, FRIEND, group, "after"));
+    assert_eq!(read_note(&sim, FRIEND, group, "plan"), None);
+    assert_eq!(sim.entries_kept(FRIEND, group), 0, "it was handed state");
+    assert_eq!(
+        sim.devices[FRIEND].groups[&group].folded(),
+        sim.devices[PHONE].groups[&group].folded()
+    );
+    assert_eq!(held(&sim, FRIEND, &before), 200_000);
+    assert_eq!(held(&sim, FRIEND, &after), 300_000);
+    assert!(block_on(sim.devices[FRIEND].compact(group)).is_ok());
+}
+
+/// The chain still carries the copies of the secrets made for it.
+/// It takes none of them: not after a restart either.
+#[test]
+fn secrets_given_up_stay_given_up_until_the_group_names_the_device_again() {
+    let (mut sim, group, _, after) = shut_out();
+    relinquish(&mut sim, FRIEND, group);
+    sim.settle();
+    sim.restart(FRIEND);
+    sim.connect_all();
+    sim.write_to(PHONE, group, set(notes(group), "more", "later"));
+    sim.settle();
+    assert!(!sim.devices[FRIEND].reads(group));
+    assert!(!sim.devices[FRIEND].is_shut_out(group));
+    assert_eq!(read_note(&sim, FRIEND, group, "plan"), None);
+
+    let all = roles(&sim);
+    sim.assign(PHONE, group, all);
+    sim.settle();
+
+    assert!(sim.devices[FRIEND].reads(group));
+    assert_eq!(
+        read_note(&sim, FRIEND, group, "plan").as_deref(),
+        Some("after")
+    );
+    assert_eq!(
+        read_note(&sim, FRIEND, group, "more").as_deref(),
+        Some("later")
+    );
+    assert_eq!(held(&sim, FRIEND, &after), 300_000);
+}
+
+/// A device that reads has nothing to give up, and neither has one
+/// that never did.
+#[test]
+fn only_a_device_that_can_no_longer_read_gives_anything_up() {
+    let (mut sim, group, _, _) = shut_out();
+
+    let reader = block_on(sim.devices[LAPTOP].relinquish(group));
+    let relay = block_on(sim.devices[GUEST].relinquish(group));
+
+    assert!(matches!(reader, Err(Error::StillReads)), "{reader:?}");
+    assert!(matches!(relay, Err(Error::StillReads)), "{relay:?}");
+}

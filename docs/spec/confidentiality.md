@@ -36,6 +36,9 @@ A sealed [group](groups.md) encrypts what its contributors write, so that peers 
 - A removed peer cannot read any entry whose header names the checkpoint that removed it, or a later one.
 - It can still read entries written under secrets it held, including ones written after its removal by contributors who had not yet heard.
 - It keeps everything it already had. Removal cannot unshare.
+- A peer that can no longer read a group it once could is in no state to stay in. It [leaves](storage.md), or it gives up what it could read along with its secrets and carries the group like any peer without keys. Which is its application's to choose.
+- Until it has chosen it [sheds](compaction.md) nothing and is told so when it tries. It has no state to stand in for what it cannot read, and what it sheds unread it could not hand on.
+- A peer that gave up its secrets takes none again until a checkpoint names it to read.
 - It can still read any [blob](blobs.md) whose reference it could read, can still fetch the bytes if it had not, and can see when a later entry refers to one.
 - The guarantee is relative to the chain, never to wall-clock time.
 
