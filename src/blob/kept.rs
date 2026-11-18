@@ -18,10 +18,10 @@ use crate::store::{StoreError, View};
 
 /// How many groups are stored as one value. Seven is where both the
 /// file and the browser's database did best.
-const GROUPS: u64 = 7;
+pub(crate) const GROUPS: u64 = 7;
 
 /// How many bytes are stored as one value.
-const PIECE: u64 = GROUPS * GROUP;
+pub(crate) const PIECE: u64 = GROUPS * GROUP;
 
 /// The most bytes one step takes in, or hands back.
 pub(crate) const MOST: usize = 9 * 112 * 1024;
@@ -75,7 +75,7 @@ impl Kept {
     }
 
     /// Whether every group that `offset..end` touches is held.
-    fn covers(&self, offset: u64, end: u64) -> bool {
+    pub(crate) fn covers(&self, offset: u64, end: u64) -> bool {
         let (first, last) = (offset / GROUP, end.div_ceil(GROUP));
         let within = |&(start, end): &(u64, u64)| start <= first && last <= end;
 
@@ -97,7 +97,7 @@ struct Doomed {
     pieces: u64,
 }
 
-fn size(length: u64) -> usize {
+pub(crate) fn size(length: u64) -> usize {
     usize::try_from(length).expect("a piece is far smaller than memory")
 }
 
@@ -117,11 +117,50 @@ pub(crate) async fn find<V: View>(
     Ok(kept(step, number).await?.map(|kept| (number, kept)))
 }
 
+/// Whether `blob` is the one with no bytes, which every device holds
+/// all of.
+pub(crate) fn is_empty(blob: Listed) -> bool {
+    blob.length == 0 && blob.name == hash::small(&[])
+}
+
 /// Whether every byte of `blob` is held.
 pub(crate) async fn is_whole<V: View>(step: &Step<V>, blob: Listed) -> Result<bool, StoreError> {
     let found = find(step, blob).await?;
 
-    Ok(found.is_some_and(|(_, kept)| kept.is_whole()))
+    Ok(is_empty(blob) || found.is_some_and(|(_, kept)| kept.is_whole()))
+}
+
+/// What's kept of `blob`, which something refers to: made if there
+/// was nothing, and no longer going if it was.
+pub(crate) async fn ensure<V: View>(
+    step: &mut Step<V>,
+    blob: Listed,
+) -> Result<(u64, Kept), StoreError> {
+    if let Some((number, kept)) = find(step, blob).await? {
+        step.delete(keys::doomed(number));
+
+        return Ok((number, kept));
+    }
+
+    let number = step.load::<u64>(&keys::next()).await?.unwrap_or_default();
+    step.save(keys::next(), &(number + 1));
+    let kept = Kept {
+        blob: Some(blob),
+        key: None,
+        taken: 0,
+        held: Vec::new(),
+        import: false,
+    };
+    step.save(keys::meta(number), &kept);
+    step.save(keys::name(blob), &number);
+
+    Ok((number, kept))
+}
+
+/// Lets go of the bytes of `blob`, whatever refers to it. Whether
+/// there were any that no import holds.
+pub(crate) async fn release<V: View>(step: &mut Step<V>, blob: Listed) -> Result<bool, StoreError> {
+    free(step, blob).await
 }
 
 /// Starts an import, and says the number it's kept under.
@@ -151,7 +190,10 @@ async fn importing<V: View>(step: &Step<V>, number: u64) -> Result<Option<Kept>,
     Ok(kept.filter(|kept| kept.import && kept.blob.is_none()))
 }
 
-async fn hashes<V: View>(step: &Step<V>, key: &[u8]) -> Result<Vec<ChainingValue>, StoreError> {
+pub(crate) async fn hashes<V: View>(
+    step: &Step<V>,
+    key: &[u8],
+) -> Result<Vec<ChainingValue>, StoreError> {
     let stored = step.get(key).await?.unwrap_or_default();
 
     Ok(stored.as_chunks::<32>().0.to_vec())
@@ -242,14 +284,7 @@ async fn name<V: View>(step: &Step<V>, number: u64, length: u64) -> Result<[u8; 
         ));
     }
 
-    let mut pages = hashes(step, &keys::top(number)).await?;
-    pages.truncate(size(groups / PAGE));
-    if !groups.is_multiple_of(PAGE) {
-        let last = hashes(step, &keys::leaf_page(number, groups / PAGE)).await?;
-        pages.push(hash::subtree(&last));
-    }
-
-    Ok(hash::root(&pages))
+    Ok(hash::root(&hashes(step, &keys::top(number)).await?))
 }
 
 /// Ends an import: its bytes are a blob, and this is the reference to
@@ -273,6 +308,16 @@ pub(crate) async fn finish<V: View>(
         let piece = piece.unwrap_or_default();
         let last = &piece[size(start % PIECE)..];
         file(step, number, groups - 1, hash::group(start, last)).await?;
+    }
+
+    // The last page's hash is filed with the others, full or not, so
+    // that the pages' hashes are all another device needs to start.
+    if groups > PAGE && !groups.is_multiple_of(PAGE) {
+        let last = hashes(step, &keys::leaf_page(number, groups / PAGE)).await?;
+        let mut top = step.get(&keys::top(number)).await?.unwrap_or_default();
+        top.truncate(size(groups / PAGE) * 32);
+        top.extend(hash::subtree(&last));
+        step.put(keys::top(number), top);
     }
 
     let blob = Listed {
@@ -481,6 +526,9 @@ pub(crate) async fn read<V: View>(
     offset: u64,
     length: usize,
 ) -> Result<Bytes, StoreError> {
+    if is_empty(blob) {
+        return Ok(Bytes::Held(Vec::new()));
+    }
     let Some((number, kept)) = find(step, blob).await? else {
         return Ok(Bytes::NotHeld);
     };

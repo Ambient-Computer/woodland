@@ -142,6 +142,8 @@ fn text(value: &Value) -> String {
 
 fn main() -> Result<(), Error> {
     let mut phone = block_on(Database::open(MemoryStore::new(), [1; 32]))?;
+    #[cfg(feature = "blobs")]
+    drop(block_on(phone.set_blob_policy(woodland::BlobPolicy::None))?);
     let (group, _) = block_on(phone.found([7; 32]))?;
     let people = ModelId::table(group, [1; 32]);
     let team = ColumnId::text(people, [1; 32]);

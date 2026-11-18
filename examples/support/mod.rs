@@ -43,7 +43,12 @@ impl Network {
         // The secret is the device's signing key, made once and kept
         // in its store. A real one is random.
         let secret = [u8::try_from(self.devices.len() + 1).expect("a few devices"); 32];
-        let database = block_on(Database::open(MemoryStore::new(), secret)).expect("opened");
+        #[cfg_attr(not(feature = "blobs"), expect(unused_mut, reason = "set with blobs"))]
+        let mut database = block_on(Database::open(MemoryStore::new(), secret)).expect("opened");
+        // With blobs, a device says which it fetches before it holds
+        // a group. There's no default.
+        #[cfg(feature = "blobs")]
+        drop(block_on(database.set_blob_policy(woodland::BlobPolicy::None)).expect("said"));
         self.devices.push(Device {
             name,
             database,

@@ -78,6 +78,8 @@ fn a_database_comes_back_from_its_file() {
     let folder = folder();
     let opened = block_on(Database::open(open(&folder, "store"), [1; 32]));
     let mut database = opened.expect("opened");
+    #[cfg(feature = "blobs")]
+    drop(block_on(database.set_blob_policy(crate::BlobPolicy::None)).expect("said"));
     let (group, _) = block_on(database.found([7; 32])).expect("founded");
     let notes = crate::ModelId::kv(group, [1; 32]);
     let written = block_on(database.write(group, Transaction::new().set(notes, "a", "b")));

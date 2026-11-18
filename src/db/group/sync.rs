@@ -127,6 +127,16 @@ impl Remote {
 }
 
 impl Group {
+    /// Whether `peer` has said, over this connection, that it holds
+    /// this group too.
+    #[cfg_attr(
+        not(feature = "blobs"),
+        expect(dead_code, reason = "blobs are only served with the feature")
+    )]
+    pub(crate) fn shares(&self, peer: Peer) -> bool {
+        self.remotes.get(&peer).is_some_and(|remote| remote.heard)
+    }
+
     /// A peer can be reached. Tells it where this device stands.
     pub(crate) async fn connected<V: View>(
         &mut self,

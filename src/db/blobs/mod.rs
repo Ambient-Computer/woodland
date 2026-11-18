@@ -1,11 +1,14 @@
 //! The bytes of blobs: bringing them in, reading them, and letting
 //! them go. `docs/spec/blobs.md` is the design.
 
+mod fetch;
+
 use super::{Changed, Database, Error, Outputs, Step};
 use crate::BlobRef;
 use crate::blob::kept::{self, Bytes, Kept};
-use crate::blob::tally::Tallied;
-use crate::store::{Store, StoreError, View};
+use crate::store::Store;
+
+pub(super) use fetch::{Blobs, settle};
 
 /// Names an import on this device. It means nothing anywhere else.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -183,21 +186,4 @@ impl<S: Store> Database<S> {
 
         Ok(())
     }
-}
-
-/// Follows what a step did to which blobs are referred to: bytes
-/// nothing refers to start to go, and bytes that were going stay.
-/// Says whether anything is left to delete.
-pub(super) async fn settle<V: View>(
-    step: &mut Step<V>,
-    tallied: Tallied,
-) -> Result<bool, StoreError> {
-    for blob in tallied.freed {
-        kept::free(step, blob).await?;
-    }
-    for blob in tallied.revived {
-        kept::revive(step, blob).await?;
-    }
-
-    kept::is_sweeping(step).await
 }

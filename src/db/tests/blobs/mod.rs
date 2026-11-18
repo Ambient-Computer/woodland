@@ -1,20 +1,26 @@
 //! The bytes of blobs on one device: brought in, read back, counted,
 //! and let go.
 
+mod fetching;
+
 use super::tables::blobs::{bytes, create_with_pictures, insert_with, picture};
 use super::tables::{people, read_table};
 use super::*;
 use crate::BlobRef;
 use crate::model::Value;
 
-/// Everything the device's store keeps for blobs.
+/// Everything the device's store keeps for blobs, but for what the
+/// device has said about itself.
 fn kept(sim: &Sim, device: usize) -> usize {
     let (start, end) = keys::range(vec![5]);
     let view = sim.devices[device].store.view();
     let stored = block_on(crate::db::step::scan(&view, &start, &end)).expect("scanned");
-    let counter = crate::blob::keys::next();
+    let apart = [crate::blob::keys::next(), crate::blob::keys::policy()];
 
-    stored.iter().filter(|(key, _)| *key != counter).count()
+    stored
+        .iter()
+        .filter(|(key, _)| !apart.contains(key))
+        .count()
 }
 
 fn read(sim: &Sim, device: usize, blob: &BlobRef, offset: u64, length: usize) -> Option<Vec<u8>> {

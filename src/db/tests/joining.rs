@@ -69,8 +69,7 @@ fn usurped() -> (Sim, GroupId) {
     sim.settle();
 
     sim.isolate(PHONE);
-    let fresh = block_on(Database::open(MemoryStore::default(), secret(PHONE)));
-    sim.devices[PHONE] = fresh.expect("opened");
+    sim.devices[PHONE] = fresh(PHONE);
     let (again, outputs) = block_on(sim.devices[PHONE].found([7; 32])).expect("founded");
     sim.absorb(PHONE, outputs);
     assert_eq!(again, group, "the same founding is the same group");

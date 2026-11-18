@@ -10,11 +10,15 @@
 //! with, and to work out what a checkpoint commits to.
 
 #[cfg(feature = "blobs")]
+pub(crate) mod fetch;
+#[cfg(feature = "blobs")]
 pub(crate) mod hash;
 #[cfg(feature = "blobs")]
 pub(crate) mod kept;
 pub(crate) mod keys;
 pub(crate) mod tally;
+#[cfg(feature = "blobs")]
+pub(crate) mod want;
 
 use std::fmt;
 

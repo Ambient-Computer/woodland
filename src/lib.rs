@@ -48,7 +48,7 @@ pub use db::{
     Part, Pending, Reached, Reconfigured, Transaction, TransactionId, Waiting,
 };
 #[cfg(feature = "blobs")]
-pub use db::{Import, ImportId};
+pub use db::{BlobPolicy, Import, ImportId};
 pub use model::{
     Allowance, Allowances, ColumnId, Combine, Comparison, Declared, Extension, Filter, ModelId,
     Needs, Query, Row, Sequence, Table, Value, extend,
