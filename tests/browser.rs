@@ -133,6 +133,10 @@ async fn a_database_comes_back_from_the_browser() {
     let name = name();
     let store = open(&name).await;
     let mut database = Database::open(store, [1; 32]).await.expect("opened");
+    // With blobs, a device says which it fetches before it holds a
+    // group.
+    #[cfg(feature = "blobs")]
+    drop(database.set_blob_policy(woodland::BlobPolicy::None).await);
     let (group, _) = database.found([7; 32]).await.expect("founded");
     let notes = ModelId::kv(group, [1; 32]);
     let write = Transaction::new().set(notes, "todo", "milk");
@@ -208,5 +212,127 @@ async fn a_batch_abandoned_partway_is_there_whole_or_not_at_all() {
         drop(view);
         drop(store);
         turn().await;
+    }
+}
+
+/// Blobs, where sizes are 32 bits wide and the store is the browser's:
+/// brought in, read back in ranges, still there when the store is
+/// opened again, and gone once nothing refers to them.
+#[cfg(feature = "blobs")]
+mod blobs {
+    use woodland::{BlobPolicy, BlobRef, ColumnId, GroupId, Table, Value};
+
+    use super::*;
+
+    type Device = Database<BrowserStore>;
+
+    /// Enough for many values, and not a whole number of them.
+    const LENGTH: usize = 3 * 1024 * 1024 + 12_345;
+
+    /// Bytes that differ from one end to the other, so that a range
+    /// read from the wrong place shows.
+    fn content() -> Vec<u8> {
+        let byte = |index: usize| index.wrapping_mul(2_654_435_761).to_le_bytes()[1];
+
+        (0..LENGTH).map(byte).collect()
+    }
+
+    fn length() -> u64 {
+        u64::try_from(LENGTH).expect("small")
+    }
+
+    async fn range(database: &Device, blob: &BlobRef, offset: usize, length: usize) -> Vec<u8> {
+        let offset = u64::try_from(offset).expect("small");
+        let read = database.read_blob(blob, offset, length).await;
+
+        read.expect("read").expect("held")
+    }
+
+    async fn whole(database: &Device, blob: &BlobRef) -> Vec<u8> {
+        let mut read = Vec::new();
+        while read.len() < LENGTH {
+            let next = Device::BLOB_STEP.min(LENGTH - read.len());
+            read.extend(range(database, blob, read.len(), next).await);
+        }
+
+        read
+    }
+
+    async fn bring_in(database: &mut Device, content: &[u8]) -> BlobRef {
+        let (import, _) = database.begin_sealed_import([5; 32]).await.expect("begun");
+        let mut taken = 0;
+        while taken < content.len() {
+            let more = database.import(import, &content[taken..]).await;
+            let (more, _) = more.expect("taken");
+            assert!(more > 0 && more <= Device::BLOB_STEP);
+            taken += more;
+        }
+        let (blob, _) = database.finish_import(import).await.expect("finished");
+
+        blob
+    }
+
+    fn table(group: GroupId) -> (ModelId, ColumnId, ColumnId) {
+        let table = ModelId::table(group, [1; 32]);
+
+        (
+            table,
+            ColumnId::text(table, [1; 32]),
+            ColumnId::blob(table, [2; 32]),
+        )
+    }
+
+    #[wasm_bindgen_test]
+    async fn a_sealed_blob_is_kept_read_and_let_go_in_the_browser() {
+        let name = name();
+        let database = Database::open(open(&name).await, [1; 32]).await;
+        let mut database = database.expect("opened");
+        let said = database.set_blob_policy(BlobPolicy::All).await;
+        drop(said.expect("said"));
+        let (group, _) = database.found_sealed([7; 32]).await.expect("founded");
+        let (table, title, picture) = table(group);
+        let columns = [(title, "title"), (picture, "picture")];
+        let create = Transaction::new().create_table(table, columns);
+        drop(database.write(group, create).await.expect("written"));
+
+        let content = content();
+        let blob = bring_in(&mut database, &content).await;
+        assert_eq!(blob.length(), length());
+        let cells = [(title, Value::from("ada")), (picture, blob.into())];
+        let insert = Transaction::new().insert(table, "ada".to_owned(), cells);
+        drop(database.write(group, insert).await.expect("written"));
+        drop(database.tick().await.expect("ticked"));
+
+        assert_eq!(database.blob_held(&blob).await.expect("counted"), length());
+        assert!(whole(&database, &blob).await == content, "read back whole");
+        let odd = range(&database, &blob, 1_000_003, 70_001).await;
+        assert!(odd == content[1_000_003..1_070_004], "read back a range");
+        drop(database);
+        turn().await;
+
+        let database = Database::open(open(&name).await, [9; 32]).await;
+        let mut database = database.expect("reopened");
+        let read = database.read(&Query::table(group, table)).await;
+        let found = Table::read(read.expect("read").found());
+        let row = found.iter().flat_map(Table::rows).next();
+        let row = row.expect("a row").clone();
+        assert_eq!(row.get(picture), &Value::from(blob));
+        assert_eq!(database.blob_held(&blob).await.expect("counted"), length());
+        assert!(
+            whole(&database, &blob).await == content,
+            "read back reopened"
+        );
+
+        let delete = Transaction::new().delete_row(table, &row);
+        drop(database.write(group, delete).await.expect("written"));
+        drop(database.tick().await.expect("ticked"));
+        let mut unfinished = database.compact(group).await.expect("compacted").unfinished;
+        while unfinished {
+            unfinished = database.resume().await.expect("resumed").unfinished;
+        }
+
+        assert_eq!(database.blob_held(&blob).await.expect("counted"), 0);
+        let gone = database.read_blob(&blob, 0, 1000).await.expect("read");
+        assert_eq!(gone, None);
     }
 }

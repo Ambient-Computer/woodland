@@ -4,6 +4,7 @@
 - `cargo clippy`
 - `treefmt`
 - `cargo test --target wasm32-unknown-unknown --features browser --test browser` (the browser's store, in headless Firefox)
+- The same with `--features browser,blobs` (blobs in the browser's store)
 
 # Developing
 
