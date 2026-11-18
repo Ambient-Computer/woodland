@@ -195,13 +195,15 @@ pub(crate) fn blobs_in(cells: &[(ColumnId, Value)]) -> Vec<BlobRef> {
     cells.iter().filter_map(blob).collect()
 }
 
+/// Whether a table's key is a cell of a column of blobs.
+pub(crate) fn may_refer(key: &[u8]) -> bool {
+    matches!(Place::parse(key), Some(Place::Cell(_, _, column)) if column.holds_blobs())
+}
+
 /// The blob a table's key holds a reference to, if it's a cell of a
 /// column of them.
 pub(crate) fn blob_under(key: &[u8], value: &[u8]) -> Option<BlobRef> {
-    let Some(Place::Cell(_, _, column)) = Place::parse(key) else {
-        return None;
-    };
-    if !column.holds_blobs() {
+    if !may_refer(key) {
         return None;
     }
 

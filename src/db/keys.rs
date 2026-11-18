@@ -17,6 +17,7 @@
 //! [GROUP][group][TRIAL][model][key…]            → what a transaction being tried would leave
 //! [GROUP][group][AHEAD][the rest of a key…]     → what a checkpoint not yet decided would leave
 //! [GROUP][group][BEFORE][the rest of a key…]    → what the key held before a checkpoint that's partly in place
+//! [BLOBS]…                                      → blobs, which no group owns: see `blob::keys`
 //! ```
 //!
 //! A model's ID starts with its clock's, so everything a clock owns is
@@ -235,6 +236,55 @@ pub(crate) fn log(id: GroupId, clock: ClockId, author: Peer, seq: u64) -> Vec<u8
     let author = author.as_bytes().to_vec();
 
     [logs(id), clock, author, seq.to_be_bytes().to_vec()].concat()
+}
+
+/// Something a group holds that can refer to a blob.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Referrer {
+    /// An entry, whatever became of it.
+    Entry,
+    /// A committed value.
+    Value { model: ModelId, key: Vec<u8> },
+    /// A committed value kept while what replaces it is put in place.
+    Kept { model: ModelId, key: Vec<u8> },
+}
+
+/// What `key` holds, if it's something that can refer to a blob, and
+/// the group that holds it.
+pub(crate) fn referrer(key: &[u8]) -> Option<(GroupId, Referrer)> {
+    let (&space, rest) = key.split_first()?;
+    let (group, rest) = take_id(rest)?;
+    let group = GroupId::from_bytes(group);
+    if space != GROUP {
+        return None;
+    }
+
+    let value = |rest: &[u8]| {
+        let (model, key) = rest.split_first_chunk::<64>()?;
+
+        Some((ModelId::from_bytes(*model), key.to_vec()))
+    };
+    let referrer = match rest {
+        [PROTOCOL, LOG, ..] => Referrer::Entry,
+        [COMMITTED, rest @ ..] => {
+            let (model, key) = value(rest)?;
+
+            Referrer::Value { model, key }
+        }
+        [BEFORE, COMMITTED, rest @ ..] => {
+            let (model, key) = value(rest)?;
+
+            Referrer::Kept { model, key }
+        }
+        _ => return None,
+    };
+
+    Some((group, referrer))
+}
+
+/// Every group's keys.
+pub(crate) fn groups() -> Vec<u8> {
+    vec![GROUP]
 }
 
 /// Every key that starts with `prefix`, as a key range. A prefix may

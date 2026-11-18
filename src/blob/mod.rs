@@ -9,6 +9,13 @@
 //! a reference when it sees one: to carry the list an entry comes
 //! with, and to work out what a checkpoint commits to.
 
+#[cfg(feature = "blobs")]
+pub(crate) mod hash;
+#[cfg(feature = "blobs")]
+pub(crate) mod kept;
+pub(crate) mod keys;
+pub(crate) mod tally;
+
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -49,8 +56,8 @@ pub(crate) struct Listed {
 
 impl BlobRef {
     #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "made by imports, which come next")
+        not(any(test, feature = "blobs")),
+        expect(dead_code, reason = "made by imports, which need the feature")
     )]
     pub(crate) fn new(name: [u8; 32], length: u64, key: Option<[u8; 32]>) -> Self {
         Self {

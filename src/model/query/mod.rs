@@ -256,7 +256,10 @@ impl Query {
     pub fn is_affected_by(&self, change: &Changed) -> bool {
         match change {
             Changed::Everything { group } => *group == self.group,
-            Changed::Pending { .. } | Changed::Members { .. } | Changed::Checkpoint { .. } => false,
+            Changed::Pending { .. }
+            | Changed::Members { .. }
+            | Changed::Checkpoint { .. }
+            | Changed::Blob { .. } => false,
             Changed::Indexed {
                 group,
                 model,

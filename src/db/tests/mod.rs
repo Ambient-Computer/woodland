@@ -4,6 +4,8 @@
 //! asks to send, in an order the test controls, and nothing else moves.
 
 mod allowances;
+#[cfg(feature = "blobs")]
+mod blobs;
 mod checkpoints;
 mod clocks;
 mod compaction;
@@ -308,7 +310,7 @@ impl Sim {
     /// it. Returns whether there was one.
     fn resume(&mut self) -> bool {
         let busy = |device: &Database<MemoryStore>| {
-            device.groups.values().any(super::group::Group::is_busy)
+            device.sweeping || device.groups.values().any(super::group::Group::is_busy)
         };
         let Some(device) = self.devices.iter().position(busy) else {
             return false;
@@ -336,12 +338,45 @@ impl Sim {
             }
             self.run();
         }
+        self.check_blobs();
+    }
+
+    /// Holds every device to this: what refers to each blob is what
+    /// going through everything it holds again would come to.
+    fn check_blobs(&self) {
+        for (device, database) in self.devices.iter().enumerate() {
+            let view = database.store.view();
+            let (counted, kept) = block_on(crate::blob::tally::recount(&view)).expect("scanned");
+
+            assert_eq!(kept, counted, "device {device}");
+        }
     }
 
     fn write_to(&mut self, device: usize, group: GroupId, transaction: Transaction) {
         self.wake(device);
         let outputs = block_on(self.devices[device].write(group, transaction));
         self.absorb(device, outputs.expect("written"));
+    }
+
+    /// Brings `bytes` in on a device, a few at a time, and says what
+    /// to refer to them by.
+    #[cfg(feature = "blobs")]
+    fn import(&mut self, device: usize, bytes: &[u8]) -> crate::BlobRef {
+        let (id, outputs) = block_on(self.devices[device].begin_import()).expect("begun");
+        self.absorb(device, outputs);
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            let next = &rest[..rest.len().min(100_000)];
+            let imported = block_on(self.devices[device].import(id, next));
+            let (taken, outputs) = imported.expect("imported");
+            self.absorb(device, outputs);
+            rest = &rest[taken..];
+        }
+
+        let (blob, outputs) = block_on(self.devices[device].finish_import(id)).expect("finished");
+        self.absorb(device, outputs);
+
+        blob
     }
 
     /// Writes to the group most tests are about.

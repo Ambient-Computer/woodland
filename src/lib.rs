@@ -47,6 +47,8 @@ pub use db::{
     Answer, Changed, ClockId, Configuration, Database, Error, Found, GroupId, Outcome, Outputs,
     Part, Pending, Reached, Reconfigured, Transaction, TransactionId, Waiting,
 };
+#[cfg(feature = "blobs")]
+pub use db::{Import, ImportId};
 pub use model::{
     Allowance, Allowances, ColumnId, Combine, Comparison, Declared, Extension, Filter, ModelId,
     Needs, Query, Row, Sequence, Table, Value, extend,

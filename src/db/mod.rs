@@ -10,9 +10,11 @@
 //! batch is durable, so a device never says something it could forget.
 
 mod answer;
+#[cfg(feature = "blobs")]
+mod blobs;
 mod changed;
 mod configuration;
-mod entry;
+pub(crate) mod entry;
 mod group;
 mod holding;
 mod id;
@@ -24,7 +26,7 @@ mod pending;
 mod proof;
 mod reading;
 mod sealed;
-mod step;
+pub(crate) mod step;
 mod succession;
 #[cfg(test)]
 mod tests;
@@ -37,12 +39,16 @@ use std::fmt;
 use ed25519_dalek::VerifyingKey;
 
 use crate::actor::{Identity, Peer};
+use crate::blob::tally;
 use crate::chain::{Chain, Checkpoint, Electorate, Role};
 use crate::encoding;
+use crate::model::Operation;
 use crate::seal::Secret;
 use crate::store::{Store, StoreError};
 
 pub use answer::{Answer, Found, Part, Reached};
+#[cfg(feature = "blobs")]
+pub use blobs::{Import, ImportId};
 pub use changed::Changed;
 pub use configuration::{Configuration, Reconfigured};
 use group::{Group, Invitation, Wrote};
@@ -63,6 +69,8 @@ pub struct Database<S> {
     /// Set when a step failed partway. What's in memory can no longer be
     /// trusted to match the store.
     broken: bool,
+    /// Whether the bytes of some blob are being deleted.
+    sweeping: bool,
 }
 
 /// What a step asks of the application, once the step is durable.
@@ -123,6 +131,13 @@ pub enum Error {
     /// other kind of group. A sealed group's blobs are encrypted and
     /// an open group's aren't, so the bytes are imported again.
     BlobMisplaced,
+    /// The transaction refers to a blob this device doesn't hold all
+    /// of. A device writes a reference only to what it could hand
+    /// over, even one it was sent.
+    BlobNotHeld,
+    /// There's no such import: it was never begun, or it's finished
+    /// or abandoned.
+    UnknownImport,
 }
 
 impl fmt::Display for Error {
@@ -142,6 +157,8 @@ impl fmt::Display for Error {
             Self::Unreadable => formatter.write_str("this device can't read that"),
             Self::BadInvitation => formatter.write_str("the invitation couldn't be read"),
             Self::ManyClocks => formatter.write_str("a transaction writes to one clock's models"),
+            Self::BlobNotHeld => formatter.write_str("this device doesn't hold all of that blob"),
+            Self::UnknownImport => formatter.write_str("there's no such import"),
             Self::BlobMisplaced => {
                 formatter.write_str("a blob reference made for the other kind of group")
             }
@@ -199,6 +216,15 @@ impl<S: Store> Database<S> {
             }
         }
 
+        let tallied = tally::tally(&mut step).await?;
+        #[cfg(feature = "blobs")]
+        let sweeping = blobs::settle(&mut step, tallied).await?;
+        #[cfg(not(feature = "blobs"))]
+        let sweeping = {
+            drop(tallied);
+
+            false
+        };
         store.apply(step.finish().batch).await?;
         let mut database = Self {
             store,
@@ -206,6 +232,7 @@ impl<S: Store> Database<S> {
             groups,
             peers: BTreeSet::new(),
             broken: false,
+            sweeping,
         };
         database.pin();
 
@@ -321,9 +348,22 @@ impl<S: Store> Database<S> {
         transaction: Transaction,
     ) -> Result<Outputs, Error> {
         let mut step = self.begin()?;
-        let held = self.groups.get_mut(&group).ok_or(Error::UnknownGroup)?;
         let clock = transaction.clock(group.into());
         let clock = clock.ok_or(Error::ManyClocks)?;
+        let blobs = transaction.operations.iter().flat_map(Operation::blobs);
+        #[cfg(feature = "blobs")]
+        for blob in blobs {
+            let whole = crate::blob::kept::is_whole(&step, blob.listed()).await;
+            if !self.guard(whole)? {
+                return Err(Error::BlobNotHeld);
+            }
+        }
+        // A device that keeps no bytes holds no blob.
+        #[cfg(not(feature = "blobs"))]
+        if blobs.count() > 0 {
+            return Err(Error::BlobNotHeld);
+        }
+        let held = self.groups.get_mut(&group).ok_or(Error::UnknownGroup)?;
         let written = held
             .write(&self.identity, clock, transaction.operations, &mut step)
             .await;
@@ -490,6 +530,8 @@ impl<S: Store> Database<S> {
             }
             resumed?;
         }
+        #[cfg(feature = "blobs")]
+        self.sweep(&mut step).await?;
 
         self.finish(step).await
     }
@@ -550,6 +592,17 @@ impl<S: Store> Database<S> {
             step.put(key, outcome);
         }
 
+        // Last of all, since it goes by everything the step wrote.
+        let tallied = tally::tally(&mut step).await;
+        let tallied = self.guard(tallied)?;
+        #[cfg(feature = "blobs")]
+        {
+            let sweeping = blobs::settle(&mut step, tallied).await;
+            self.sweeping = self.guard(sweeping)?;
+        }
+        #[cfg(not(feature = "blobs"))]
+        drop(tallied);
+
         let mut finished = step.finish();
         let hidden = |change: &Changed| self.groups.values().any(|group| group.hides(change));
         finished.changed.retain(|change| !hidden(change));
@@ -581,7 +634,7 @@ impl<S: Store> Database<S> {
                 .map(named)
                 .collect(),
             reconfigured: finished.reconfigured,
-            unfinished: self.groups.values().any(Group::is_busy),
+            unfinished: self.sweeping || self.groups.values().any(Group::is_busy),
         })
     }
 }

@@ -37,6 +37,9 @@ web-sys = { version = "0.3.106", optional = true, features = [
 ] }
 
 [features]
+# Keeping, reading and moving the bytes of blobs. Without it a device
+# still carries references to them.
+blobs = []
 # A store kept in the browser's database, for anywhere with IndexedDB.
 browser = ["dep:js-sys", "dep:wasm-bindgen", "dep:web-sys"]
 # A store kept in one file, for anywhere with a filesystem.
