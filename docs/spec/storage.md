@@ -53,8 +53,4 @@ Storage is an ordered key-value store that the [core](library.md) reads and writ
 - Derived structures can be dropped and rebuilt from the rest. Nothing else can.
 - One store may hold many [groups](groups.md). A group's data is removable as a whole.
 - [Blobs](blobs.md) and their imports are kept in the same store and written in the same batches, outside any group. Removing a group lets go of the blobs nothing else refers to.
-- A peer with no role in a group removes it freely, and may hold it again.
-- A member that removes a group abandons it: it never holds that group again, by joining or by founding it anew. Returning, it would have forgotten what it signed.
-- An abandoned group's name is kept so that it can be refused. The names are what a device keeps for groups that are gone, for as long as its store lasts.
-- To the group, a member that abandoned it is a member that is lost: it counts toward the [quorum](membership.md) until it is removed. Being removed first costs the others nothing, and is preferred wherever a quorum can still be found.
-- A group is not abandoned while a [successor](membership.md) founded on this device is still taking its state from it.
+- Only a peer with no role in a group removes it. A member that did would return having forgotten what it signed.

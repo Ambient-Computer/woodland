@@ -8,7 +8,6 @@ use ed25519_dalek::VerifyingKey;
 use crate::actor::Peer;
 use crate::store::Store;
 
-use super::step::Step;
 use super::{Changed, ClockId, Database, Error, GroupId, Outputs, group, keys};
 
 impl<S: Store> Database<S> {
@@ -287,59 +286,12 @@ impl<S: Store> Database<S> {
     /// If this device doesn't hold `group` or is still a member of it,
     /// or the store fails.
     pub async fn forget(&mut self, group: GroupId) -> Result<Outputs, Error> {
-        let step = self.begin()?;
+        let mut step = self.begin()?;
         let held = self.groups.get(&group).ok_or(Error::UnknownGroup)?;
         if held.has(self.identity.peer()) {
             return Err(Error::StillAMember);
         }
 
-        self.let_go(group, step).await
-    }
-
-    /// Stops holding a `group` this device is a member of, deletes
-    /// everything kept for it, and never holds it again.
-    ///
-    /// A member has signed things in the group. Having deleted them it
-    /// would sign them again differently, so the group's ID is kept
-    /// and refused from then on: [`join`] fails, and so does founding
-    /// it again with the same seed. That's for good, even if the group
-    /// later removes this device.
-    ///
-    /// To the group, this device is lost. It still counts toward the
-    /// quorum, and the others wait on it until they remove it. So
-    /// where the group can still commit, be removed first, with
-    /// [`reconfigure`], and then [`forget`]: that costs them nothing.
-    /// This is for when it can't: the device is the last one left, or
-    /// the group has lost its quorum and been [succeeded].
-    ///
-    /// [`join`]: Self::join
-    /// [`reconfigure`]: Self::reconfigure
-    /// [`forget`]: Self::forget
-    /// [succeeded]: Self::succeed
-    ///
-    /// # Errors
-    ///
-    /// If this device doesn't hold `group`; holds no role in it, in
-    /// which case it [forgets] it; is still bringing its state over to
-    /// a group founded to carry on from it; or the store fails.
-    ///
-    /// [forgets]: Self::forget
-    pub async fn abandon(&mut self, group: GroupId) -> Result<Outputs, Error> {
-        let mut step = self.begin()?;
-        let held = self.groups.get(&group).ok_or(Error::UnknownGroup)?;
-        if !held.has(self.identity.peer()) {
-            return Err(Error::NotAMember);
-        }
-        if held.is_pinned() {
-            return Err(Error::Bequeathing);
-        }
-        step.put(keys::abandoned(group), Vec::new());
-
-        self.let_go(group, step).await
-    }
-
-    /// Deletes everything kept for `group`, in the step that decided to.
-    async fn let_go(&mut self, group: GroupId, mut step: Step<S::View>) -> Result<Outputs, Error> {
         let (start, end) = keys::range(keys::group(group));
         let kept = step.scan(&start, &end).await;
         for (key, _) in self.guard(kept)? {

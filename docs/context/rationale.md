@@ -82,13 +82,14 @@ The spec states decisions without their history. This page keeps the history: wh
 - So there are two inputs. Wanting a checkpoint now says nothing about time, and is safe after anything.
 - Making the core refuse to repeat itself too often was considered. It has no clock to measure often by.
 
-## Why a member can abandon a group
+## Why a member cannot yet delete a group it cannot leave
 
-- Decided in November 2026. A group's last member could not delete it, and neither could the survivor of a group that had lost its quorum: removal takes a quorum, and there was none.
-- Letting a member simply delete was never an option. Holding the group again, it would sign at positions it had already signed, and vote against promises it had made.
-- Keeping what it signed, so that it could come back, was considered. That is most of what the application wanted gone.
-- Refusing the group for good costs one name per group abandoned, and makes the member, to everyone else, exactly a device that was lost. The design already expects those.
-- Allowing it only to a group's sole member was the first plan. It leaves out the survivor of a succeeded group, whose lost peers still hold roles.
+- A group's last member cannot delete it, and neither can the survivor of a group that lost its quorum: removal takes a quorum, and there is none. The group stays in the store whole.
+- Letting a member simply delete is not an option. Holding the group again, it would sign at positions it had already signed, and vote against promises it had made.
+- Built and withdrawn in November 2026: deleting the group and keeping its name, so that it is refused for good. It passed its tests. It was withdrawn because the names are never shed, and nothing a device keeps may grow without bound.
+- No way was found to shed a name safely. An invitation that leaves the device out may only be older than its admission, and a group that is dead never removes anyone.
+- The difficulty is that a device has one key for every group. Deleting what it signed in one group while keeping the key is [amnesia](../spec/storage.md) in that group.
+- The direction that leaves nothing behind is a signing key for each membership, vouched for by the device's and kept with the group. Deleting the group deletes the key, and holding it again is returning as a new peer. Not designed.
 
 ## Why confidentiality is simple here
 

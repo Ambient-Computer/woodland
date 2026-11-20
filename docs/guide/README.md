@@ -68,8 +68,8 @@ How the library is meant to be used by an application. Rustdoc has the signature
 - A device removed from a sealed group keeps what it could read and reads nothing since: `is_shut_out(group)` says so, and `Changed::Members` says when to ask. It can't `compact` until it chooses. `forget` deletes the group, which is what a person who removed someone expects of that someone's device. `relinquish` deletes what it could read and its secrets, and stays to carry the group for others, as a server might.
 - A device that carries a group it can't read sheds history when it's handed state to hold in its place. `compact` is how it asks, and the state arrives over the steps that follow, from any peer that has it. Set its blob policy for what it should keep.
 - `want` holds only some clocks, `ask` narrows one connection, `forget` drops a group the device has no role in.
-- A member leaves by being removed: `reconfigure` without it, then `forget` once `standing` says `Outside`. That costs the others nothing, and the device can be invited back.
-- `abandon` is for when that can't happen: the device is the group's last member, or the group lost its quorum and was succeeded. It deletes the group and refuses it for good, `join` and `found` with the same seed alike, because the device has forgotten what it signed there. To anyone still in the group it's a lost device, counted toward the quorum until they remove it.
+- A member leaves by being removed: `reconfigure` without it, then `forget` once `standing` says `Outside`. A device with a role can't `forget`, because it would come back having forgotten what it signed.
+- So a group's last member can't delete it, and neither can a member of a group that has lost its quorum. The group stays in the store; `compact` it and hide it. There is no way around this yet.
 
 ## Writing
 
