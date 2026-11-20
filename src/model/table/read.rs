@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::place::{Incarnation, Place};
 use super::rows;
 use super::{ColumnId, Filter, Operation, Rekey, Target, Value};
+use crate::blob::BlobRef;
 use crate::encoding;
 use crate::model::{Fingerprint, Requirement};
 
@@ -225,6 +226,61 @@ impl Row {
     #[must_use]
     pub fn get(&self, column: ColumnId) -> &Value {
         self.cells.get(&column).unwrap_or(&Value::Null)
+    }
+
+    /// The text the row holds in `column`. `None` if it holds
+    /// nothing there, or the column isn't one of text.
+    #[must_use]
+    pub fn text(&self, column: ColumnId) -> Option<&str> {
+        match self.get(column) {
+            Value::Text(text) => Some(text),
+            _ => None,
+        }
+    }
+
+    /// The integer the row holds in `column`, if it holds one.
+    #[must_use]
+    pub fn integer(&self, column: ColumnId) -> Option<i64> {
+        match self.get(column) {
+            Value::Integer(integer) => Some(*integer),
+            _ => None,
+        }
+    }
+
+    /// The real number the row holds in `column`, if it holds one.
+    #[must_use]
+    pub fn real(&self, column: ColumnId) -> Option<f64> {
+        match self.get(column) {
+            Value::Real(real) => Some(*real),
+            _ => None,
+        }
+    }
+
+    /// The boolean the row holds in `column`, if it holds one.
+    #[must_use]
+    pub fn boolean(&self, column: ColumnId) -> Option<bool> {
+        match self.get(column) {
+            Value::Boolean(boolean) => Some(*boolean),
+            _ => None,
+        }
+    }
+
+    /// The bytes the row holds in `column`, if it holds any.
+    #[must_use]
+    pub fn bytes(&self, column: ColumnId) -> Option<&[u8]> {
+        match self.get(column) {
+            Value::Bytes(bytes) => Some(bytes),
+            _ => None,
+        }
+    }
+
+    /// The blob the row refers to in `column`, if it refers to one.
+    #[must_use]
+    pub fn blob(&self, column: ColumnId) -> Option<&BlobRef> {
+        match self.get(column) {
+            Value::Blob(blob) => Some(blob),
+            _ => None,
+        }
     }
 
     /// Whether anything has ever [referred] to the row. If so, it has

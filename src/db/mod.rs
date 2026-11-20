@@ -26,6 +26,7 @@ mod pending;
 mod proof;
 mod reading;
 mod sealed;
+mod shorthand;
 pub(crate) mod step;
 mod succession;
 #[cfg(test)]

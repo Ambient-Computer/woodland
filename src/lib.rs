@@ -49,6 +49,11 @@ pub use db::{
 };
 #[cfg(feature = "blobs")]
 pub use db::{BlobPolicy, Import, ImportId};
+/// A peer's identity: its Ed25519 public key. It's
+/// [`ed25519_dalek`]'s own type, here so that an application needn't
+/// depend on the same version of that crate to name one. Make one
+/// from its 32 bytes with `VerifyingKey::from_bytes`.
+pub use ed25519_dalek::VerifyingKey;
 pub use model::{
     Allowance, Allowances, ColumnId, Combine, Comparison, Declared, Extension, Filter, ModelId,
     Needs, Query, Row, Sequence, Table, Value, extend,

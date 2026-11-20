@@ -32,6 +32,8 @@ How the library is meant to be used by an application. Rustdoc has the signature
   - `outcomes`: what became of this device's own transactions.
   - `reconfigured`: what became of this device's requests to change a group's members.
   - `unfinished`: call `resume()` until it's false. A step does a bounded amount of work so none blocks for long.
+- `settle(&mut outputs)` is that last loop: it resumes until nothing is unfinished and adds what each step asked for to `outputs`, each change once. Handle `outputs` once afterwards. `Outputs::absorb` does the adding, for an application that would rather run the loop itself and send as it goes.
+- One step runs at a time. Every call takes `&mut self`, so the compiler holds native code to it. A browser application that calls in from event handlers has to queue the calls itself: a second call made while one is waiting on the store is a bug in the application.
 - `Outputs` is given only after the step is durable. Send after, never before.
 - `Error::Store` or `Error::Broken` means memory may be ahead of the store. Drop the `Database` and open it again.
 - `examples/support/mod.rs` is this loop over an in-memory network, in about a hundred lines.
@@ -83,7 +85,8 @@ How the library is meant to be used by an application. Rustdoc has the signature
 - A decision that must not be undone is made from committed reads, or waits for its transaction's `Committed`.
 - Queries are bounded ordered ranges: a key, a prefix, a table, a range of rows, or an index range. There are no joins or aggregates; compute those in the application.
 - `read_some(&query, limit)` reads a part at a time and returns the query for the rest.
-- Readers such as `Table::read`, `Sequence::read`, and `Allowances::read` turn an answer into something typed.
+- Readers such as `Table::read`, `Sequence::read`, and `Allowances::read` turn an answer into something typed. A row gives what it holds by type: `row.text(column)`, `row.integer(column)`, and so on, each `None` where the row holds nothing of that type.
+- A row is changed or deleted as it was read, never blindly by key: a change meant for one row must not land on a later row under the same key. `delete_row(group, table, key)` on the database is the read and the delete together, for a button that deletes what's on screen.
 - To subscribe: keep the `Query`, and re-run it when `query.is_affected_by(&change)` for a change in `Outputs::changed`. A change says where to look, not what's there.
 - Every read made between two steps is of one moment. Nothing is held across a step.
 - To keep a copy elsewhere (a UI store, a search index): read the committed state once, then follow `changed`, re-reading the keys it names. `Changed::Checkpoint` marks a consistent point; `Changed::Everything` means read it all again. `examples/mirror.rs` does this.
@@ -120,5 +123,6 @@ How the library is meant to be used by an application. Rustdoc has the signature
 - Peers need not all reach each other. Any peer relays for any other, including for sealed groups it can't read.
 - Committed is final: the same on every device, never reordered, never undone.
 - Storage is bounded by committed state plus uncommitted history, once a device compacts.
-- The public API uses `ed25519_dalek::VerifyingKey` for peer identity. Convert through its 32 bytes if the transport's key type differs, and key maps of peers by them.
+- A peer is a `woodland::VerifyingKey`, which is `ed25519_dalek`'s. Make one from the transport's key with `VerifyingKey::from_bytes`, and key maps of peers by the 32 bytes: no dependency on `ed25519-dalek` is needed for either.
+- Woodland has no notion of presence. Who can be reached is the transport's to know; `connected` and `disconnected` are how it tells the database.
 - Build dependencies optimized, even for tests: sealing and signing are many times slower without. `[profile.dev.package."*"] opt-level = 3` in the application's `Cargo.toml` does it.

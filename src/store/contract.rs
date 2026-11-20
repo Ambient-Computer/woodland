@@ -170,6 +170,13 @@ async fn keys_and_values_are_any_bytes<S: Store>(mut store: S) {
     let view = store.view();
     assert_eq!(get(&view, &key).await, Some(value));
     assert_eq!(get(&view, b"empty").await, Some(Vec::new()));
+
+    // Nothing under a key and a key with nothing under it are told
+    // apart by a scan too, and by a view of how things were.
+    apply(&mut store, vec![put(b"empty", b"full")]).await;
+    let scanned = view.scan(b"empty", None, Order::Ascending, 1).await;
+    assert_eq!(scanned.expect("scanned"), [(b"empty".to_vec(), Vec::new())]);
+    assert_eq!(get(&view, b"empty").await, Some(Vec::new()));
 }
 
 async fn deleting_nothing_is_fine<S: Store>(mut store: S) {

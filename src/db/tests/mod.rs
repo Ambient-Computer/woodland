@@ -26,6 +26,7 @@ mod random;
 mod roles;
 mod sealed;
 mod sequences;
+mod shorthand;
 mod single;
 mod succession;
 mod sync;

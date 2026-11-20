@@ -424,6 +424,38 @@ fn a_peer_whose_copy_was_no_good_is_handed_the_secret_by_another() {
     );
 }
 
+/// A table that was created and never named is a table all the same,
+/// in a sealed group as in an open one, on the device that made it
+/// and on one that was sent it.
+#[test]
+fn a_table_nobody_named_reads_as_a_table() {
+    use crate::model::{ColumnId, Table};
+
+    let (mut sim, group) = sealed();
+    let table = ModelId::table(group, [5; 32]);
+    let column = ColumnId::text(table, [1; 32]);
+    let create = Transaction::new().create_table(table, [(column, "name")]);
+    sim.write_to(PHONE, group, create);
+    let read = |sim: &Sim, device: usize, query: &Query| Table::read(&sim.read(device, query));
+
+    let whole = Query::table(group, table);
+    assert_eq!(
+        read(&sim, PHONE, &whole).map(|it| it.name().to_owned()),
+        Some(String::new())
+    );
+    sim.settle();
+    for query in [
+        whole.clone(),
+        whole.committed(),
+        Query::row(group, table, b"nobody"),
+    ] {
+        for device in [PHONE, LAPTOP, FRIEND] {
+            let found = read(&sim, device, &query);
+            assert!(found.is_some(), "device {device}, {query:?}");
+        }
+    }
+}
+
 /// Where each device stands follows the chain: a role or none, and
 /// for one that lost a role, whether it ever read.
 #[test]
