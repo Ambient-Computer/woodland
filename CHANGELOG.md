@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `StoreError::fault` says what went wrong with a store where it could tell: `StoreFault::Busy` when something else has it open, and `StoreFault::Mismatched` when what's under that name isn't a store this version opens.
 - `Database::standing` says where a device stands in a group in one answer: `Standing::Member`, `Outside`, `ShutOut`, or `Waiting`.
 - `Database::members` lists every peer with a role in a group the device holds, and whoever it has asked for: who to connect to.
+- `Database::abandon` deletes a group the device is still a member of, and refuses that group for good. It's for the last member of a group, or a member of one that lost its quorum.
 - `Database::is_shut_out` says when a device can no longer read a sealed group it once could, and `Database::relinquish` has it give up what it read and stay to relay the group.
 
 ### Changed

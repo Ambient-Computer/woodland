@@ -124,10 +124,28 @@ pub enum Error {
     ///
     /// [forget]: Database::forget
     PassedOver,
-    /// The device has a role in the group, and can't [forget] it.
+    /// The device has a role in the group, and can't [forget] it. It
+    /// is removed first, or [abandons] the group for good.
     ///
     /// [forget]: Database::forget
+    /// [abandons]: Database::abandon
     StillAMember,
+    /// The device has no role in the group, so there's nothing to
+    /// [abandon]: it [forgets] the group, and may hold it again.
+    ///
+    /// [abandon]: Database::abandon
+    /// [forgets]: Database::forget
+    NotAMember,
+    /// The device [abandoned] that group, and never holds it again.
+    ///
+    /// [abandoned]: Database::abandon
+    Abandoned,
+    /// A group founded to [carry on] from this one is still taking
+    /// its state from it. [Resume] until that's done.
+    ///
+    /// [carry on]: Database::succeed
+    /// [Resume]: Database::resume
+    Bequeathing,
     /// This device read the group once and can't any longer, so it
     /// has no state to stand in for the history it was asked to
     /// shed. It [forgets] the group, or [relinquishes] what it could
@@ -181,6 +199,11 @@ impl fmt::Display for Error {
             }
             Self::StillAMember => {
                 formatter.write_str("this device is still a member of that group")
+            }
+            Self::NotAMember => formatter.write_str("this device holds no role in that group"),
+            Self::Abandoned => formatter.write_str("this device abandoned that group for good"),
+            Self::Bequeathing => {
+                formatter.write_str("another group is still taking its state from that one")
             }
             Self::ShutOut => {
                 formatter.write_str("this device can no longer read that group, and sheds nothing")
@@ -362,6 +385,12 @@ impl<S: Store> Database<S> {
             return Err(Error::NoBlobPolicy);
         }
         let mut step = self.begin()?;
+        // A group this device left as a member is one it signed
+        // things in and forgot them. It doesn't sign there again.
+        let abandoned = step.get(&keys::abandoned(id)).await;
+        if self.guard(abandoned)?.is_some() {
+            return Err(Error::Abandoned);
+        }
         if !self.groups.contains_key(&id) {
             let mut group = Group::start(chain, &mut step).ok_or(Error::BadInvitation)?;
             let unlocked = group.unlock(&self.identity, &mut step).await;

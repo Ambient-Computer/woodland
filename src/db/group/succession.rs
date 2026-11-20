@@ -138,6 +138,12 @@ impl Group {
         self.pinned = heir;
     }
 
+    /// Whether a group founded to carry on from this one is still
+    /// copying its state.
+    pub(crate) fn is_pinned(&self) -> bool {
+        self.pinned.is_some()
+    }
+
     /// Has the group take its first state from the one it carries on
     /// from, which this device holds.
     pub(crate) fn inherit<V: View>(&mut self, step: &mut Step<V>) {

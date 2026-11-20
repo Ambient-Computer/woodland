@@ -83,6 +83,116 @@ fn a_group_nobody_here_holds_cant_be_forgotten() {
     ));
 }
 
+fn abandon(sim: &mut Sim, device: usize, group: GroupId) -> Result<(), Error> {
+    let outputs = block_on(sim.devices[device].abandon(group))?;
+    sim.absorb(device, outputs);
+
+    Ok(())
+}
+
+/// The last device a group has can't be removed by anyone. It lets
+/// the group go for good.
+#[test]
+fn the_last_member_abandons_its_group_and_keeps_none_of_it() {
+    let (mut sim, group) = Sim::group(1, 1);
+    sim.write_to(PHONE, group, set(notes(group), "kept", "yes"));
+    sim.settle();
+    assert!(matches!(
+        forget(&mut sim, PHONE, group),
+        Err(Error::StillAMember)
+    ));
+
+    abandon(&mut sim, PHONE, group).expect("abandoned");
+
+    assert_eq!(sim.devices[PHONE].groups().count(), 0);
+    assert_eq!(kept(&sim, PHONE), 0, "nothing is left behind");
+    let everything = Changed::Everything { group };
+    assert!(sim.changes[PHONE].contains(&everything));
+}
+
+/// It signed things there and forgot them. Founded again from the
+/// same seed it would be the same group, and joined again it would
+/// be the same member: neither happens, before a restart or after.
+#[test]
+fn an_abandoned_group_is_never_held_again() {
+    let (mut sim, group) = settled();
+    let invitation = sim.devices[PHONE].invite(group).expect("held");
+    abandon(&mut sim, NAS, group).expect("abandoned");
+
+    let joined = block_on(sim.devices[NAS].join(&invitation));
+    assert!(matches!(joined, Err(Error::Abandoned)));
+    sim.restart(NAS);
+    let joined = block_on(sim.devices[NAS].join(&invitation));
+    assert!(matches!(joined, Err(Error::Abandoned)));
+    assert_eq!(sim.devices[NAS].groups().count(), 0);
+
+    let (mut sim, group) = Sim::group(1, 1);
+    abandon(&mut sim, PHONE, group).expect("abandoned");
+    let founded = block_on(sim.devices[PHONE].found([7; 32]));
+    assert!(matches!(founded, Err(Error::Abandoned)));
+    let (other, _) = block_on(sim.devices[PHONE].found([8; 32])).expect("another group");
+    assert_ne!(other, group);
+}
+
+/// To the others it's a device that was lost: they wait on its
+/// weight until they remove it, which they still can.
+#[test]
+fn the_rest_carry_on_once_they_remove_whoever_abandoned_them() {
+    let (mut sim, group) = settled();
+    abandon(&mut sim, NAS, group).expect("abandoned");
+
+    sim.write_to(LAPTOP, group, set(notes(group), "later", "yes"));
+    sim.reconfigure(PHONE, group, [PHONE, LAPTOP]);
+    sim.settle();
+
+    let later = sim.committed(PHONE, group, notes(group), "later");
+    assert_eq!(later.as_deref(), Some("yes"));
+    assert!(!sim.devices[PHONE].groups[&group].has(sim.id(NAS).into()));
+    // What they send it falls on deaf ears.
+    assert_eq!(kept(&sim, NAS), 0);
+}
+
+#[test]
+fn a_device_with_no_role_has_nothing_to_abandon() {
+    let (mut sim, group) = settled();
+
+    assert!(matches!(
+        abandon(&mut sim, FRIEND, group),
+        Err(Error::NotAMember)
+    ));
+    let stranger = GroupId::from_bytes([9; 32]);
+    assert!(matches!(
+        abandon(&mut sim, FRIEND, stranger),
+        Err(Error::UnknownGroup)
+    ));
+    assert_eq!(sim.devices[FRIEND].groups().count(), 1);
+}
+
+/// A group that lost its quorum is carried on from, and then let go
+/// of: but not while the group that carries on is still copying it.
+#[test]
+fn a_group_is_abandoned_once_its_successor_has_its_state() {
+    let (mut sim, old) = settled();
+    sim.isolate(LAPTOP);
+    sim.isolate(NAS);
+    let (new, outputs) = block_on(sim.devices[PHONE].succeed(old, [9; 32])).expect("founded");
+    sim.absorb(PHONE, outputs);
+    assert!(matches!(
+        abandon(&mut sim, PHONE, old),
+        Err(Error::Bequeathing)
+    ));
+
+    sim.run();
+    abandon(&mut sim, PHONE, old).expect("abandoned");
+
+    assert_eq!(sim.devices[PHONE].groups().collect::<Vec<_>>(), [new]);
+    let kept = sim.committed(PHONE, new, notes(old), "kept");
+    assert_eq!(kept.as_deref(), Some("yes"));
+    sim.restart(PHONE);
+    let kept = sim.committed(PHONE, new, notes(old), "kept");
+    assert_eq!(kept.as_deref(), Some("yes"));
+}
+
 #[test]
 fn a_removed_member_can_forget_and_be_invited_back() {
     let (mut sim, group) = settled();

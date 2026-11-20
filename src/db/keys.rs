@@ -4,6 +4,7 @@
 //! ```text
 //! [IDENTITY]                                    → the device's secret key
 //! [FOUNDING][group]                             → the group's first checkpoint
+//! [ABANDONED][group]                            → a group this device left as a member, and never holds again
 //! [GROUP][group][PROTOCOL][CHAIN]               → where the checkpoint chain began, and what's undecided
 //! [GROUP][group][PROTOCOL][LINK][height]        → a decided checkpoint, and who voted for it
 //! [GROUP][group][PROTOCOL][META]                → what's held, what's committed
@@ -59,6 +60,8 @@ const FOUNDING: u8 = 1;
 const GROUP: u8 = 2;
 const IDENTITY: u8 = 3;
 const SEALING: u8 = 4;
+// 5 is where blobs are kept: see `blob::keys`.
+const ABANDONED: u8 = 6;
 
 const PROTOCOL: u8 = 1;
 const COMMITTED: u8 = 2;
@@ -140,6 +143,13 @@ pub(crate) fn foundings() -> Vec<u8> {
 
 pub(crate) fn founding(group: GroupId) -> Vec<u8> {
     [&[FOUNDING][..], group.as_bytes()].concat()
+}
+
+/// A group this device was a member of and let go of. It signed
+/// things there that it no longer remembers, so it never holds the
+/// group again.
+pub(crate) fn abandoned(group: GroupId) -> Vec<u8> {
+    [&[ABANDONED][..], group.as_bytes()].concat()
 }
 
 /// Everything a group owns.
