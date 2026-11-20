@@ -45,7 +45,7 @@ pub use blob::BlobRef;
 pub use chain::Role;
 pub use db::{
     Answer, Changed, ClockId, Configuration, Database, Error, Found, GroupId, Outcome, Outputs,
-    Part, Pending, Reached, Reconfigured, Transaction, TransactionId, Waiting,
+    Part, Pending, Reached, Reconfigured, Standing, Transaction, TransactionId, Waiting,
 };
 #[cfg(feature = "blobs")]
 pub use db::{BlobPolicy, Import, ImportId};

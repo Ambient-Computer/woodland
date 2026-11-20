@@ -226,6 +226,14 @@ impl<S: Store> Database<S> {
     /// and it hasn't been given the new one. What it reads is as the
     /// group was then, and it can't [compact].
     ///
+    /// It says what this device holds, and not whether the group has
+    /// let it back in: that shows only when the checkpoint that does
+    /// arrives. It's also true of a device that holds a role and is
+    /// waiting to be handed the secret, which has nothing to choose:
+    /// [`standing`] tells the two apart.
+    ///
+    /// [`standing`]: Self::standing
+    ///
     /// A device left like this chooses: [`forget`] the group, or
     /// [`relinquish`] what it could read and stay to carry it.
     /// [`Changed::Members`] says when to look.

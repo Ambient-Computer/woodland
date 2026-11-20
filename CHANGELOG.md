@@ -16,6 +16,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `FileStore::open_with_cache` sets how much of the file is kept in memory.
 - `Database::checkpoint` attempts a checkpoint of one group now, without time passing. Call it after a write or a received message to commit without waiting for a timer.
 - `StoreError::fault` says what went wrong with a store where it could tell: `StoreFault::Busy` when something else has it open, and `StoreFault::Mismatched` when what's under that name isn't a store this version opens.
+- `Database::standing` says where a device stands in a group in one answer: `Standing::Member`, `Outside`, `ShutOut`, or `Waiting`.
+- `Database::members` lists every peer with a role in a group the device holds, and whoever it has asked for: who to connect to.
 - `Database::is_shut_out` says when a device can no longer read a sealed group it once could, and `Database::relinquish` has it give up what it read and stay to relay the group.
 
 ### Changed
