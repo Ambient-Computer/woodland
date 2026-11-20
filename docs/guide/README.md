@@ -31,7 +31,7 @@ How the library is meant to be used by an application. Rustdoc has the signature
   - `changed`: re-run whatever reads it affects. See [Reading](#reading).
   - `outcomes`: what became of this device's own transactions.
   - `reconfigured`: what became of this device's requests to change a group's members.
-  - `unfinished`: call `resume()` until it's false. A step does a bounded amount of work so none blocks for long.
+  - `unfinished`: call `resume()` until it's false. A step does a bounded amount of work so none blocks for long. Nothing has to wait for it: any other call may come first, and says `unfinished` in its turn.
 - `settle(&mut outputs)` is that last loop: it resumes until nothing is unfinished and adds what each step asked for to `outputs`, each change once. Handle `outputs` once afterwards. `Outputs::absorb` does the adding, for an application that would rather run the loop itself and send as it goes.
 - One step runs at a time. Every call takes `&mut self`, so the compiler holds native code to it. A browser application that calls in from event handlers has to queue the calls itself: a second call made while one is waiting on the store is a bug in the application.
 - `Outputs` is given only after the step is durable. Send after, never before.
@@ -60,6 +60,11 @@ How the library is meant to be used by an application. Rustdoc has the signature
 - `Outputs::reconfigured` says what became of a request: `Carried`, or `Spent` because the group changed some other way first. A spent request did nothing. Read the configuration, and ask again if what was wanted still is.
 - Roles: `Role::contributor(weight)` writes and votes, `Role::witness(weight)` votes only, `Role::reader(key)` reads a sealed group. `.only(clocks)` narrows a contributor; `.sealed_to(key)` gives a contributor a sealed group's secret.
 - A quorum is counted by weight: see [checkpoints](../spec/checkpoints.md). Offline devices with weight delay commits; they never endanger them. Remove one that's gone for good.
+- **Equal weights surprise small groups.** A quorum is more than half the weight, so two devices at weight 1 need each other for everything: nothing commits unless both are reachable, and neither can remove the other, a lost one included. Three at weight 1 lose any one and carry on.
+- For two devices, choose which failure to live with. Equal weights lose the group's finality with either device, and what's left is `succeed`. One device at weight 2 and the other at 1 lets the heavier commit and remove alone, and stops everything if it is the one that's lost. A third device, even a witness that only votes, removes the choice.
+- Weight given is weight waited on. A device that's given a say and never shows up counts toward the quorum until it's removed, which takes a quorum without it. Admit a new device as `Role::contributor(0)`: it writes at once and decides nothing. Give it weight once it has synced.
+- An invitation and a role are two steps, and a sealed group's needs something back: `reconfigure` takes the joiner's `sealing_key()`, which only the joiner has. The usual exchange is: the joiner sends its key and whatever proves it was invited, the inviter answers with `invite()` and asks for the role. Carrying that, and deciding who may ask, is the application's: the library hands over bytes and is told about roles.
+- `invite()` holds the group's first checkpoint, its latest, and each one that changed the members. It grows with those changes and holds no data.
 - A device removed from a sealed group keeps what it could read and reads nothing since: `is_shut_out(group)` says so, and `Changed::Members` says when to ask. It can't `compact` until it chooses. `forget` deletes the group, which is what a person who removed someone expects of that someone's device. `relinquish` deletes what it could read and its secrets, and stays to carry the group for others, as a server might.
 - A device that carries a group it can't read sheds history when it's handed state to hold in its place. `compact` is how it asks, and the state arrives over the steps that follow, from any peer that has it. Set its blob policy for what it should keep.
 - `want` holds only some clocks, `ask` narrows one connection, `forget` drops a group the device has no role in.
@@ -84,7 +89,7 @@ How the library is meant to be used by an application. Rustdoc has the signature
   - Committed (`query.committed()`): exactly one checkpoint's state, final, and the answer says which checkpoint.
 - A decision that must not be undone is made from committed reads, or waits for its transaction's `Committed`.
 - Queries are bounded ordered ranges: a key, a prefix, a table, a range of rows, or an index range. There are no joins or aggregates; compute those in the application.
-- `read_some(&query, limit)` reads a part at a time and returns the query for the rest.
+- `read_some(&query, limit)` reads a part at a time and returns the query for the rest. Each part is of one moment, and two parts may be either side of a step: whatever that step changed is in its `changed`, so a reader that pages while steps run re-reads what's reported and misses nothing.
 - Readers such as `Table::read`, `Sequence::read`, and `Allowances::read` turn an answer into something typed. A row gives what it holds by type: `row.text(column)`, `row.integer(column)`, and so on, each `None` where the row holds nothing of that type.
 - A row is changed or deleted as it was read, never blindly by key: a change meant for one row must not land on a later row under the same key. `delete_row(group, table, key)` on the database is the read and the delete together, for a button that deletes what's on screen.
 - To subscribe: keep the `Query`, and re-run it when `query.is_affected_by(&change)` for a change in `Outputs::changed`. A change says where to look, not what's there.
@@ -104,7 +109,10 @@ How the library is meant to be used by an application. Rustdoc has the signature
 - `blob_held` says how many bytes of a blob are here, and `Changed::Blob` when that changes. `read_blob` reads a range, or says it isn't held. Treat every blob as possibly absent: nothing promises anyone has it.
 - `fetch_blob` asks for one the policy leaves out. `release_blob` lets its bytes go and keeps the reference.
 - Blob bytes travel apart from everything else. When `Outputs::blobs` names a peer, call `next_blob_message(peer)` for one bounded message, send it, and call again once it has gone. Hand what arrives to `receive_blob`. Give these a stream of their own and a large blob never delays sync.
-- Bytes go when nothing refers to them: after a committed delete, that is when `compact` sheds the history that did.
+- A message is taken to be sent once it's taken. One that's lost with its connection isn't queued again: whoever wanted the part asks again when a peer connects and when time passes, and what had arrived is kept. So `tick` is also what gets a stalled transfer going.
+- `Changed::Blob` names a blob and no group. A blob is held once for the device, whichever groups refer to it; match it to rows by the name in their references.
+- The blob policy is kept in the store. Say it once, and again only to change it.
+- Bytes go when nothing refers to them: after a committed delete, that is when `compact` sheds the history that did. Until then a deleted file still takes its space.
 - A group that wants its blobs kept needs a device whose policy is `All`. It need not be able to read them.
 
 ## Upkeep

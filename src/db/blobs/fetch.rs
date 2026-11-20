@@ -166,7 +166,8 @@ pub(in crate::db) async fn settle<V: View>(
 impl<S: Store> Database<S> {
     /// Says which blobs this device fetches without being asked. It
     /// has to be said before the device holds any group, and may be
-    /// said again at any time.
+    /// said again at any time. It's kept in the store: a device that
+    /// starts again goes by what it last said.
     ///
     /// It covers the blobs a read would find a reference to. One the
     /// policy leaves out is fetched when the application [asks].

@@ -346,6 +346,11 @@ impl<S: Store> Database<S> {
     /// where the group began, and proof of how far it has got. Give it
     /// only to a device that should trust this one about that.
     ///
+    /// It holds the group's first checkpoint, its latest, and each
+    /// one between that changed who the members are. So it grows with
+    /// every such change, and with how many members and clocks the
+    /// group has. None of the group's data is in it.
+    ///
     /// [join]: Self::join
     pub fn invite(&self, group: GroupId) -> Option<Vec<u8>> {
         let invitation = self.groups.get(&group)?.invitation()?;

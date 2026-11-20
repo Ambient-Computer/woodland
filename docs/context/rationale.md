@@ -73,6 +73,23 @@ The spec states decisions without their history. This page keeps the history: wh
 - Determinism survives because a step runs alone and waits on nothing but its store.
 - Owning the drivers, rather than accepting any store an application brings, was the project author's suggestion. It removes storage callbacks from every binding and lets one test suite vouch for every store.
 
+## Why asking for a checkpoint is not time passing
+
+- Decided in November 2026, after an application drove time from the network: it told each device time had passed for every message received, to commit sooner.
+- Simulated here with three contributors: more than 3,000 messages were waiting after 3,000 were delivered, and nothing had committed. With time on a timer the same writes commit.
+- Reported by that application, from two browsers through a relay, and not run here: a removal uncommitted after 60 seconds and about 7,000 messages, against 9 messages and 200 ms on a timer.
+- A device that is told time has passed gives up on attempts and repeats itself. That is right for a clock and wrong for an event, and the core cannot tell which it was given.
+- So there are two inputs. Wanting a checkpoint now says nothing about time, and is safe after anything.
+- Making the core refuse to repeat itself too often was considered. It has no clock to measure often by.
+
+## Why a member can abandon a group
+
+- Decided in November 2026. A group's last member could not delete it, and neither could the survivor of a group that had lost its quorum: removal takes a quorum, and there was none.
+- Letting a member simply delete was never an option. Holding the group again, it would sign at positions it had already signed, and vote against promises it had made.
+- Keeping what it signed, so that it could come back, was considered. That is most of what the application wanted gone.
+- Refusing the group for good costs one name per group abandoned, and makes the member, to everyone else, exactly a device that was lost. The design already expects those.
+- Allowing it only to a group's sole member was the first plan. It leaves out the survivor of a succeeded group, whose lost peers still hold roles.
+
 ## Why confidentiality is simple here
 
 - Most local-first encryption work exists to handle membership changes that happen concurrently. A checkpoint chain has none.

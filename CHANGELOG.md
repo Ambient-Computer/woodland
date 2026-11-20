@@ -33,6 +33,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `FileStore::open` keeps at most 64 MiB of the file in memory, down from 1 GiB.
 - `compact` on a device that relays a sealed group it can't read now sheds history, by asking a peer for committed state. It used to do nothing.
 - `compact` fails with `Error::ShutOut` on a device that was removed from a sealed group, until it calls `forget` or `relinquish`.
+- `Error` has three new variants: `NotAMember`, `Abandoned`, and `Bequeathing`. `found` and `join` fail with `Abandoned` for a group the device abandoned.
+- The guide no longer says `tick` may be called at any time. Call it on a timer only: calling it for each message received can stop a group committing. `tick` itself is unchanged.
 
 ### Fixed
 

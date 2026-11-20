@@ -181,7 +181,8 @@ impl<S: Store> Database<S> {
 
     /// Up to `length` bytes of a blob, from `offset`: fewer at its
     /// end, and never more than [`BLOB_STEP`]. `None` if this device
-    /// doesn't hold all of that range.
+    /// doesn't hold all of that range. From its end on there are no
+    /// bytes to hold, and what comes back is empty.
     ///
     /// The bytes under a reference are the same wherever and whenever
     /// they're read.
