@@ -640,6 +640,20 @@ impl Group {
         self.progress(identity, None, step).await
     }
 
+    /// Starts an attempt at the next checkpoint, if there's something
+    /// to commit and nobody is at it. No time has passed: an attempt
+    /// that's under way is left as long as it was going to be, and
+    /// nothing is said again.
+    pub(crate) async fn try_now<V: View>(
+        &mut self,
+        identity: &Identity,
+        step: &mut Step<V>,
+    ) -> Result<(), StoreError> {
+        self.fore.due = true;
+
+        self.progress(identity, None, step).await
+    }
+
     pub(crate) async fn tick<V: View>(
         &mut self,
         identity: &Identity,

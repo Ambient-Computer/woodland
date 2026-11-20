@@ -73,6 +73,24 @@ The spec states decisions without their history. This page keeps the history: wh
 - Determinism survives because a step runs alone and waits on nothing but its store.
 - Owning the drivers, rather than accepting any store an application brings, was the project author's suggestion. It removes storage callbacks from every binding and lets one test suite vouch for every store.
 
+## Why asking for a checkpoint is not time passing
+
+- Decided in November 2026, after an application drove time from the network: it told each device time had passed for every message received, to commit sooner.
+- Simulated here with three contributors: more than 3,000 messages were waiting after 3,000 were delivered, and nothing had committed. With time on a timer the same writes commit.
+- Reported by that application, from two browsers through a relay, and not run here: a removal uncommitted after 60 seconds and about 7,000 messages, against 9 messages and 200 ms on a timer.
+- A device that is told time has passed gives up on attempts and repeats itself. That is right for a clock and wrong for an event, and the core cannot tell which it was given.
+- So there are two inputs. Wanting a checkpoint now says nothing about time, and is safe after anything.
+- Making the core refuse to repeat itself too often was considered. It has no clock to measure often by.
+
+## Why a member cannot yet delete a group it cannot leave
+
+- A group's last member cannot delete it, and neither can the survivor of a group that lost its quorum: removal takes a quorum, and there is none. The group stays in the store whole.
+- Letting a member simply delete is not an option. Holding the group again, it would sign at positions it had already signed, and vote against promises it had made.
+- Built and withdrawn in November 2026: deleting the group and keeping its name, so that it is refused for good. It passed its tests. It was withdrawn because the names are never shed, and nothing a device keeps may grow without bound.
+- No way was found to shed a name safely. An invitation that leaves the device out may only be older than its admission, and a group that is dead never removes anyone.
+- The difficulty is that a device has one key for every group. Deleting what it signed in one group while keeping the key is [amnesia](../spec/storage.md) in that group.
+- The direction that leaves nothing behind is a signing key for each membership, vouched for by the device's and kept with the group. Deleting the group deletes the key, and holding it again is returning as a new peer. Not designed.
+
 ## Why confidentiality is simple here
 
 - Most local-first encryption work exists to handle membership changes that happen concurrently. A checkpoint chain has none.

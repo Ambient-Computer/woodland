@@ -13,7 +13,9 @@ use std::cell::Cell;
 
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
-use woodland::{BrowserStore, Database, ModelId, Order, Query, Store, Transaction, View, Write};
+use woodland::{
+    BrowserStore, Database, ModelId, Order, Query, Store, StoreFault, Transaction, View, Write,
+};
 
 /// The same tests every store is put through.
 #[path = "../src/store/contract.rs"]
@@ -86,12 +88,56 @@ async fn what_was_applied_is_there_when_its_opened_again() {
 async fn a_store_has_one_owner_at_a_time() {
     let name = name();
     let first = open(&name).await;
-    assert!(BrowserStore::open(&name).await.is_err());
+    let refused = BrowserStore::open(&name).await.expect_err("refused");
+    assert_eq!(refused.fault(), StoreFault::Busy);
     assert!(BrowserStore::open(&self::name()).await.is_ok());
 
     drop(first);
     turn().await;
     assert!(BrowserStore::open(&name).await.is_ok());
+}
+
+/// Has something else in the origin keep a database under `name`, at
+/// a version of its own.
+async fn squat(name: &str) {
+    use js_sys::{Function, Reflect};
+    use wasm_bindgen::JsValue;
+    use wasm_bindgen::closure::Closure;
+
+    let made = js_sys::Promise::new(&mut |resolve, reject| {
+        let factory = Reflect::get(&js_sys::global(), &"indexedDB".into()).expect("a factory");
+        let open: Function = Reflect::get(&factory, &"open".into()).expect("open").into();
+        let request = open
+            .call2(&factory, &name.into(), &2.into())
+            .expect("asked");
+        let asked = request.clone();
+        let done = Closure::once_into_js(move || {
+            let database = Reflect::get(&asked, &"result".into()).expect("a database");
+            let close: Function = Reflect::get(&database, &"close".into())
+                .expect("close")
+                .into();
+            close.call0(&database).expect("closed");
+            resolve.call0(&JsValue::NULL).expect("resolved");
+        });
+        Reflect::set(&request, &"onsuccess".into(), &done).expect("set");
+        Reflect::set(&request, &"onerror".into(), &reject).expect("set");
+    });
+    JsFuture::from(made).await.expect("made");
+}
+
+/// The name is the origin's to share, and something else got there
+/// first. That's told apart from a store that's broken.
+#[wasm_bindgen_test]
+async fn a_database_that_isnt_a_store_is_refused_as_one() {
+    let name = name();
+    squat(&name).await;
+
+    let refused = BrowserStore::open(&name).await.expect_err("refused");
+    assert_eq!(refused.fault(), StoreFault::Mismatched);
+    // The name isn't left taken by the store that failed to open.
+    turn().await;
+    let again = BrowserStore::open(&name).await.expect_err("refused");
+    assert_eq!(again.fault(), StoreFault::Mismatched);
 }
 
 /// A page of a range, as it was, while the range changes under it:

@@ -45,10 +45,15 @@ pub use blob::BlobRef;
 pub use chain::Role;
 pub use db::{
     Answer, Changed, ClockId, Configuration, Database, Error, Found, GroupId, Outcome, Outputs,
-    Part, Pending, Reached, Reconfigured, Transaction, TransactionId, Waiting,
+    Part, Pending, Reached, Reconfigured, Standing, Transaction, TransactionId, Waiting,
 };
 #[cfg(feature = "blobs")]
 pub use db::{BlobPolicy, Import, ImportId};
+/// A peer's identity: its Ed25519 public key. It's
+/// [`ed25519_dalek`]'s own type, here so that an application needn't
+/// depend on the same version of that crate to name one. Make one
+/// from its 32 bytes with `VerifyingKey::from_bytes`.
+pub use ed25519_dalek::VerifyingKey;
 pub use model::{
     Allowance, Allowances, ColumnId, Combine, Comparison, Declared, Extension, Filter, ModelId,
     Needs, Query, Row, Sequence, Table, Value, extend,
@@ -56,6 +61,8 @@ pub use model::{
 pub use seal::SealingKey;
 #[cfg(all(feature = "browser", target_arch = "wasm32"))]
 pub use store::{BrowserStore, BrowserView};
-pub use store::{Entry, MemoryStore, MemoryView, Order, Store, StoreError, View, Write};
+pub use store::{
+    Entry, MemoryStore, MemoryView, Order, Store, StoreError, StoreFault, View, Write,
+};
 #[cfg(feature = "file")]
 pub use store::{FileStore, FileView};

@@ -34,6 +34,8 @@ Woodland runs inside other people's programs, on other people's devices. This pa
 - Verified by running the driver's tests in Firefox 159 and Chromium 156, November 2026: keys of raw bytes order bytewise, the empty key included; a transaction asked for strict durability is accepted; a held lock refuses a second owner and is free again once released.
 - Not verified: any of this in Safari, in a worker, or across two real tabs. The tests run in one page.
 - Reported by the author of an application built on the library, November 2026, and not run here: the driver in a shared worker in Chromium 156, with a reload and a second tab attaching to the same worker.
+- Reported the same way, by another application, November 2026: the driver in a dedicated worker in Chromium 156, with blobs, through a relay.
+- Reported by that application and not measured here: blobs crossed a public relay at about 260 KB a second, 24 MB in 92 seconds, while sync messages still crossed in about 200 ms. A peer is asked for four parts of 112 KiB at a time, which was chosen and not tuned.
 
 ## Stores looked at and not used
 

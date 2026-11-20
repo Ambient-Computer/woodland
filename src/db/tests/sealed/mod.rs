@@ -424,6 +424,102 @@ fn a_peer_whose_copy_was_no_good_is_handed_the_secret_by_another() {
     );
 }
 
+/// A table that was created and never named is a table all the same,
+/// in a sealed group as in an open one, on the device that made it
+/// and on one that was sent it.
+#[test]
+fn a_table_nobody_named_reads_as_a_table() {
+    use crate::model::{ColumnId, Table};
+
+    let (mut sim, group) = sealed();
+    let table = ModelId::table(group, [5; 32]);
+    let column = ColumnId::text(table, [1; 32]);
+    let create = Transaction::new().create_table(table, [(column, "name")]);
+    sim.write_to(PHONE, group, create);
+    let read = |sim: &Sim, device: usize, query: &Query| Table::read(&sim.read(device, query));
+
+    let whole = Query::table(group, table);
+    assert_eq!(
+        read(&sim, PHONE, &whole).map(|it| it.name().to_owned()),
+        Some(String::new())
+    );
+    sim.settle();
+    for query in [
+        whole.clone(),
+        whole.committed(),
+        Query::row(group, table, b"nobody"),
+    ] {
+        for device in [PHONE, LAPTOP, FRIEND] {
+            let found = read(&sim, device, &query);
+            assert!(found.is_some(), "device {device}, {query:?}");
+        }
+    }
+}
+
+/// Where each device stands follows the chain: a role or none, and
+/// for one that lost a role, whether it ever read.
+#[test]
+fn a_device_says_where_it_stands() {
+    use crate::Standing;
+
+    let (mut sim, group) = sealed();
+    let standing = |sim: &Sim, device: usize| sim.devices[device].standing(group);
+    for device in [PHONE, LAPTOP, NAS, FRIEND] {
+        assert_eq!(standing(&sim, device), Some(Standing::Member), "{device}");
+    }
+    assert_eq!(standing(&sim, GUEST), Some(Standing::Outside));
+    let stranger = GroupId::from_bytes([9; 32]);
+    assert_eq!(sim.devices[PHONE].standing(stranger), None);
+
+    // The friend and the NAS are removed. One of them read.
+    let fewer = roles(&sim).into_iter().take(2);
+    sim.assign(PHONE, group, fewer);
+    sim.settle();
+    assert_eq!(standing(&sim, FRIEND), Some(Standing::ShutOut));
+    assert_eq!(standing(&sim, NAS), Some(Standing::Outside));
+
+    // Let back in, the friend is a member again once it hears.
+    sim.isolate(FRIEND);
+    let all = roles(&sim);
+    sim.assign(PHONE, group, all);
+    sim.settle();
+    assert_eq!(standing(&sim, FRIEND), Some(Standing::ShutOut));
+    sim.connect_all();
+    sim.settle();
+    assert_eq!(standing(&sim, FRIEND), Some(Standing::Member));
+}
+
+/// Whoever holds a role in any group this device holds, and whoever
+/// it has asked for, once each and without itself.
+#[test]
+fn a_device_lists_who_is_worth_a_connection() {
+    let (mut sim, group) = sealed();
+    let ids = |sim: &Sim, devices: &[usize]| -> BTreeSet<[u8; 32]> {
+        devices.iter().map(|&it| sim.id(it).to_bytes()).collect()
+    };
+    let listed = |sim: &Sim, device: usize| -> BTreeSet<[u8; 32]> {
+        let members = sim.devices[device].members();
+
+        members.iter().map(VerifyingKey::to_bytes).collect()
+    };
+    assert_eq!(listed(&sim, PHONE), ids(&sim, &[LAPTOP, NAS, FRIEND]));
+    assert_eq!(
+        listed(&sim, GUEST),
+        ids(&sim, &[PHONE, LAPTOP, NAS, FRIEND])
+    );
+
+    sim.isolate(PHONE);
+    let more = roles(&sim)
+        .into_iter()
+        .chain([(GUEST, Role::reader(key(&sim, GUEST)))]);
+    sim.assign(PHONE, group, more);
+    assert_eq!(
+        listed(&sim, PHONE),
+        ids(&sim, &[LAPTOP, NAS, FRIEND, GUEST])
+    );
+    assert_eq!(sim.devices[PHONE].members().len(), 4);
+}
+
 #[test]
 fn a_founder_reads_what_it_writes_before_anyone_joins() {
     let (mut sim, group) = founded();

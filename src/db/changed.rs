@@ -57,6 +57,11 @@ pub enum Changed {
     Checkpoint { group: GroupId, height: u64 },
     /// How much of a blob this device holds. No read of state is
     /// different because of it.
+    ///
+    /// It names no group. A blob is held once for the whole device,
+    /// whichever groups refer to it, and the device doesn't keep which
+    /// rows those are: an application that shows a blob's progress
+    /// goes by the name, which is in the reference its rows hold.
     Blob { name: [u8; 32], length: u64 },
     /// Anything in the group, for either kind of read. The device
     /// caught up from a snapshot, or dropped writes that were discarded.

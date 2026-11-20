@@ -102,7 +102,7 @@ async fn own(name: &str) -> Result<Option<Owned>, StoreError> {
         .map_err(|it| failed(&it))?;
 
     if !granted.await {
-        return Err(StoreError::new("another store has it open"));
+        return Err(StoreError::busy("another store has it open"));
     }
 
     Ok(Some(Owned {
@@ -142,10 +142,20 @@ impl Drop for BrowserStore {
 impl BrowserStore {
     /// Opens the store called `name`, making it if it isn't there.
     ///
+    /// What it makes in the origin is one `IndexedDB` database called
+    /// `name`, at version 1, and while it's open a Web Lock called
+    /// `woodland/` and then `name`. Pick a name nothing else in the
+    /// origin uses for a database.
+    ///
     /// # Errors
     ///
-    /// If the browser won't open it, or another store has it open: in
-    /// this tab, another, or a worker.
+    /// If another store has it open, in this tab, another, or a
+    /// worker: that's [`Busy`]. If the origin already has a database
+    /// of that name at a later version, which is something else's:
+    /// that's [`Mismatched`]. Or if the browser won't open it.
+    ///
+    /// [`Busy`]: crate::StoreFault::Busy
+    /// [`Mismatched`]: crate::StoreFault::Mismatched
     pub async fn open(name: &str) -> Result<Self, StoreError> {
         let owned = own(name).await?;
         let factory = global("indexedDB").and_then(|it| it.dyn_into::<IdbFactory>().ok());
@@ -168,7 +178,15 @@ impl BrowserStore {
         let opened = settled(request.clone().into()).done().await;
         request.set_onupgradeneeded(None);
 
-        let database = opened.ok_or_else(|| StoreError::new("the browser wouldn't open it"))?;
+        // The name is the origin's to share. A database something else
+        // made under it, at a later version, isn't opened at this one.
+        let refusal = || match request.error() {
+            Ok(Some(error)) if error.name() == "VersionError" => StoreError::mismatched(
+                "the origin has a database of that name that isn't a store: use another name",
+            ),
+            _ => StoreError::new("the browser wouldn't open it"),
+        };
+        let database = opened.ok_or_else(refusal)?;
         let database = database.result().and_then(JsCast::dyn_into::<IdbDatabase>);
 
         Ok(Self {

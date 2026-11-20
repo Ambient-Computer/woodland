@@ -50,11 +50,11 @@ fn main() -> Result<(), Error> {
     let answer = block_on(phone.read(&todo.clone().committed()))?;
     println!("committed, before a checkpoint: {:?}", text(&answer));
 
-    // Checkpoints are attempted when the device is told time has
-    // passed. With a quorum of one, the attempt succeeds by itself.
-    // A step does a bounded amount of work, and says when there's more.
+    // A checkpoint is attempted when the application asks for one.
+    // With a quorum of one, the attempt succeeds by itself. A step
+    // does a bounded amount of work, and says when there's more.
     let mut told = Vec::new();
-    let mut outputs = block_on(phone.tick())?;
+    let mut outputs = block_on(phone.checkpoint(group))?;
     loop {
         told.extend(outputs.outcomes.iter().map(|(_, outcome)| *outcome));
         if !outputs.unfinished {

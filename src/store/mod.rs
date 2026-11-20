@@ -73,16 +73,64 @@ pub enum Order {
 ///
 /// Nothing can be done about it here. The step that hit it changes
 /// nothing and says nothing, and the application decides what's next.
+///
+/// What can be done depends on [what went wrong], where the store
+/// could tell.
+///
+/// [what went wrong]: Self::fault
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoreError {
+    fault: StoreFault,
     reason: String,
+}
+
+/// What went wrong with a store, as far as it could tell. The reason
+/// in words is in how the [error] is displayed, and isn't for
+/// matching on.
+///
+/// [error]: StoreError
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum StoreFault {
+    /// Something else has the store open: another tab, worker, or
+    /// process. The store is fine. Whoever has it is the device, and
+    /// everything goes through them.
+    Busy,
+    /// What's kept under that name isn't a store this version of the
+    /// library opens: it was made by something else, or by a later
+    /// version. Nothing was changed. Open another name, or upgrade.
+    Mismatched,
+    /// Anything else: the disk is full, the browser took the storage
+    /// back, the file is damaged.
+    Other,
 }
 
 impl StoreError {
     pub fn new(reason: impl Into<String>) -> Self {
+        Self::of(StoreFault::Other, reason)
+    }
+
+    #[cfg(any(feature = "file", all(feature = "browser", target_arch = "wasm32")))]
+    pub(crate) fn busy(reason: impl Into<String>) -> Self {
+        Self::of(StoreFault::Busy, reason)
+    }
+
+    #[cfg(any(feature = "file", all(feature = "browser", target_arch = "wasm32")))]
+    pub(crate) fn mismatched(reason: impl Into<String>) -> Self {
+        Self::of(StoreFault::Mismatched, reason)
+    }
+
+    fn of(fault: StoreFault, reason: impl Into<String>) -> Self {
         Self {
+            fault,
             reason: reason.into(),
         }
+    }
+
+    /// What went wrong, as far as the store could tell.
+    #[must_use]
+    pub fn fault(&self) -> StoreFault {
+        self.fault
     }
 }
 
