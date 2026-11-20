@@ -80,3 +80,6 @@ A checkpoint is a quorum's signed statement that a stretch of history is final. 
 
 - A checkpoint is worth making whenever a quorum is connected and something uncommitted exists.
 - Nothing requires checkpoints at any rate. A group that makes none still works, with only [optimistic reads](reads.md) advancing.
+- A device starts an attempt when its application asks for one, or when [time](library.md) passes.
+- Asking is not time passing. It starts an attempt where none stands, and outranks one only once time has run out on it.
+- Asking may therefore follow any input, a message received included. It is how a checkpoint is made as soon as there is something to commit.

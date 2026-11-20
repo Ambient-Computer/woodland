@@ -551,8 +551,40 @@ impl<S: Store> Database<S> {
         self.finish(step).await
     }
 
-    /// Time has passed. Call it now and then: it's when checkpoints are
+    /// Attempts a checkpoint of `group` now, if there's something to
+    /// commit, this device may propose one, and nobody is at it
+    /// already. Otherwise it does nothing.
+    ///
+    /// It isn't [`tick`]: no time has passed, so an attempt that's
+    /// under way isn't outbid and nothing is sent twice. That makes it
+    /// safe to call after anything, a [`write`] or a message received,
+    /// to commit as soon as there's something to.
+    ///
+    /// [`tick`]: Self::tick
+    /// [`write`]: Self::write
+    ///
+    /// # Errors
+    ///
+    /// If this device doesn't hold `group`, or the store fails.
+    pub async fn checkpoint(&mut self, group: GroupId) -> Result<Outputs, Error> {
+        let mut step = self.begin()?;
+        let held = self.groups.get_mut(&group).ok_or(Error::UnknownGroup)?;
+        let attempted = held.try_now(&self.identity, &mut step).await;
+        self.guard(attempted)?;
+
+        self.finish(step).await
+    }
+
+    /// Time has passed. Call it on a timer: it's when checkpoints are
     /// attempted, and when a stalled one is retried.
+    ///
+    /// Call it by the clock and by nothing else. A device that's told
+    /// time has passed gives up on attempts and repeats what it sent,
+    /// so one that ticks for every message it receives keeps its peers
+    /// too busy to decide anything. To commit sooner, ask for a
+    /// [`checkpoint`].
+    ///
+    /// [`checkpoint`]: Self::checkpoint
     ///
     /// # Errors
     ///

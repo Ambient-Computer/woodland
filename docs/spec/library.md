@@ -52,6 +52,8 @@ Woodland is a library with a deterministic core. The application owns the proces
 - Time is used only to wait: between attempts at a checkpoint, and before retrying a peer or a [fetch](blobs.md).
 - Time never orders data, breaks a tie, or decides validity.
 - A device with a wrong clock is slow or impatient, never incorrect.
+- Time passes by the application's clock and by nothing else. A device told that time has passed gives up on attempts and says again what it sent.
+- Time told by what arrives, once for each message, has every device repeating itself to the others faster than they can answer. Nothing is decided while that lasts.
 
 ## Testing
 

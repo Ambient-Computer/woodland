@@ -55,11 +55,11 @@ struct App {
 }
 
 impl App {
-    /// Writes, lets time pass so that it's committed, and has the
-    /// mirror take in what each step reports.
+    /// Writes, asks for a checkpoint so that it's committed, and has
+    /// the mirror take in what each step reports.
     fn write(&mut self, transaction: Transaction) -> Result<(), Error> {
         let mut changed = block_on(self.phone.write(self.group, transaction))?.changed;
-        let mut outputs = block_on(self.phone.tick())?;
+        let mut outputs = block_on(self.phone.checkpoint(self.group))?;
         loop {
             changed.extend(outputs.changed);
             if !outputs.unfinished {

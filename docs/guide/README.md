@@ -36,11 +36,12 @@ How the library is meant to be used by an application. Rustdoc has the signature
 
 ## Time
 
-- `tick()` takes no time and reads none. It means "some time has passed", and nothing about correctness depends on when or how often it's called.
-- It is when this device attempts a checkpoint, retries one that stalled, and stops assuming that what it sent its peers arrived.
-- Without ticks, writes still replicate and show in optimistic reads. They are not committed.
-- Tick on a coarse timer: every second or few while there is activity is plenty. Faster commits sooner and talks more.
-- A device that holds a quorum by itself, such as a founder alone, commits on its own tick. Call `tick()` right after `write` there and nothing is ever left provisional. When to spend a checkpoint is the application's call, so `write` never does it unasked.
+- `tick()` takes no time and reads none. It means "some time has passed". Nothing that's committed depends on when or how often it's called; whether anything gets committed does.
+- It is when this device attempts a checkpoint, gives up on one that stalled and tries again, and stops assuming that what it sent its peers arrived.
+- Tick on a timer and on nothing else: every second or few is plenty. Never tick because a message arrived. Each tick has a device repeat itself, so devices that tick per message drown each other and decide nothing.
+- `checkpoint(group)` is how to commit sooner. It attempts a checkpoint now if there's something to commit and nobody is at it, and otherwise does nothing. No time has passed, so it's safe after anything: call it after a `write`, and after `receive`, and commits follow at the speed of the network.
+- Without either, writes still replicate and show in optimistic reads. They are not committed.
+- A device that holds a quorum by itself, such as a founder alone, commits as soon as it asks. Call `checkpoint` right after `write` there and nothing is ever left provisional. When to spend a checkpoint is the application's call, so `write` never does it unasked.
 
 ## Groups and peers
 

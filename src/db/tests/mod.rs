@@ -6,6 +6,7 @@
 mod allowances;
 #[cfg(feature = "blobs")]
 mod blobs;
+mod cadence;
 mod checkpoints;
 mod clocks;
 mod compaction;
@@ -400,6 +401,12 @@ impl Sim {
     fn tick(&mut self, device: usize) {
         self.wake(device);
         let outputs = block_on(self.devices[device].tick()).expect("ticked");
+        self.absorb(device, outputs);
+    }
+
+    fn checkpoint(&mut self, device: usize, group: GroupId) {
+        self.wake(device);
+        let outputs = block_on(self.devices[device].checkpoint(group)).expect("asked");
         self.absorb(device, outputs);
     }
 
