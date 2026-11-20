@@ -48,6 +48,15 @@ Woodland runs inside other people's programs, on other people's devices. This pa
 - Object storage used directly has no ordered range that changes atomically. A driver on it would be a storage engine.
 - Any remote store makes each of a step's many small reads a round trip, and needs something to guarantee one writer. Neither is solved here.
 
+## One core for several stores
+
+- Measured in November 2026: a WebAssembly build that drives most of the library, optimised for size, without blobs.
+- On the browser driver alone it was 1,146 KB, 460 KB compressed. Opening a second database on the in-memory driver made it 1,418 KB and 543 KB: the core is compiled once per driver.
+- One store that is either driver made it 1,151 KB and 462 KB. That is what a browser application falling back to memory uses.
+- A store reached through a pointer cost about the same, 1,156 KB, and allocates on every call. It was not timed, and is not used.
+- Compiling the core for one such store always was rejected: an application with one driver would pay for an allocation on each read and save nothing.
+- Stores written by applications were considered again and rejected again. A store that tears a batch breaks agreement, and no test proves that one does not.
+
 ## Why not the origin-private file system
 
 - Its only durable interface is synchronous, and exists only in a dedicated worker: not a shared worker, not a service worker, not the page.

@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `AnyStore` is whichever store an application chose while running, so a browser that falls back from `BrowserStore` to `MemoryStore` carries the library once and not twice. `AnyStore::is_durable` says whether what it holds outlasts the process.
 - Blobs, behind the `blobs` feature: large bytes that a table cell refers to and each device holds by choice. Import them a piece at a time, read any range, and fetch or release them per device.
 - `BlobPolicy` says which blobs a device fetches unasked: all, those up to a size, or none. It can be set per model.
 - Blobs in a sealed group are encrypted. Devices that can't read the group still hold and serve them.

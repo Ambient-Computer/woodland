@@ -7,7 +7,8 @@
 //!
 //! Stores are the library's own: one driver per place it runs, each
 //! behind a feature, all held to this contract by the same tests. An
-//! application chooses one. It doesn't write one.
+//! application chooses one. It doesn't write one. One that chooses
+//! while it runs opens an [`AnyStore`].
 //!
 //! # The contract
 //!
@@ -34,6 +35,7 @@
 //! store restored from a backup is no different. It has forgotten
 //! everything since the copy was taken.
 
+mod any;
 #[cfg(any(test, all(feature = "browser", target_arch = "wasm32")))]
 mod browser;
 #[cfg(test)]
@@ -45,6 +47,7 @@ mod memory;
 use std::error::Error;
 use std::fmt;
 
+pub use any::{AnyStore, AnyView};
 #[cfg(all(feature = "browser", target_arch = "wasm32"))]
 pub use browser::{BrowserStore, BrowserView};
 #[cfg(feature = "file")]
