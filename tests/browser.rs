@@ -14,7 +14,8 @@ use std::cell::Cell;
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
 use woodland::{
-    BrowserStore, Database, ModelId, Order, Query, Store, StoreFault, Transaction, View, Write,
+    AnyStore, BrowserStore, Database, ModelId, Order, Query, Store, StoreFault, Transaction, View,
+    Write,
 };
 
 /// The same tests every store is put through.
@@ -63,6 +64,18 @@ async fn all<V: View>(view: &V) -> Vec<Vec<u8>> {
 #[wasm_bindgen_test]
 async fn it_does_what_every_store_does() {
     contract::holds(|| async { open(&name()).await }).await;
+}
+
+/// A store chosen while running is the store it holds, and no less.
+#[wasm_bindgen_test]
+async fn it_does_what_every_store_does_as_any_store() {
+    contract::holds(|| async {
+        let store = AnyStore::from(open(&name()).await);
+        assert!(store.is_durable());
+
+        store
+    })
+    .await;
 }
 
 #[wasm_bindgen_test]

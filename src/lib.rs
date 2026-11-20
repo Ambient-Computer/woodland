@@ -59,10 +59,11 @@ pub use model::{
     Needs, Query, Row, Sequence, Table, Value, extend,
 };
 pub use seal::SealingKey;
+pub use store::{
+    AnyStore, AnyView, Entry, MemoryStore, MemoryView, Order, Store, StoreError, StoreFault, View,
+    Write,
+};
 #[cfg(all(feature = "browser", target_arch = "wasm32"))]
 pub use store::{BrowserStore, BrowserView};
-pub use store::{
-    Entry, MemoryStore, MemoryView, Order, Store, StoreError, StoreFault, View, Write,
-};
 #[cfg(feature = "file")]
 pub use store::{FileStore, FileView};
