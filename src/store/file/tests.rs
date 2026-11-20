@@ -3,7 +3,7 @@ use tempfile::TempDir;
 use super::*;
 use crate::store::contract::{self, delete, put};
 use crate::testing::block_on;
-use crate::{Database, Query, Transaction};
+use crate::{Database, Query, StoreFault, Transaction};
 
 fn apply(store: &mut FileStore, batch: Vec<Write>) {
     block_on(store.apply(batch)).expect("applied");
@@ -52,7 +52,8 @@ fn a_file_has_one_owner_at_a_time() {
     let folder = folder();
     let first = open(&folder, "store");
 
-    assert!(FileStore::open(folder.path().join("store")).is_err());
+    let refused = FileStore::open(folder.path().join("store")).expect_err("refused");
+    assert_eq!(refused.fault(), StoreFault::Busy);
 
     drop(first);
     assert!(FileStore::open(folder.path().join("store")).is_ok());
@@ -68,7 +69,8 @@ fn a_file_that_isnt_a_store_is_refused() {
     )
     .expect("written");
 
-    assert!(FileStore::open(&path).is_err());
+    let refused = FileStore::open(&path).expect_err("refused");
+    assert_eq!(refused.fault(), StoreFault::Other);
 }
 
 /// The whole library on top of it: a device stops, and comes back as

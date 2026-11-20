@@ -12,6 +12,8 @@ How the library is meant to be used by an application. Rustdoc has the signature
 ## What the application provides
 
 - **A store.** `FileStore` (feature `file`) for native, `BrowserStore` (feature `browser`) for wasm, `MemoryStore` for tests. One `Database` per store at a time.
+- A store that won't open says why, as far as it can tell: `StoreError::fault` is `Busy` when something else has it open, and `Mismatched` when what's under that name isn't a store this version opens. Match on that and not on the words.
+- `BrowserStore::open(name)` keeps one IndexedDB database called `name`, at version 1, and holds a Web Lock called `woodland/<name>` while it's open. An origin that already has a database of that name gets `Mismatched`.
 - **A device secret.** 32 random bytes, passed to `Database::open`. Used only if the store is new; after that the store's own key wins. A device that loses its store is a different peer.
 - Pass fresh random bytes on every start, and give the transport `device_secret()`, which is the key the store holds. Keep it nowhere else: a copy that outlives the store is a peer that forgot what it signed, and data in a group goes to whoever holds the group.
 - **Seeds and nonces.** `found` takes a random seed. Model, column, and clock IDs take a nonce: random, or a constant every device derives alike, which is how devices agree on a name without talking.

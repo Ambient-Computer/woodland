@@ -15,7 +15,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use redb::{Database, ReadOnlyTable, ReadableDatabase, TableDefinition};
+use redb::{Database, DatabaseError, ReadOnlyTable, ReadableDatabase, TableDefinition};
 
 use super::{Entry, Order, Store, StoreError, View, Write};
 
@@ -82,7 +82,16 @@ impl FileStore {
         let path = path.as_ref().to_path_buf();
         let mut builder = Database::builder();
         builder.set_cache_size(cache);
-        let database = builder.create(&path).map_err(failed)?;
+        let database = builder.create(&path).map_err(|error| {
+            let reason = error.to_string();
+            match error {
+                DatabaseError::DatabaseAlreadyOpen => StoreError::busy(reason),
+                DatabaseError::UpgradeRequired(_) => StoreError::mismatched(reason),
+                // A file that was never a store can't be told from one
+                // that was damaged.
+                _ => StoreError::new(reason),
+            }
+        })?;
 
         // A view reads the table, so it has to be there from the start.
         let creating = database.begin_write().map_err(failed)?;

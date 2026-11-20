@@ -56,6 +56,8 @@ pub use model::{
 pub use seal::SealingKey;
 #[cfg(all(feature = "browser", target_arch = "wasm32"))]
 pub use store::{BrowserStore, BrowserView};
-pub use store::{Entry, MemoryStore, MemoryView, Order, Store, StoreError, View, Write};
+pub use store::{
+    Entry, MemoryStore, MemoryView, Order, Store, StoreError, StoreFault, View, Write,
+};
 #[cfg(feature = "file")]
 pub use store::{FileStore, FileView};
