@@ -13,8 +13,9 @@ cd "$(dirname "$0")/.."
 target=wasm32-unknown-unknown
 site=target/site
 
-# A broken link is a broken build.
-export RUSTDOCFLAGS="${RUSTDOCFLAGS:-} -D warnings"
+# A broken link is a broken build. The theme is only where a reader
+# starts: their own choice outlives it.
+export RUSTDOCFLAGS="${RUSTDOCFLAGS:-} -D warnings --default-theme ayu"
 
 cargo doc --no-deps --target "$target" --all-features --quiet
 
