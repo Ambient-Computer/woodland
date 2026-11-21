@@ -25,9 +25,7 @@ impl Query {
 
     /// The first key of what's read in parts.
     pub(crate) fn first(&self) -> Vec<u8> {
-        self.parted()
-            .map(|(start, _)| start.clone())
-            .unwrap_or_default()
+        self.parted().map_or_default(|(start, _)| start.clone())
     }
 
     /// Where storage keeps the keys from `from` up to `to` of what's

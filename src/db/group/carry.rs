@@ -47,7 +47,7 @@ struct Kept {
 fn blobs_of(kept: &[u8]) -> Vec<(ClockId, Listed)> {
     let kept = encoding::decode::<Kept>(kept);
 
-    kept.map(|kept| kept.sealed.blobs).unwrap_or_default()
+    kept.map_or_default(|kept| kept.sealed.blobs)
 }
 
 /// The blobs a kept piece says its values refer to.

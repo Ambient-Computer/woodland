@@ -161,7 +161,7 @@ pub(super) fn holder_bytes(cluster: &Sim, device: usize, name: &str) -> Vec<u8> 
     let store = cluster.reader(device);
     let held = store.read(&query).pop();
 
-    held.map(|(_, value)| value).unwrap_or_default()
+    held.map_or_default(|(_, value)| value)
 }
 
 #[test]

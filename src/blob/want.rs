@@ -116,7 +116,7 @@ pub(crate) async fn note<V: View>(
                     Some((group, Referrer::Entry)) => {
                         let entry = encoding::decode::<Entry>(&value);
 
-                        (group, entry.map(|it| it.blobs).unwrap_or_default())
+                        (group, entry.map_or_default(|it| it.blobs))
                     }
                     Some((group, Referrer::Carried)) => (group, crate::db::carried(&value)),
                     _ => continue,

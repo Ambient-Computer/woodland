@@ -420,8 +420,8 @@ proptest! {
 
         // Nobody with a say lost its store, so nobody went back on its
         // word, and nothing honest should look as if it had.
-        for device in 0..DEVICES {
-            let caught = run.sim.devices[device].groups[&group].caught_a_conflict();
+        for (device, held) in run.sim.devices.iter().enumerate() {
+            let caught = held.groups[&group].caught_a_conflict();
             prop_assert!(!caught, "device {} convicted an honest member", device);
         }
     }
