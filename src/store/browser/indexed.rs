@@ -114,10 +114,8 @@ async fn own(name: &str) -> Result<Option<Owned>, StoreError> {
 /// A store in the browser's own database, `IndexedDB`.
 ///
 /// It's kept by the browser for the site, under a name. The browser
-/// may take it back: see what the library does about a store that's
-/// [lost].
-///
-/// [lost]: crate::store#losing-a-store
+/// may take it back: what the library does about a store that's lost
+/// is in `docs/spec/storage.md`.
 pub struct BrowserStore {
     database: IdbDatabase,
     history: Rc<RefCell<History>>,

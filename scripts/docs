@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Builds the API docs into `target/site`, ready to serve as they are.
+# Run it from the development shell.
+#
+# Rustdoc documents one target at a time, and the browser's store only
+# exists for WebAssembly. Everything else builds there too, so that's
+# the one target that shows the whole API. If something stops building
+# there, this needs a tree for each target instead.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+target=wasm32-unknown-unknown
+site=target/site
+
+# A broken link is a broken build.
+export RUSTDOCFLAGS="${RUSTDOCFLAGS:-} -D warnings"
+
+cargo doc --no-deps --target "$target" --all-features --quiet
+
+rm -rf "$site"
+cp -r "target/$target/doc" "$site"
+
+# Rustdoc writes no page at the root.
+cat >"$site/index.html" <<'HTML'
+<!doctype html>
+<meta charset="utf-8" />
+<meta http-equiv="refresh" content="0; url=woodland/" />
+<title>Woodland</title>
+<a href="woodland/">Woodland</a>
+HTML
+
+echo "$site/index.html"
