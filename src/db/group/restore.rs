@@ -164,7 +164,7 @@ impl Group {
     pub(super) fn links(&self, remote: &Remote) -> Vec<Certificate> {
         let older = |height| self.chain.older(height, LINKS);
 
-        remote.lacking.map(older).unwrap_or_default()
+        remote.lacking.map_or_default(older)
     }
 
     /// The entries this device wants back next, in each clock.

@@ -20,9 +20,9 @@ x25519-dalek = { version = "3.0.0", features = ["static_secrets"] }
 
 # What the browser's store is reached through.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-js-sys = { version = "0.3.106", optional = true }
-wasm-bindgen = { version = "0.2.129", optional = true }
-web-sys = { version = "0.3.106", optional = true, features = [
+js-sys = { version = "0.3.107", optional = true }
+wasm-bindgen = { version = "0.2.130", optional = true }
+web-sys = { version = "0.3.107", optional = true, features = [
   "DomException",
   "IdbCursor",
   "IdbCursorDirection",
@@ -87,9 +87,9 @@ strip = "symbols"
 opt-level = 3
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-js-sys = "0.3.106"
-wasm-bindgen-futures = "0.4.79"
-wasm-bindgen-test = "0.3.79"
+js-sys = "0.3.107"
+wasm-bindgen-futures = "0.4.80"
+wasm-bindgen-test = "0.3.80"
 
 # A browser has neither processes nor folders.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]

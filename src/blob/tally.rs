@@ -53,7 +53,7 @@ fn referred(referrer: &Referrer, stored: Option<&[u8]>) -> Vec<Listed> {
         Referrer::Entry => {
             let entry = encoding::decode::<Entry>(stored);
 
-            entry.map(|it| it.blobs).unwrap_or_default()
+            entry.map_or_default(|it| it.blobs)
         }
         Referrer::Value { model, key } => {
             let blob = model::blob_under(*model, key, stored);

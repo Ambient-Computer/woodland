@@ -65,7 +65,7 @@ impl Covers {
     pub(super) fn frontier(&self, clock: ClockId) -> Frontier {
         let covered = self.clocks.get(&clock);
 
-        covered.map(|it| it.frontier.clone()).unwrap_or_default()
+        covered.map_or_default(|it| it.frontier.clone())
     }
 }
 

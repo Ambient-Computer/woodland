@@ -230,7 +230,7 @@ pub(crate) fn id_of(founding: &Checkpoint) -> GroupId {
 impl Group {
     fn new(id: GroupId, chain: Chain) -> Self {
         let founding = chain.checkpoints().next();
-        let keys = founding.map(sealing::keyring_of).unwrap_or_default();
+        let keys = founding.map_or_default(sealing::keyring_of);
         let members = chain.tip().electorate.clone();
 
         Self {

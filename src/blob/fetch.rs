@@ -239,7 +239,7 @@ pub(crate) async fn missing<V: View>(
     let groups = hash::groups(blob.length);
     let found = kept::find(step, blob).await?;
     let number = found.as_ref().map(|(number, _)| *number);
-    let held = found.map(|(_, kept)| kept.held).unwrap_or_default();
+    let held = found.map_or_default(|(_, kept)| kept.held);
     let has = async |key: Vec<u8>| -> Result<bool, StoreError> {
         Ok(match number {
             Some(_) => step.get(&key).await?.is_some(),
